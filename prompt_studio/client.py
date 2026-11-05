@@ -344,6 +344,58 @@ class ChatClient:
     def new_request_id() -> str:
         return uuid.uuid4().hex[:12]
 
+    def complete_via_stream(
+        self,
+        messages: Sequence[dict[str, Any]],
+        *,
+        model: str | None = None,
+        temperature: float | None = 0.7,
+        max_tokens: int | None = None,
+        timeout: float | None = None,
+        request_id: str | None = None,
+    ) -> ChatResult:
+        """Run a non-interactive completion by streaming and aggregating.
+
+        Some gateways (Magpie among them) serve streaming completions fine while
+        their non-streaming path stalls or rejects the model.  Internally we
+        therefore ask with ``stream: true`` and join the deltas into one
+        ``ChatResult``; callers keep the same shape.  The audit log records the
+        operation as ``stream`` (the wire truth) with the aggregated usage.
+        """
+        request_id = request_id or self.new_request_id()
+        events = self.stream_chat(
+            messages,
+            model=model,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            timeout=timeout,
+            include_usage=True,
+            request_id=request_id,
+        )
+        text = ""
+        usage: dict[str, Any] | None = None
+        finish: str | None = None
+        done: StreamEvent | None = None
+        for event in events:
+            if event.type == "delta":
+                text += event.text
+            elif event.type == "done":
+                done = event
+                text = event.text or text
+                usage = event.usage
+                finish = event.finish_reason
+        if done is None:
+            raise UpstreamError("Upstream stream ended without a done event.")
+        return ChatResult(
+            text=text,
+            usage=usage,
+            finish_reason=finish,
+            model=model or self.settings.model,
+            request_id=done.request_id,
+            latency_ms=done.ttft_ms or 0,
+            attempts=done.attempts,
+        )
+
     def complete(
         self,
         messages: Sequence[dict[str, Any]],
@@ -598,7 +650,7 @@ class ChatClient:
                                 "reasoning", reasoning=str(think), request_id=request_id,
                                 attempts=attempts,
                             )
-                if not emitted and not parts and not stream_ignored:
+                if not emitted and not parts and not stream_ignored and not saw_done:
                     raise StreamInterruptedError(
                         "The stream ended before any content arrived.",
                         request_id=request_id,

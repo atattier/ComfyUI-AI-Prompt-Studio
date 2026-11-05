@@ -97,7 +97,9 @@ def caption_image(
             "content": [{"type": "text", "text": instruction}, image_part],
         }
     ]
-    result: ChatResult = client.complete(
+    # Stream and aggregate: Magpie's non-streaming path can stall even when
+    # streaming works, and the caption has no UI to stream into anyway.
+    result: ChatResult = client.complete_via_stream(
         messages, model=model, temperature=0.3, max_tokens=max_tokens
     )
     text = _clean(result.text, fmt)

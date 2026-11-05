@@ -1,0 +1,18 @@
+..E:\TOOL\Python3.14.7\Lib\tempfile.py:484: ResourceWarning: Implicitly cleaning up <HTTPError 400: 'Bad Request'>
+  _warnings.warn(self.warn_message, ResourceWarning)
+............................E:\TOOL\Python3.14.7\Lib\tempfile.py:484: ResourceWarning: Implicitly cleaning up <HTTPError 401: 'Unauthorized'>
+  _warnings.warn(self.warn_message, ResourceWarning)
+....................................................................E:\TOOL\Python3.14.7\Lib\tempfile.py:484: ResourceWarning: Implicitly cleaning up <HTTPError 429: 'Too Many Requests'>
+  _warnings.warn(self.warn_message, ResourceWarning)
+...E:\TOOL\Python3.14.7\Lib\tempfile.py:484: ResourceWarning: Implicitly cleaning up <HTTPError 503: 'Service Unavailable'>
+  _warnings.warn(self.warn_message, ResourceWarning)
+.........................................
+----------------------------------------------------------------------
+Ran 142 tests in 59.787s
+
+OK
+[ai_prompt_studio] routes registered at /ai_prompt_studio/*
+[ai_prompt_studio] routes already registered, skipping
+[ai_prompt_studio] ComfyUI PromptServer unavailable, routes not registered: cannot import name 'PromptServer' from 'server' (unknown location)
+[ai_prompt_studio] routes registered at /ai_prompt_studio/*
+[ai_prompt_studio] routes registered at /ai_prompt_studio/*

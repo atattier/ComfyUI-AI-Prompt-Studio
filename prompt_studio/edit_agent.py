@@ -187,7 +187,9 @@ def request_edit(
     messages = build_edit_messages(
         current_text, instruction, target_hint=target_hint, images=images
     )
-    result: ChatResult = client.complete(
+    # Stream and aggregate: keeps /edit working on gateways whose
+    # non-streaming path stalls (Magpie) while the JSON contract is unchanged.
+    result: ChatResult = client.complete_via_stream(
         messages, model=model, temperature=0.2, max_tokens=max_tokens
     )
     proposal = parse_proposal(result.text, current_text)

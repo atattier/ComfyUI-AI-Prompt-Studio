@@ -324,7 +324,9 @@ class MockHandler(BaseHTTPRequestHandler):
         self.send_header("Connection", "close")
         self.end_headers()
         self.close_connection = True
-        words = reply.split(" ") if reply else ["OK"]
+        # An empty reply streams zero content chunks (real gateways do too);
+        # the caller is responsible for rejecting an empty result.
+        words = reply.split(" ") if reply else []
         for index, word in enumerate(words):
             chunk = word + (" " if index < len(words) - 1 else "")
             event = {"choices": [{"index": 0, "delta": {"content": chunk}, "finish_reason": None}]}

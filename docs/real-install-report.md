@@ -103,9 +103,21 @@
 
 Node 2.0 会重复调用侧边栏的 `render(element)`；旧实现每次都 `buildPanel()` 重建 DOM，导致目标下拉框卡在「正在扫描画布…」、草稿丢失。`mount()` 现在复用已挂在同一容器上的面板；`refreshTargets()` 改为直接对照当前目标键重建 `<option>`，不再依赖「上一次数量」推断。
 
-### 如实说明
+### 补验完成（2026-11-06，同日稍晚）
 
-- 真实模型返回的修改提案在 Node 2.0 这轮**没有复现成功**：Magpie 当时上游超时/400。因此「模型 → 结构化编辑」这一段只在上一轮经典 LiteGraph 实机验证通过；Node 2.0 验证的是前端编辑/应用/撤销/控件同步全链路（用合法注入提案）。
-- 停止流式按钮在 Magpie 恢复前未补测。
-- 截图：[`evidence/node2-panel.jpg`](../evidence/node2-panel.jpg)（`Comfy.VueNodes.Enabled` 模式下的真实画布与工作台）。
-- 验证结束后 `Comfy.VueNodes.Enabled` 已设回 `false`，插件已卸载，临时服务与 launch 配置已清理。
+定位到昨晚失败的根因：**Magpie 网关的非流式补全通道故障，而流式通道一直正常**（同一模型同一时刻，`stream:false` 超时/400，`stream:true` 3.8 s 返回完整回复）。`/edit` 与 `/caption` 原本走非流式，因此被误伤；与 Node 2.0 无关。
+
+修复：后端新增 `ChatClient.complete_via_stream()`，`/edit` 与 `/caption` 内部改为流式请求并聚合成原 `ChatResult`——对模型与前端契约零改动，同时绕开网关非流式故障。mock 上游同步改为「空回复也流式返回零内容块」，`stream_chat` 的空流守卫改为仅在未收到 `[DONE]` 时报错。
+
+随后在 Node 2.0 下用**真实模型**重跑，全链路通过：
+
+| 步骤 | 实测结果 |
+|---|---|
+| 生成修改 | 「在提示词最后追加一句：所有输出均使用英文。」→ 真实提案 1 条，diff 卡片与复选框正常 |
+| 应用 | 1437 → 1450 字符，序列化与 Vue DOM 同步；审计日志记为 `stream`，状态 ok |
+| 撤销 | 恢复 1437 字符，历史记录 `UNDO/APPLY` |
+| 上传反推 | `caption-test.jpg` → 433 字符 prose（流式聚合） |
+| 停止流式 | 流式开始后「停止」可点击，点击后气泡显示「（已停止）」，状态「已停止生成。」（M1 报告 §6 第 4 条补验完成） |
+| 截图 | [`evidence/node2-real-proposal.jpg`](../evidence/node2-real-proposal.jpg) |
+
+验证结束后 `Comfy.VueNodes.Enabled` 已设回 `false`（磁盘设置文件确认），插件已卸载，临时服务与 launch 配置已清理。
