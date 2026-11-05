@@ -526,7 +526,6 @@ function refreshTargets({ force = false } = {}) {
   const canvasApp = graphApp();
   if (!canvasApp) return;
   const targets = collectTargets(canvasApp);
-  const previousKeys = new Set(state.targets.map((target) => target.key));
   state.targets = targets;
 
   if (!targets.length) {
@@ -553,7 +552,12 @@ function refreshTargets({ force = false } = {}) {
   }
 
   ui.targetSelect.disabled = false;
-  if (!ui.targetSelect.options.length || previousKeys.size !== keys.size) {
+  // Compare the rendered options with the targets themselves: a re-render can
+  // leave the placeholder option behind while the counts still look equal.
+  const optionKeys = new Set(
+    [...ui.targetSelect.options].map((option) => option.value).filter(Boolean),
+  );
+  if (optionKeys.size !== targets.length || targets.some((target) => !optionKeys.has(target.key))) {
     ui.targetSelect.textContent = "";
     for (const target of targets) {
       const option = el("option", { value: target.key }, `${target.title} · ${target.widget}（#${target.node_id}）`);
@@ -1234,22 +1238,27 @@ function updateHistoryTarget() {
 // ------------------------------------------------------------------- mount
 function mount(root, canvasApp) {
   state.app = canvasApp || app;
-  buildPanel(root);
-  mountStyles();
+  // Node 2.0 re-runs the tab render when the sidebar container updates (for
+  // example on every canvas selection).  Rebuilding would wipe the target
+  // options and the draft, so reuse the panel already attached to this root.
+  const alreadyMounted = Boolean(ui.panel && ui.panel.parentElement === root);
+  if (!alreadyMounted) {
+    buildPanel(root);
+    mountStyles();
+    ui.panel.dataset.panelState = "ready";
+    ui.targetSelect.textContent = "";
+    ui.targetSelect.append(el("option", { value: "" }, "正在扫描画布…"));
+    switchTab(state.tab);
+    renderMessages();
+    renderCaptionPreview();
+    updateCapabilityBadges();
+    void loadStatus();
+  }
   const panel = ui.panel;
-  panel.dataset.panelState = "ready";
 
-  ui.targetSelect.textContent = "";
-  ui.targetSelect.append(el("option", { value: "" }, "正在扫描画布…"));
-
-  switchTab(state.tab);
   refreshTargets({ force: true });
-  renderMessages();
-  renderCaptionPreview();
-  updateCapabilityBadges();
   updateButtons();
   if (state.capability) updateCapabilityBadges();
-  void loadStatus();
 
   // Keep the panel in sync with canvas selection without polling the model.
   if (!state.syncTimer) {

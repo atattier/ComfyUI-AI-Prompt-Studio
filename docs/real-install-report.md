@@ -75,10 +75,37 @@
 - M1 报告 §4 标准 1（安装后现有工作流零变化）：**由设计保证升级为实机验证通过**。
 - §4 标准 7（经典 LiteGraph / Node 2.0）：本机是经典 LiteGraph 类前端模式，**该模式通过**；Node 2.0 前端仍未验证。
 - M1 报告 §6 第 1 条（未安装真实 ComfyUI）、第 3 条（浏览器上传未实测）：**本次已补验**。
-- 仍未验证：Node 2.0 前端、停止流式按钮的交互、超大图片上传、其余 28 个工作流（只抽了 1 个 4 节点工作流做结构对照）。
+- 仍未验证：~~Node 2.0 前端~~（2026-11-06 已补验，见 §8）、停止流式按钮的交互、超大图片上传、其余 28 个工作流（只抽了 1 个 4 节点工作流做结构对照）。
 
 ## 7. 卸载与残留
 
 - 删除 `custom_nodes\ComfyUI-AI-Prompt-Studio` 后重启：`/ai_prompt_studio/*` 全部 404，扩展与节点类型集合回到安装前，侧边栏回到 8 个标签。
 - 运行数据（版本库 SQLite、审计日志、隔离 user/temp）在 `E:\AI\99_运行数据\ComfyUI-AI-Prompt-Studio_regression`，不写用户 ComfyUI 目录。
 - 回归用临时 `.claude/launch.json`（`comfy-regression`）已删除，预览服务已停止。
+
+
+## 8. Node 2.0 前端补验（2026-11-06）
+
+用设置项 `Comfy.VueNodes.Enabled = true` 重启同一回归实例，重新载入同一个 4 节点工作流。前端确实切换到 Vue 节点（DOM 含 4 个 `[data-node-id]` 元素、`lg-node` class），`Comfy.VueNodes.Enabled` 读取为 `true`，不是画布贴图模拟。
+
+| 项 | 结果 |
+|---|---|
+| 插件侧边栏注册 | `ai-prompt-studio` 标签存在，面板可打开 |
+| 节点控件识别 | 4 个目标：`#1 文本`、`#2 custom_rule_content`、`#2 user_prompt`、`#3 文本` |
+| 选中同步 | `app.canvas.selectNode(#3)` 后下拉框自动切到 `node:3:文本`，提示词显示该节点内容 |
+| 对话 | Magpie 期间出现上游 60 s 超时与 `model_not_supported` 400，错误在面板中如实提示；不是 Node 2.0 适配问题 |
+| 生成修改 → diff → 应用 | 为隔离上游波动，在浏览器层注入一条结构合法的 `append` 提案（真实走 `requestEdit` → `renderDiff` → `applyProposal` → `/apply` → `setWidgetText` 全链路），diff 卡片与复选框正常 |
+| 写入 Node 2.0 控件 | `graph.serialize()` 与 Vue 节点 DOM 文本框长度同时 1437 → 1452 → 1437（应用、撤销），两者始终一致 |
+| 撤销 / 重做 / 历史 | 撤销可用且恢复原值；历史标签列出版本 |
+| 面板重复挂载 | Node 2.0 会在画布选中变化时重跑侧边栏 `render`。修复后切换侧栏再返回，面板仍挂载、4 个目标保留、草稿不丢 |
+
+### 本轮修复
+
+Node 2.0 会重复调用侧边栏的 `render(element)`；旧实现每次都 `buildPanel()` 重建 DOM，导致目标下拉框卡在「正在扫描画布…」、草稿丢失。`mount()` 现在复用已挂在同一容器上的面板；`refreshTargets()` 改为直接对照当前目标键重建 `<option>`，不再依赖「上一次数量」推断。
+
+### 如实说明
+
+- 真实模型返回的修改提案在 Node 2.0 这轮**没有复现成功**：Magpie 当时上游超时/400。因此「模型 → 结构化编辑」这一段只在上一轮经典 LiteGraph 实机验证通过；Node 2.0 验证的是前端编辑/应用/撤销/控件同步全链路（用合法注入提案）。
+- 停止流式按钮在 Magpie 恢复前未补测。
+- 截图：[`evidence/node2-panel.jpg`](../evidence/node2-panel.jpg)（`Comfy.VueNodes.Enabled` 模式下的真实画布与工作台）。
+- 验证结束后 `Comfy.VueNodes.Enabled` 已设回 `false`，插件已卸载，临时服务与 launch 配置已清理。

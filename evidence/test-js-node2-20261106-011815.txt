@@ -1,0 +1,40 @@
+✔ request joins the base path and parses JSON (5.144ms)
+✔ error payloads become ApiError with code and status (1.358ms)
+✔ network failures are reported as retryable network errors (0.387ms)
+✔ chat streams events and resolves after done (1.8763ms)
+✔ an SSE error event rejects the chat promise (0.751ms)
+✔ chat surfaces pre-stream JSON validation errors (0.58ms)
+✔ summarises block types (4.292ms)
+✔ selectOps keeps only checked indices and their order (0.3152ms)
+✔ operations carry readable labels (0.2502ms)
+✔ excerpt flattens whitespace and truncates (0.3562ms)
+✔ parses events across arbitrary chunk boundaries (1.7287ms)
+✔ handles CRLF, comments and multi-line data (0.8257ms)
+✔ flush dispatches a trailing event without a blank line (0.2631ms)
+✔ plain data that is not JSON stays a string (0.2425ms)
+✔ readSSE consumes a streaming response (2.5675ms)
+✔ readSSE rejects non-OK responses with the body preview (1.9055ms)
+✔ recognises common prompt widgets only (0.7524ms)
+✔ targets list selected nodes first, without duplicates (0.8623ms)
+✔ nodes without prompt widgets are skipped (0.1373ms)
+✔ currentTarget prefers the selection and tolerates ambiguity (0.1924ms)
+✔ findTargetByKey resolves a descriptor with a live widget (0.2362ms)
+✔ setWidgetText writes the value, fires callbacks and repaints (0.2755ms)
+✔ imageSource reads previews and widget filenames (0.241ms)
+✔ targetWire drops live references so a real graph can be serialized (0.2267ms)
+✔ nodeTitle falls back through the usual fields (0.1159ms)
+✔ record then undo returns the previous text (0.7567ms)
+✔ a new record clears the redo branch (0.1335ms)
+✔ no-op entries are ignored (0.1117ms)
+✔ invalid entries throw (0.2068ms)
+✔ limit keeps the most recent entries (0.1151ms)
+✔ undo and redo expose the next entry for tooltips (0.1026ms)
+✔ clear empties both branches (0.1004ms)
+ℹ tests 32
+ℹ suites 0
+ℹ pass 32
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 121.4717

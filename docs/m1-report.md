@@ -64,7 +64,7 @@ M1 的出口标准「反推 → 对话改 → 应用 → 撤销」已在浏览�
 | 4 | 抓包、前端状态、日志三处均无 API Key 明文 | **通过** | `/status` 仅掩码（测试断言响应不含密钥）；浏览器网络面板逐条检查无密钥；审计只记元数据（`test_secrets`、`test_health_and_status`） |
 | 5 | Skill 文件加载前后 SHA-256 一致 | 不适用 | M2 范围 |
 | 6 | 冲突报告覆盖五类 | 不适用 | M3 范围 |
-| 7 | 经典 LiteGraph 与 Node 2.0 前端均能完成闭环 | **部分** | 经典 LiteGraph：假 ComfyUI 与真实 ComfyUI 均通过；Node 2.0 前端仍未验证 |
+| 7 | 经典 LiteGraph 与 Node 2.0 前端均能完成闭环 | **基本通过** | 经典 LiteGraph：假 ComfyUI 与真实 ComfyUI 全链路通过；Node 2.0：控件识别、选中同步、diff 应用、撤销、面板重复挂载实机通过；仅「模型实时生成提案」因 Magpie 上游波动未复现，改为合法注入提案验证前端链路，见 [`real-install-report.md`](real-install-report.md) §8。 |
 | 8 | 对项目 A 的相似度自检低于阈值 | 未自动化 | 人工确认无复制；自动化相似度检查未做，建议发行前补 |
 
 ## 5. 测试记录
@@ -80,7 +80,7 @@ M1 新增覆盖：编辑操作校验（唯一性/歧义/无变化/顺序应用�
 ## 6. 已知限制与未验证项
 
 1. ~~未安装进真实 ComfyUI~~ **已补验**（2026-11-05）：`WEB_DIRECTORY` 加载、真实 `app.extensionManager` 的侧边栏注册、真实画布的提示词控件识别均正常，见 [`real-install-report.md`](real-install-report.md)。
-2. **Node 2.0 前端未验证**。控件适配取的是 `node.widgets` 与 `widget.value/callback`，两种前端都保留这些字段，但未实机确认。
+2. **Node 2.0 前端已实机验证控件读写、选中同步与撤销**；仍缺一次上游稳定时的「模型实时生成提案」复跑，见 [`real-install-report.md`](real-install-report.md) §8。
 3. ~~浏览器上传图片路径未实测~~ **已补验**：真实 ComfyUI 中经 `<input type=file>` 上传图片并反推成功。
 4. **停止流式生成按钮未实测**（已实现 abort）。
 5. **撤销栈是全局的**：条目按控件键写入，撤销不会写错节点；但按钮提示不区分目标，跨节点连续编辑时语义略弱。
