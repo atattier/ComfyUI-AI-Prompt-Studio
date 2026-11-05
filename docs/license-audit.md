@@ -1,7 +1,7 @@
-# 许可证核查记录（M0）
+# 许可证核查记录（M1）
 
 - 核查日期：2026-11-05
-- 核查范围：`ComfyUI-AI-Prompt-Studio` M0 源码与运行依赖
+- 核查范围：`ComfyUI-AI-Prompt-Studio` M0 + M1 源码、前端扩展与运行依赖
 - 核查人：Claude Code（总控 Agent），依据本机文件与官方仓库静态检查
 - 性质：工程记录，**不构成法律意见**。公开发行前建议由用户或法务复核。
 
@@ -21,10 +21,11 @@
 
 | 组件 | 版本 / 证据 | 许可证 | M0 是否包含 | 说明 |
 |---|---|---|---|---|
-| ComfyUI | `0.43.2`；git `423cbd20511becb1f16122ab518e92e58bfa03d9`（2026-10-30）；`ComfyUI/comfyui_version.py`、`LICENSE` | GPL-3.0 | ❌ 未捆绑、未链接 | M1 起才接入；接入后整体按 GPL-3.0 发行 |
-| ComfyUI Frontend | `comfyui-frontend-package==1.57.4`（`requirements.txt`） | GPL-3.0 | ❌ 未捆绑 | M1 起使用其扩展 API |
-| Python 标准库 | CPython 3.14.7（本机） | PSF-2.0 | ✅ 运行时依赖 | 仅 `urllib`、`sqlite3`、`http.server`、`zlib` 等 |
-| 本项目全部源码 | v0.1.0-m0 | GPL-3.0-only | ✅ | 原创新写，无复制粘贴 |
+| ComfyUI | `0.43.2`；git `423cbd20511becb1f16122ab518e92e58bfa03d9`（2026-10-30）；`ComfyUI/comfyui_version.py`、`LICENSE` | GPL-3.0 | ❌ 未捆绑、未修改 | M1 仅通过公开扩展点接入：`WEB_DIRECTORY`、`PromptServer.instance.routes`、`app.extensionManager.registerSidebarTab` |
+| ComfyUI Frontend | `comfyui-frontend-package==1.57.4`（`requirements.txt`） | GPL-3.0 | ❌ 未捆绑 | 使用其公开前端 API；未复制前端源码 |
+| aiohttp | ComfyUI 自带依赖（`requirements.txt`） | Apache-2.0 | ✅ 间接依赖 | 仅注册路由与静态文件；未修改其源码 |
+| Python 标准库 | CPython 3.14.7（本机） | PSF-2.0 | ✅ 运行时依赖 | `urllib`、`sqlite3`、`http.server`、`ctypes`、`zlib` 等 |
+| 本项目全部源码 | v0.2.0-m1 | GPL-3.0-only | ✅ | 原创新写，无复制粘贴；前端零框架依赖 |
 
 **未包含但有引用关系的第三方内容：**
 
@@ -44,6 +45,8 @@
 | Frontend 版本 | 读取 `requirements.txt` | `comfyui-frontend-package==1.57.4` |
 | 本项目依赖 | `pyproject.toml` | `dependencies = []` |
 | 复制代码检查 | 全仓检索与人工比对 | 未发现来自 A / B 的复制内容 |
+| M1 前端接入方式 | 阅读本机 ComfyUI 内置扩展的用法，只调用公开 API | 未 import 前端内部模块；未复制其代码 |
+| M1 依赖 | `pyproject.toml` 仍为 `dependencies = []`；前端无 npm 依赖 | 无新增第三方包 |
 
 ## 4. 发行前义务清单（GPL-3.0）
 
@@ -59,3 +62,4 @@
 | 日期 | 变更 |
 |---|---|
 | 2026-11-05 | 建立核查记录；确认 M0 仅依赖 Python 标准库；确认未复制 A/B 代码。 |
+| 2026-11-05 | M1：记录 ComfyUI / Frontend / aiohttp 版本与许可证；确认仅通过公开扩展点接入，未复制上游或 A/B 源码；确认前端零框架依赖。 |

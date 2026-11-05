@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "comfyui-ai-prompt-studio"
-version = "0.1.0.dev0"
-description = "Independent unified multimodal API prototype for ComfyUI AI Prompt Studio (M0)"
+version = "0.2.0.dev0"
+description = "ComfyUI AI Prompt Studio — multimodal prompt workbench (M1)"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "GPL-3.0-only" }

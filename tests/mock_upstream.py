@@ -33,6 +33,13 @@ MODELS = [
     {"id": "slow-model", "modalities": {"input": ["text"], "output": ["text"]}},
     {"id": "drop-model", "modalities": {"input": ["text"], "output": ["text"]}},
     {"id": "json-stream", "modalities": {"input": ["text"], "output": ["text"]}},
+    {"id": "editor-model", "modalities": {"input": ["text", "image"], "output": ["text"]}},
+    {"id": "editor-noop", "modalities": {"input": ["text"], "output": ["text"]}},
+    {"id": "editor-bad-json", "modalities": {"input": ["text"], "output": ["text"]}},
+    {"id": "editor-ambiguous", "modalities": {"input": ["text"], "output": ["text"]}},
+    {"id": "caption-model", "modalities": {"input": ["text", "image"], "output": ["text"]}},
+    {"id": "empty-model", "modalities": {"input": ["text", "image"], "output": ["text"]}},
+    {"id": "demo-model", "modalities": {"input": ["text", "image"], "output": ["text"]}},
 ]
 
 _COLORS = {"red": (220, 30, 30), "green": (30, 170, 60), "blue": (30, 40, 220), "yellow": (235, 205, 40)}
@@ -224,6 +231,80 @@ class MockHandler(BaseHTTPRequestHandler):
             if model == "vision-pro":
                 left, right = decode_png_colors(images[0])
                 return f"{left} {right}"
+
+        if model == "demo-model":
+            system = _content_text(messages[0].get("content")) if messages else ""
+            lowered = system.lower()
+            if '"changes"' in system and "json object" in lowered:
+                if "雨" in text or "rain" in text.lower():
+                    return json.dumps(
+                        {
+                            "reply": "把晴天改成雨夜，镜头和构图保持不变。",
+                            "changes": [
+                                {"op": "replace", "before": "sunny afternoon", "after": "rainy night"},
+                                {"op": "append", "after": ", wet reflections"},
+                            ],
+                        },
+                        ensure_ascii=False,
+                    )
+                if "狗" in text or "dog" in text.lower():
+                    return json.dumps(
+                        {
+                            "reply": "把猫换成狗。",
+                            "changes": [{"op": "replace", "before": "a cat", "after": "a dog"}],
+                        },
+                        ensure_ascii=False,
+                    )
+                return json.dumps(
+                    {
+                        "reply": "信息已经比较完整，建议只补充一点光线。",
+                        "changes": [{"op": "append", "after": ", soft rim light"}],
+                    },
+                    ensure_ascii=False,
+                )
+            if "comma-separated" in lowered:
+                if images:
+                    left, right = decode_png_colors(images[0])
+                    return f"poster, {left}, {right}, centered composition, soft studio light"
+                return "portrait, natural light, 50mm"
+            if "moss-image style" in lowered or "describe the image" in lowered:
+                if images:
+                    left, right = decode_png_colors(images[0])
+                    return f"A poster split into {left} and {right} halves, centered composition, soft studio light."
+                return "A quiet portrait in natural light."
+            if images:
+                left, right = decode_png_colors(images[0])
+                return f"我看到一张由 {left} 和 {right} 两块组成的图片，这种配色可以直接写进提示词。"
+            return "这段提示词的主干很清楚。可以把背景、光线和镜头再具体一些，画面会更可控。"
+
+        if model == "editor-model":
+            return json.dumps(
+                {"reply": "把猫改成狗", "changes": [{"op": "replace", "before": "a cat", "after": "a dog", "why": "test"}]},
+                ensure_ascii=False,
+            )
+
+        if model == "editor-noop":
+            return json.dumps({"reply": "不需要修改", "changes": []}, ensure_ascii=False)
+
+        if model == "editor-bad-json":
+            return "I think it looks fine."
+
+        if model == "editor-ambiguous":
+            return json.dumps(
+                {"reply": "ambiguous", "changes": [{"op": "delete", "before": "a ", "why": "test"}]},
+                ensure_ascii=False,
+            )
+
+        if model == "empty-model":
+            return ""
+
+        if model == "caption-model":
+            lowered = text.lower()
+            if "moss-image style" in lowered:
+                return "A red and blue poster, centered composition, soft studio light."
+            if "comma-separated" in lowered or "image-generation tags" in lowered:
+                return "```\nquality, red, blue\n```"
+            return "A vertically split poster in red and blue."
 
         if model == "echo-model":
             transcript = " | ".join(f"{m.get('role')}:{_content_text(m.get('content'))}" for m in messages)

@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>ComfyUI AI Prompt Studio · UI harness</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #17191c;
+        --panel: #23262b;
+        --border: #33373d;
+        --fg: #e3e5e8;
+        --muted: #8b9199;
+        --accent: #6ea8fe;
+        --fg-color: #e3e5e8;
+        --comfy-menu-bg: #23262b;
+        --comfy-input-bg: #2b2f35;
+        --border-color: #33373d;
+        --p-text-muted-color: #8b9199;
+        --p-primary-color: #6ea8fe;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        height: 100%;
+        margin: 0;
+      }
+      body {
+        display: flex;
+        flex-direction: column;
+        background: var(--bg);
+        color: var(--fg);
+        font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+      }
+      .topbar {
+        height: 38px;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 0 12px;
+        border-bottom: 1px solid var(--border);
+        background: #1d2024;
+        font-size: 12.5px;
+        color: var(--muted);
+      }
+      .topbar strong {
+        color: var(--fg);
+        font-weight: 600;
+      }
+      .tag {
+        margin-left: auto;
+        font-size: 11px;
+        border: 1px solid #6b5a2f;
+        color: #d7a94a;
+        border-radius: 999px;
+        padding: 1px 8px;
+      }
+      main {
+        flex: 1;
+        min-height: 0;
+        display: flex;
+      }
+      .canvas {
+        flex: 1;
+        position: relative;
+        overflow: auto;
+        background-color: #141619;
+        background-image: radial-gradient(#23262b 1px, transparent 1px);
+        background-size: 22px 22px;
+        padding: 20px;
+      }
+      .node-card {
+        width: 300px;
+        margin-bottom: 18px;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        background: var(--panel);
+        box-shadow: 0 2px 10px rgb(0 0 0 / 25%);
+        cursor: pointer;
+        overflow: hidden;
+        font-size: 11.5px;
+      }
+      .node-card.is-selected {
+        border-color: var(--accent);
+        box-shadow: 0 0 0 1px var(--accent), 0 2px 10px rgb(0 0 0 / 30%);
+      }
+      .node-title {
+        padding: 6px 9px;
+        background: #2c3036;
+        font-size: 11.5px;
+        color: #cfd4da;
+        border-bottom: 1px solid var(--border);
+      }
+      .node-value {
+        padding: 8px 9px;
+        font-family: ui-monospace, Consolas, monospace;
+        color: #c9ced5;
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
+      .node-card img {
+        display: block;
+        width: 100%;
+        max-height: 150px;
+        object-fit: contain;
+        background: #101214;
+        border-bottom: 1px solid var(--border);
+      }
+      .sidebar {
+        width: 400px;
+        flex: 0 0 400px;
+        border-left: 1px solid var(--border);
+        background: #1a1d21;
+        display: flex;
+        flex-direction: column;
+        min-height: 0;
+      }
+      .sidebar-head {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        height: 34px;
+        padding: 0 10px;
+        border-bottom: 1px solid var(--border);
+        font-size: 12px;
+        color: var(--muted);
+      }
+      .sidebar-head .dot {
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: var(--accent);
+      }
+      #aps-host {
+        flex: 1;
+        min-height: 0;
+      }
+      @media (max-width: 860px) {
+        .sidebar {
+          width: 360px;
+          flex-basis: 360px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <header class="topbar">
+      <strong>ComfyUI</strong>
+      <span>workflow · demo</span>
+      <span class="tag">UI harness · mock upstream · not installed</span>
+    </header>
+    <main>
+      <div class="canvas">
+        <div id="canvas-nodes"></div>
+      </div>
+      <aside class="sidebar">
+        <div class="sidebar-head"><span class="dot"></span>AI 提示词</div>
+        <div id="aps-host"></div>
+      </aside>
+    </main>
+    <script type="module" src="/scripts/app.js"></script>
+    <script type="module" src="/extensions/ComfyUI-AI-Prompt-Studio/ai_prompt_studio.js"></script>
+  </body>
+</html>

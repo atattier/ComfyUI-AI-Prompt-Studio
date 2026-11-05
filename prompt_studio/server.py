@@ -26,7 +26,7 @@ from urllib.parse import urlsplit
 from . import __version__
 from .audit import AuditLogger
 from .capabilities import CapabilityProber
-from .client import ChatClient, image_part_from_url
+from .client import ChatClient
 from .config import Settings
 from .errors import (
     BodyTooLargeError,
@@ -37,7 +37,8 @@ from .errors import (
     StudioError,
 )
 from .redaction import Redactor
-from .sessions import MediaStore, SessionStore, decode_data_url
+from .images import image_to_part
+from .sessions import MediaStore, SessionStore
 
 MAX_BODY_BYTES = 20 * 1024 * 1024
 
@@ -504,29 +505,7 @@ class Handler(BaseHTTPRequestHandler):
         return out
 
     def _image_to_part(self, image: Any) -> dict[str, Any]:
-        if not isinstance(image, dict):
-            raise InvalidRequestError("each image must be an object.")
-        if image.get("url"):
-            url = str(image["url"])
-            if not url.lower().startswith(("http://", "https://")):
-                raise InvalidRequestError("image url must be http(s).")
-            return image_part_from_url(url)
-        try:
-            if image.get("data_url"):
-                data, mime = decode_data_url(str(image["data_url"]))
-                return self.service.media.put(data, mime)
-            if image.get("base64"):
-                import base64 as _b64
-
-                try:
-                    data = _b64.b64decode(str(image["base64"]), validate=True)
-                except Exception as exc:  # noqa: BLE001
-                    raise InvalidRequestError("image base64 is invalid.") from exc
-                mime = str(image.get("mime") or "image/png")
-                return self.service.media.put(data, mime)
-        except ValueError as exc:
-            raise InvalidRequestError(f"Image rejected: {exc}") from exc
-        raise InvalidRequestError("image needs url, data_url or base64.")
+        return image_to_part(self.service.media, image)
 
 
 def create_server(settings: Settings, *, service: Service | None = None) -> StudioHTTPServer:

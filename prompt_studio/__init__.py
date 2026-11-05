@@ -1,14 +1,17 @@
-"""ComfyUI AI Prompt Studio — M0 unified multimodal API prototype.
+"""ComfyUI AI Prompt Studio — unified multimodal workbench for ComfyUI.
 
-This package is deliberately independent of ComfyUI: it can be imported and
-exercised without installing anything into ComfyUI or touching existing
-workflows.  M0 covers configuration, text/vision/streaming calls, multi-turn
-sessions, capability probing, retries, key custody and auditing.
+M0 covered the independent API prototype (configuration, text/vision/streaming
+calls, multi-turn sessions, capability probing, retries, key custody and
+auditing).  M1 adds the in-ComfyUI workbench: sidebar tab, node prompt
+read/write, caption, validated diff, apply, undo and version history.
+
+The core stays independent of ComfyUI: it can be imported and exercised
+without installing anything or touching existing workflows.
 """
 
 from __future__ import annotations
 
-__version__ = "0.1.0-m0"
+__version__ = "0.2.0-m1"
 
 from .capabilities import CapabilityProber, CapabilityReport  # noqa: E402
 from .client import ChatClient, ChatResult, StreamEvent  # noqa: E402
