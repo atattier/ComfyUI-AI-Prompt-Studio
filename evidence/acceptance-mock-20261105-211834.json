@@ -1,0 +1,179 @@
+{
+  "mode": "mock",
+  "started_at": "2026-11-05T21:18:32+0800",
+  "ended_at": "2026-11-05T21:18:34+0800",
+  "base_url": "http://127.0.0.1:51950/v1",
+  "model": "vision-pro / text-only / echo-model / slow-model / drop-model",
+  "checks": [
+    {
+      "id": "text",
+      "name": "文本调用",
+      "status": "pass",
+      "detail": "reply='OK' latency=2ms",
+      "data": {
+        "reply": "OK",
+        "latency_ms": 2,
+        "usage": {
+          "prompt_tokens": 10,
+          "completion_tokens": 5,
+          "total_tokens": 15
+        }
+      }
+    },
+    {
+      "id": "image",
+      "name": "图片输入与视觉理解",
+      "status": "pass",
+      "detail": "reply='red blue'",
+      "data": {
+        "reply": "red blue",
+        "image_bytes": 140,
+        "data_url_prefix": "data:image/png;base64,iVBORw0KGg"
+      }
+    },
+    {
+      "id": "streaming",
+      "name": "流式响应",
+      "status": "pass",
+      "detail": "chunks=3 ttft_ms=18 saw_done=True",
+      "data": {
+        "chunks": 3,
+        "ttft_ms": 18,
+        "saw_done": true,
+        "text": "turns=1 transcript=user:hello there",
+        "usage": {
+          "prompt_tokens": 10,
+          "completion_tokens": 3,
+          "total_tokens": 20
+        }
+      }
+    },
+    {
+      "id": "multiturn",
+      "name": "多轮上下文",
+      "status": "pass",
+      "detail": "second reply='turns=3 transcript=user:remember 47 | assistant:turns=1 transcript=user:remember 47 | user:what number?'",
+      "data": {
+        "reply1": "turns=1 transcript=user:remember 47",
+        "reply2": "turns=3 transcript=user:remember 47 | assistant:turns=1 transcript=user:remember 47 | user:what number?"
+      }
+    },
+    {
+      "id": "vision_unsupported",
+      "name": "不支持视觉的模型识别",
+      "status": "pass",
+      "detail": "vision=False reason=rejected_by_api",
+      "data": {
+        "base_url": "http://127.0.0.1:51950/v1",
+        "model": "text-only",
+        "text": true,
+        "vision": false,
+        "streaming": true,
+        "declared_modalities": {
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ]
+        },
+        "checked_at": "2026-11-05T21:18:33+0800",
+        "details": {
+          "models_endpoint": {
+            "ok": true,
+            "matched": true
+          },
+          "text": {
+            "supported": true,
+            "latency_ms": 1,
+            "reply_chars": 2
+          },
+          "vision": {
+            "supported": false,
+            "reason": "rejected_by_api",
+            "message": "Provider rejected the request (HTTP 400). This model does not support image input."
+          },
+          "streaming": {
+            "supported": true,
+            "chunks": 8,
+            "ttft_ms": 1,
+            "saw_done": true,
+            "stream_ignored": false
+          }
+        },
+        "cached": false
+      }
+    },
+    {
+      "id": "bad_key",
+      "name": "错误 API Key 处理",
+      "status": "pass",
+      "detail": "code=auth_failed status=401 attempts=1",
+      "data": {
+        "error": {
+          "code": "auth_failed",
+          "message": "Authentication failed (HTTP 401). Check the API key.",
+          "retryable": false,
+          "detail": "{\"error\": {\"message\": \"invalid api key\", \"type\": \"invalid_request_error\"}}",
+          "request_id": "db0826497e8a",
+          "upstream_status": 401
+        },
+        "key_echoed": false
+      }
+    },
+    {
+      "id": "timeout",
+      "name": "超时错误反馈",
+      "status": "pass",
+      "detail": "Upstream did not respond within 0.5s. (elapsed 504ms, retryable=True)",
+      "data": {
+        "code": "upstream_timeout",
+        "message": "Upstream did not respond within 0.5s.",
+        "retryable": true,
+        "detail": "timed out",
+        "request_id": "7f418d5b3679"
+      }
+    },
+    {
+      "id": "interrupted",
+      "name": "网络/流中断反馈",
+      "status": "pass",
+      "detail": "The connection dropped mid-stream. partial='partial '",
+      "data": {
+        "code": "stream_interrupted",
+        "message": "The connection dropped mid-stream.",
+        "retryable": false,
+        "detail": "ConnectionResetError: [WinError 10054] 远程主机强迫关闭了一个现有的连接。",
+        "request_id": "087a39628424",
+        "partial_text": "partial "
+      }
+    },
+    {
+      "id": "key_leak",
+      "name": "API Key 不泄露",
+      "status": "pass",
+      "detail": "scanned 23 audit lines + 7 payloads; key_found=False",
+      "data": {
+        "audit_entries": 23,
+        "payloads_scanned": 7,
+        "key_found": false
+      }
+    },
+    {
+      "id": "network",
+      "name": "网络中断反馈",
+      "status": "pass",
+      "detail": "Cannot reach the API endpoint. Check Base URL and network connectivity.",
+      "data": {
+        "code": "network_error",
+        "message": "Cannot reach the API endpoint. Check Base URL and network connectivity.",
+        "retryable": true,
+        "detail": "[WinError 10053] 你的主机中的软件中止了一个已建立的连接。",
+        "request_id": "f16402480663"
+      }
+    }
+  ],
+  "notes": [
+    "本地协议一致性上游由 tests/mock_upstream.py 提供；视觉回复由真实 PNG 像素解码得出。"
+  ]
+}

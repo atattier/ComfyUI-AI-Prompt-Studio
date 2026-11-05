@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "comfyui-ai-prompt-studio"
+version = "0.1.0.dev0"
+description = "Independent unified multimodal API prototype for ComfyUI AI Prompt Studio (M0)"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "GPL-3.0-only" }
+authors = [{ name = "ComfyUI AI Prompt Studio contributors" }]
+dependencies = []
+
+[project.optional-dependencies]
+dev = []
+
+[project.scripts]
+prompt-studio = "prompt_studio.__main__:main"
+
+[tool.setuptools]
+packages = ["prompt_studio"]
+
+[tool.setuptools.package-data]
+prompt_studio = ["py.typed"]

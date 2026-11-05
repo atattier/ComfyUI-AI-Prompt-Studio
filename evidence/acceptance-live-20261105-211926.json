@@ -1,0 +1,176 @@
+{
+  "mode": "live",
+  "started_at": "2026-11-05T21:18:42+0800",
+  "ended_at": "2026-11-05T21:19:26+0800",
+  "base_url": "http://127.0.0.1:3425/v1",
+  "model": "auto/gemini-3.8-flash",
+  "checks": [
+    {
+      "id": "model_selection",
+      "name": "选择可用多模态模型",
+      "status": "pass",
+      "detail": "auto/gemini-3.8-flash: text=True vision=True streaming=True",
+      "data": {
+        "base_url": "http://127.0.0.1:3425/v1",
+        "model": "auto/gemini-3.8-flash",
+        "text": true,
+        "vision": true,
+        "streaming": true,
+        "declared_modalities": {
+          "input": [
+            "text",
+            "image"
+          ]
+        },
+        "checked_at": "2026-11-05T21:18:54+0800",
+        "details": {
+          "models_endpoint": {
+            "ok": true,
+            "matched": true
+          },
+          "text": {
+            "supported": true,
+            "latency_ms": 4016,
+            "reply_chars": 2
+          },
+          "vision": {
+            "supported": true,
+            "reason": "both_probe_images_described",
+            "trials": [
+              {
+                "expected": "red+blue",
+                "matched": true,
+                "reply": "Red blue"
+              },
+              {
+                "expected": "green+yellow",
+                "matched": true,
+                "reply": "Green yellow"
+              }
+            ]
+          },
+          "streaming": {
+            "supported": true,
+            "chunks": 1,
+            "ttft_ms": 2658,
+            "saw_done": true,
+            "stream_ignored": false
+          }
+        },
+        "cached": false
+      }
+    },
+    {
+      "id": "text",
+      "name": "文本调用",
+      "status": "pass",
+      "detail": "reply='OK' latency=2890ms",
+      "data": {
+        "reply": "OK",
+        "latency_ms": 2890,
+        "usage": {
+          "completion_tokens": 80,
+          "completion_tokens_details": {
+            "reasoning_tokens": 79
+          },
+          "prompt_tokens": 8,
+          "prompt_tokens_details": {
+            "cache_write_tokens": 0,
+            "cached_tokens": 0
+          },
+          "total_tokens": 88
+        },
+        "attempts": 1
+      }
+    },
+    {
+      "id": "image",
+      "name": "图片输入与视觉理解",
+      "status": "pass",
+      "detail": "reply='The two colours are:\\n\\n* **Left:** Red\\n* **Right:** Blue'",
+      "data": {
+        "reply": "The two colours are:\n\n* **Left:** Red\n* **Right:** Blue",
+        "latency_ms": 2797
+      }
+    },
+    {
+      "id": "streaming",
+      "name": "流式响应",
+      "status": "pass",
+      "detail": "chunks=5 ttft_ms=13465 stream_ignored=False",
+      "data": {
+        "chunks": 5,
+        "ttft_ms": 13465,
+        "saw_done": true,
+        "stream_ignored": false,
+        "text": "Rain washed over the city, turning the black asphalt into a shimmering liquid mirror. Neon signs bled streaks of electric blue and ruby across the slick pavement, fractured by the steady cadence of falling water. Taxis hissed through flooded gutters, throwing up sheets of spray that caught the amber",
+        "usage": {
+          "completion_tokens": 1493,
+          "completion_tokens_details": {
+            "reasoning_tokens": 1400
+          },
+          "prompt_tokens": 20,
+          "prompt_tokens_details": {
+            "cache_write_tokens": 0,
+            "cached_tokens": 0
+          },
+          "total_tokens": 1513
+        }
+      }
+    },
+    {
+      "id": "multiturn",
+      "name": "多轮上下文",
+      "status": "pass",
+      "detail": "first='OK' second='47'",
+      "data": {
+        "first": "OK",
+        "second": "47"
+      }
+    },
+    {
+      "id": "vision_unsupported",
+      "name": "不支持视觉的模型识别",
+      "status": "skip",
+      "detail": "未通过 --text-model 指定纯文本模型；该验收项由 mock 通过项覆盖",
+      "data": {
+        "attempts": []
+      }
+    },
+    {
+      "id": "bad_key",
+      "name": "错误 API Key 处理",
+      "status": "skip",
+      "detail": "the live endpoint accepted an invalid key (it does not enforce auth); the mock pass covers the 401 path",
+      "data": {}
+    },
+    {
+      "id": "timeout",
+      "name": "超时错误反馈",
+      "status": "skip",
+      "detail": "not induced against a shared live endpoint; covered by the mock pass",
+      "data": {}
+    },
+    {
+      "id": "interrupted",
+      "name": "网络/流中断反馈",
+      "status": "skip",
+      "detail": "not induced against a shared live endpoint; covered by the mock pass",
+      "data": {}
+    },
+    {
+      "id": "key_leak",
+      "name": "API Key 不泄露",
+      "status": "pass",
+      "detail": "audit=E:\\AI\\99_运行数据\\ComfyUI-AI-Prompt-Studio_home\\audit.jsonl key_found=False",
+      "data": {
+        "audit_path": "E:\\AI\\99_运行数据\\ComfyUI-AI-Prompt-Studio_home\\audit.jsonl",
+        "key_found": false
+      }
+    }
+  ],
+  "notes": [
+    "Live endpoint: http://127.0.0.1:3425/v1 (configured via environment).",
+    "超时与流中断只在本地 mock 上诱导；未对共享网关制造故障。"
+  ]
+}

@@ -1,0 +1,101 @@
+test_probe_is_cached_and_force_refreshes (tests.test_capabilities.CapabilityProbeTests.test_probe_is_cached_and_force_refreshes) ... ok
+test_probe_records_text_failure_without_false_vision_claim (tests.test_capabilities.CapabilityProbeTests.test_probe_records_text_failure_without_false_vision_claim) ... ok
+test_text_only_model_is_identified (tests.test_capabilities.CapabilityProbeTests.test_text_only_model_is_identified) ... ok
+test_vision_model_is_fully_capable (tests.test_capabilities.CapabilityProbeTests.test_vision_model_is_fully_capable) ... ok
+test_audit_written_without_content (tests.test_client_text.TextCallTests.test_audit_written_without_content) ... ok
+test_image_part_builder (tests.test_client_text.TextCallTests.test_image_part_builder) ... ok
+test_model_override (tests.test_client_text.TextCallTests.test_model_override) ... ok
+test_text_call_succeeds (tests.test_client_text.TextCallTests.test_text_call_succeeds) ... ok
+test_usage_is_recorded (tests.test_client_text.TextCallTests.test_usage_is_recorded) ... ok
+test_image_call_succeeds (tests.test_client_vision.VisionCallTests.test_image_call_succeeds) ... ok
+test_image_is_actually_transmitted (tests.test_client_vision.VisionCallTests.test_image_is_actually_transmitted) ... ok
+test_single_colour_image_is_not_assumed (tests.test_client_vision.VisionCallTests.test_single_colour_image_is_not_assumed) ... ok
+test_text_only_model_rejects_image_clearly (tests.test_client_vision.VisionCallTests.test_text_only_model_rejects_image_clearly) ... ok
+test_appends_v1_when_missing (tests.test_config.EndpointJoinTests.test_appends_v1_when_missing) ... ok
+test_keeps_existing_v1 (tests.test_config.EndpointJoinTests.test_keeps_existing_v1) ... ok
+test_keeps_openai_compatible_gemini_path (tests.test_config.EndpointJoinTests.test_keeps_openai_compatible_gemini_path) ... ok
+test_credential_file_used_when_env_absent (tests.test_config.LoadOrderTests.test_credential_file_used_when_env_absent) ... ok
+test_environment_overrides_credential_file (tests.test_config.LoadOrderTests.test_environment_overrides_credential_file) ... ok
+test_missing_configuration_is_explicit (tests.test_config.LoadOrderTests.test_missing_configuration_is_explicit) ... ok
+test_public_dict_never_contains_key (tests.test_config.PublicViewTests.test_public_dict_never_contains_key) ... ok
+test_rejects_non_http_scheme (tests.test_config.ValidationTests.test_rejects_non_http_scheme) ... ok
+test_rejects_whitespace (tests.test_config.ValidationTests.test_rejects_whitespace) ... ok
+test_requires_key (tests.test_config.ValidationTests.test_requires_key) ... ok
+test_requires_model (tests.test_config.ValidationTests.test_requires_model) ... ok
+test_file_is_owner_only_where_supported (tests.test_credentials.CredentialStoreTests.test_file_is_owner_only_where_supported) ... ok
+test_incomplete_file_is_ignored (tests.test_credentials.CredentialStoreTests.test_incomplete_file_is_ignored) ... ok
+test_mask_never_reveals_full_key (tests.test_credentials.CredentialStoreTests.test_mask_never_reveals_full_key) ... ok
+test_redactor_scrubs_known_and_pattern_keys (tests.test_credentials.CredentialStoreTests.test_redactor_scrubs_known_and_pattern_keys) ... ok
+test_roundtrip (tests.test_credentials.CredentialStoreTests.test_roundtrip) ... ok
+test_wrong_key_is_not_retried (tests.test_errors.AuthErrorTests.test_wrong_key_is_not_retried) ... E:\TOOL\Python3.14.7\Lib\tempfile.py:484: ResourceWarning: Implicitly cleaning up <HTTPError 401: 'Unauthorized'>
+  _warnings.warn(self.warn_message, ResourceWarning)
+ok
+test_wrong_key_returns_auth_error (tests.test_errors.AuthErrorTests.test_wrong_key_returns_auth_error) ... ok
+test_rate_limit_error_type_when_not_retried (tests.test_errors.RetryTests.test_rate_limit_error_type_when_not_retried) ... E:\TOOL\Python3.14.7\Lib\tempfile.py:484: ResourceWarning: Implicitly cleaning up <HTTPError 429: 'Too Many Requests'>
+  _warnings.warn(self.warn_message, ResourceWarning)
+ok
+test_rate_limit_is_retried_once (tests.test_errors.RetryTests.test_rate_limit_is_retried_once) ... ok
+test_retry_budget_is_respected (tests.test_errors.RetryTests.test_retry_budget_is_respected) ... ok
+test_server_errors_are_retried_then_succeed (tests.test_errors.RetryTests.test_server_errors_are_retried_then_succeed) ... E:\TOOL\Python3.14.7\Lib\tempfile.py:484: ResourceWarning: Implicitly cleaning up <HTTPError 400: 'Bad Request'>
+  _warnings.warn(self.warn_message, ResourceWarning)
+E:\TOOL\Python3.14.7\Lib\tempfile.py:484: ResourceWarning: Implicitly cleaning up <HTTPError 503: 'Service Unavailable'>
+  _warnings.warn(self.warn_message, ResourceWarning)
+ok
+test_timeout_is_reported_clearly (tests.test_errors.TimeoutAndNetworkTests.test_timeout_is_reported_clearly) ... ok
+test_timeout_retries_are_bounded (tests.test_errors.TimeoutAndNetworkTests.test_timeout_retries_are_bounded) ... ok
+test_unreachable_endpoint_raises_network_error (tests.test_errors.TimeoutAndNetworkTests.test_unreachable_endpoint_raises_network_error) ... ok
+test_auth_error_does_not_leak_key (tests.test_secrets.SecretLeakTests.test_auth_error_does_not_leak_key) ... ok
+test_every_error_payload_is_json_serialisable_and_scrubbed (tests.test_secrets.SecretLeakTests.test_every_error_payload_is_json_serialisable_and_scrubbed) ... ok
+test_full_flow_never_leaks_key (tests.test_secrets.SecretLeakTests.test_full_flow_never_leaks_key) ... ok
+test_upstream_message_echoing_key_is_scrubbed (tests.test_secrets.SecretLeakTests.test_upstream_message_echoing_key_is_scrubbed) ... ok
+test_api_requires_token (tests.test_server.ServerTests.test_api_requires_token) ... ok
+test_chat_creates_session_and_keeps_context (tests.test_server.ServerTests.test_chat_creates_session_and_keeps_context) ... ok
+test_chat_stream_over_sse (tests.test_server.ServerTests.test_chat_stream_over_sse) ... ok
+test_config_never_returns_key (tests.test_server.ServerTests.test_config_never_returns_key) ... ok
+test_health_is_public (tests.test_server.ServerTests.test_health_is_public) ... ok
+test_image_chat_over_http (tests.test_server.ServerTests.test_image_chat_over_http) ... ok
+test_no_response_contains_key (tests.test_server.ServerTests.test_no_response_contains_key) ... ok
+test_oversized_body_is_rejected (tests.test_server.ServerTests.test_oversized_body_is_rejected) ... ----------------------------------------
+Exception occurred during processing of request from ('127.0.0.1', 55530)
+Traceback (most recent call last):
+  File "E:\TOOL\Python3.14.7\Lib\socketserver.py", line 697, in process_request_thread
+    self.finish_request(request, client_address)
+    ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\TOOL\Python3.14.7\Lib\socketserver.py", line 362, in finish_request
+    self.RequestHandlerClass(request, client_address, self)
+    ~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\TOOL\Python3.14.7\Lib\socketserver.py", line 766, in __init__
+    self.handle()
+    ~~~~~~~~~~~^^
+  File "E:\TOOL\Python3.14.7\Lib\http\server.py", line 502, in handle
+    self.handle_one_request()
+    ~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "E:\TOOL\Python3.14.7\Lib\http\server.py", line 468, in handle_one_request
+    self.raw_requestline = self.rfile.readline(65537)
+                           ~~~~~~~~~~~~~~~~~~~^^^^^^^
+  File "E:\TOOL\Python3.14.7\Lib\socket.py", line 729, in readinto
+    return self._sock.recv_into(b)
+           ~~~~~~~~~~~~~~~~~~~~^^^
+ConnectionResetError: [WinError 10054] 远程主机强迫关闭了一个现有的连接。
+----------------------------------------
+ok
+test_probe_endpoint (tests.test_server.ServerTests.test_probe_endpoint) ... ok
+test_session_crud (tests.test_server.ServerTests.test_session_crud) ... ok
+test_stateless_chat (tests.test_server.ServerTests.test_stateless_chat) ... ok
+test_validation_and_not_found (tests.test_server.ServerTests.test_validation_and_not_found) ... ok
+test_wrong_token_is_rejected (tests.test_server.ServerTests.test_wrong_token_is_rejected) ... ok
+test_create_get_list_delete (tests.test_sessions.SessionTests.test_create_get_list_delete) ... ok
+test_image_ref_roundtrip (tests.test_sessions.SessionTests.test_image_ref_roundtrip) ... ok
+test_media_store_deduplicates (tests.test_sessions.SessionTests.test_media_store_deduplicates) ... ok
+test_media_store_rejects_oversized_image (tests.test_sessions.SessionTests.test_media_store_rejects_oversized_image) ... ok
+test_multi_turn_order_and_roles (tests.test_sessions.SessionTests.test_multi_turn_order_and_roles) ... ok
+test_persistence_across_reopen (tests.test_sessions.SessionTests.test_persistence_across_reopen) ... ok
+test_dropped_stream_raises_with_partial_text (tests.test_stream.StreamingTests.test_dropped_stream_raises_with_partial_text) ... ok
+test_provider_that_ignores_stream_is_flagged (tests.test_stream.StreamingTests.test_provider_that_ignores_stream_is_flagged) ... ok
+test_stream_audit_records_ttft_and_chunks (tests.test_stream.StreamingTests.test_stream_audit_records_ttft_and_chunks) ... ok
+test_stream_yields_incremental_deltas (tests.test_stream.StreamingTests.test_stream_yields_incremental_deltas) ... ok
+
+----------------------------------------------------------------------
+Ran 65 tests in 28.019s
+
+OK
