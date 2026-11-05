@@ -1,0 +1,30 @@
+{
+  "phase": "before-install",
+  "port": 8189,
+  "objectInfoNodeTypes": 4096,
+  "extensions": 940,
+  "promptStudioExtensions": [
+    "/extensions/comfyui_studio_suite/js/prompt_studio_controller.js",
+    "/extensions/comfyui_studio_suite/js/prompt_studio_nodes.js"
+  ],
+  "sidebarTabs": [
+    "assets",
+    "node-library",
+    "model-library",
+    "workflows",
+    "apps",
+    "easyuse_nodes_map",
+    "aaalice-workspace",
+    "rh-openapi-panel"
+  ],
+  "workflow": {
+    "source": "ComfyUI/user/default/workflows/图片反推提示词.json (copy, loaded via app.loadGraphData)",
+    "nodeCount": 4,
+    "linkCount": 2,
+    "groupCount": 0,
+    "last_node_id": 5,
+    "last_link_id": 4,
+    "canonicalSha256": "80a27bcd725f4f3515c723520ef5038690f110cbaf8a623baf1598ccabe9775e",
+    "canonicalBytes": 23515
+  }
+}

@@ -44,6 +44,17 @@ Diff 卡片：全部应用 / 勾选应用 / 放弃
 | 能力探测与前端状态徽章（文本 / 视觉 / 流式） | `prompt_studio/capabilities.py` |
 | 只读开发环境（假 ComfyUI 页面 + 假上游） | `scripts/dev_harness.py`、`dev/` |
 
+## 默认配置
+
+未设置凭据或环境变量时，Base URL 与模型默认指向本机 Magpie 网关：
+
+| 项 | 默认值 |
+|---|---|
+| Base URL | `http://127.0.0.1:3425/v1` |
+| Model | `gemini-3.8-flash` |
+
+Magpie 忽略 API Key，但仍需要一个非空的 Key 值才能通过本项目的配置校验；用 `python -m prompt_studio.credentials set` 写入任意占位值即可。凭据文件或 `PROMPT_STUDIO_BASE_URL` / `PROMPT_STUDIO_MODEL` 可以覆盖默认值。
+
 ## 安装
 
 1. 把整个仓库目录复制到 `ComfyUI/custom_nodes/ComfyUI-AI-Prompt-Studio`（或用 git clone）。
@@ -105,6 +116,7 @@ python scripts/dev_harness.py --port 8199 --model demo-model
 
 - M0 报告：[`docs/m0-report.md`](docs/m0-report.md)
 - M1 报告：[`docs/m1-report.md`](docs/m1-report.md)
+- 真实安装回归：[`docs/real-install-report.md`](docs/real-install-report.md)
 - 许可证核查：[`docs/license-audit.md`](docs/license-audit.md)
 - 安全说明：[`docs/security.md`](docs/security.md)
 

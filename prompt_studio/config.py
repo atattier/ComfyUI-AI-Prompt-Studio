@@ -2,9 +2,10 @@
 
 Resolution order (later wins):
 
-1. credential file  ``~/.comfyui-ai-prompt-studio/credentials.json``
-2. environment      ``PROMPT_STUDIO_BASE_URL`` / ``..._API_KEY`` / ``..._MODEL``
-3. explicit keyword arguments (tests, embedders)
+1. built-in defaults (local Magpie gateway, see ``DEFAULT_BASE_URL``/``DEFAULT_MODEL``)
+2. credential file  ``~/.comfyui-ai-prompt-studio/credentials.json``
+3. environment      ``PROMPT_STUDIO_BASE_URL`` / ``..._API_KEY`` / ``..._MODEL``
+4. explicit keyword arguments (tests, embedders)
 
 The key is held in memory only in the backend process.  ``public_dict()`` is the
 only representation that may cross the HTTP boundary and it never contains the
@@ -26,6 +27,12 @@ from .redaction import mask_secret
 _ENV_BASE_URL = "PROMPT_STUDIO_BASE_URL"
 _ENV_API_KEY = "PROMPT_STUDIO_API_KEY"
 _ENV_MODEL = "PROMPT_STUDIO_MODEL"
+
+# Defaults for this workspace: the local Magpie gateway, which ignores the API
+# key and exposes an OpenAI-compatible endpoint.  Any of the three can be
+# overridden by credentials or environment variables.
+DEFAULT_BASE_URL = "http://127.0.0.1:3425/v1"
+DEFAULT_MODEL = "gemini-3.8-flash"
 
 
 def normalize_base_url(url: str) -> str:
@@ -136,9 +143,13 @@ def load_settings(
 
     creds = Credentials.load(credential_path) if credential_path else Credentials.load()
 
-    resolved_base = base_url or env.get(_ENV_BASE_URL) or (creds.base_url if creds else None)
+    resolved_base = (
+        base_url or env.get(_ENV_BASE_URL) or (creds.base_url if creds else None) or DEFAULT_BASE_URL
+    )
     resolved_key = api_key or env.get(_ENV_API_KEY) or (creds.api_key if creds else None)
-    resolved_model = model or env.get(_ENV_MODEL) or (creds.model if creds else None)
+    resolved_model = (
+        model or env.get(_ENV_MODEL) or (creds.model if creds else None) or DEFAULT_MODEL
+    )
 
     host = env.get("PROMPT_STUDIO_HOST", "127.0.0.1")
     port = _as_int(env.get("PROMPT_STUDIO_PORT"), "PROMPT_STUDIO_PORT", 8791)

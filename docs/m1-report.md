@@ -3,13 +3,13 @@
 - 日期：2026-11-05
 - 版本：`0.2.0-m1`
 - 范围：节点读写适配、反推、Diff 卡片、应用、撤销、版本历史、ComfyUI 侧边栏
-- 状态：**实现完成，已在只读开发环境（假 ComfyUI + 假上游）复现全链路；未安装进用户的 ComfyUI。**
+- 状态：**实现完成；已在只读开发环境与真实 ComfyUI 安装中分别复现全链路，真实安装回归见 [`real-install-report.md`](real-install-report.md)。**
 
 ## 1. 结论
 
-M1 的出口标准「反推 → 对话改 → 应用 → 撤销」已在浏览器中完整复现，并通过 129 个 Python 测试与 31 个 JavaScript 测试。模型输出不能直接覆盖提示词：所有写入都经过结构化操作校验、块级 diff 审阅、撤销栈和版本记录。
+M1 的出口标准「反推 → 对话改 → 应用 → 撤销」已在浏览器中完整复现，并通过 142 个 Python 测试与 32 个 JavaScript 测试。模型输出不能直接覆盖提示词：所有写入都经过结构化操作校验、块级 diff 审阅、撤销栈和版本记录。
 
-未验证项集中在「真实 ComfyUI 安装」与「Node 2.0 前端」两处，原因是本轮明确不安装、不修改用户的 ComfyUI。详见 §6。
+真实 ComfyUI 的安装回归（安装 → 闭环 → 卸载）已于 2026-11-05 完成：节点与扩展集合完全还原，同一工作流在安装/卸载两种状态下序列化哈希一致。回归中发现并修复了 3 个只在真实环境暴露的缺陷（见真实安装报告 §5）。剩余未验证项只剩 Node 2.0 前端等少数交互，详见 §6。
 
 ## 2. 交付内容
 
@@ -58,30 +58,30 @@ M1 的出口标准「反推 → 对话改 → 应用 → 撤销」已在浏览�
 
 | # | 标准 | 状态 | 证据 |
 |---|---|---|---|
-| 1 | 安装后现有工作流节点数、连线、widget 值零变化 | 设计保证已测；真实安装未测 | 插件不注册节点类（`NODE_CLASS_MAPPINGS = {}`），导入时不改图；`tests/test_plugin_entry.py` 验证注册内容与幂等。未安装到用户 ComfyUI，因此「安装后零变化」的实机回归留待授权后进行。 |
+| 1 | 安装后现有工作流节点数、连线、widget 值零变化 | **通过（实机）** | 插件不注册节点类（`NODE_CLASS_MAPPINGS = {}`）；真实安装回归中同一 4 节点工作流的节点/连线/提示词逐字段一致，安装态与卸载态序列化哈希相同，见 [`real-install-report.md`](real-install-report.md) §3。 |
 | 2 | 图片 → 反推 → 连续追问 → 应用 → 撤销可复现 | **通过** | §3 全链路；三轮追问的上下文正确性由 `test_three_follow_up_turns_keep_context` 覆盖（模型看到 system + 3 轮消息） |
 | 3 | `/probe` 对纯文本模型判定 `vision=false`，反推入口禁用且提示明确 | **通过** | `test_caption_disabled_after_vision_probe_fails`（422 `capability_unsupported`）＋ 截图 |
 | 4 | 抓包、前端状态、日志三处均无 API Key 明文 | **通过** | `/status` 仅掩码（测试断言响应不含密钥）；浏览器网络面板逐条检查无密钥；审计只记元数据（`test_secrets`、`test_health_and_status`） |
 | 5 | Skill 文件加载前后 SHA-256 一致 | 不适用 | M2 范围 |
 | 6 | 冲突报告覆盖五类 | 不适用 | M3 范围 |
-| 7 | 经典 LiteGraph 与 Node 2.0 前端均能完成闭环 | **部分** | 假 ComfyUI 的 LiteGraph 控件模型下通过；真实 ComfyUI 与 Node 2.0 未安装验证 |
+| 7 | 经典 LiteGraph 与 Node 2.0 前端均能完成闭环 | **部分** | 经典 LiteGraph：假 ComfyUI 与真实 ComfyUI 均通过；Node 2.0 前端仍未验证 |
 | 8 | 对项目 A 的相似度自检低于阈值 | 未自动化 | 人工确认无复制；自动化相似度检查未做，建议发行前补 |
 
 ## 5. 测试记录
 
 | 套件 | 命令 | 结果 | 记录 |
 |---|---|---|---|
-| Python（129） | `python -m unittest discover -s tests -t .` | OK | `evidence/test-run-m1-<时间戳>.txt` |
-| JavaScript（31） | `node --test tests_js/*.test.mjs` | 31 pass | `evidence/test-js-m1-<时间戳>.txt` |
+| Python（142） | `python -m unittest discover -s tests -t .` | OK | `evidence/test-run-real-install-20261105-230523.txt` |
+| JavaScript（32） | `node --test tests_js/*.test.mjs` | 32 pass | `evidence/test-js-real-install-20261105-230728.txt` |
 | 浏览器闭环 | 开发环境手工脚本化操作 | 见 §3 | 三张截图 |
 
-M1 新增覆盖：编辑操作校验（唯一性/歧义/无变化/顺序应用）、块级 diff（含分隔符不算修改）、提案解析（纯 JSON/围栏/夹在散文里）、反推三格式与清洗、版本库与裁剪、ComfyUI 路由（聊天流、编辑、应用、反推、版本、会话）、视觉能力门禁、凭据库与明文迁移、插件注册幂等。
+M1 新增覆盖：编辑操作校验（唯一性/歧义/无变化/顺序应用）、块级 diff（含分隔符不算修改）、提案解析（纯 JSON/围栏/夹在散文里）、反推三格式与清洗、版本库与裁剪、ComfyUI 路由（聊天流、编辑、应用、反推、版本、会话）、视觉能力门禁、凭据库与明文迁移、插件注册幂等。真实安装回归后补充：无中间件路由的 4xx 错误映射（`RouteGuardTests` 整套重跑）、目标对象可序列化。
 
 ## 6. 已知限制与未验证项
 
-1. **未安装进真实 ComfyUI**（按本轮要求）。因此以下只做了静态/单测验证：`WEB_DIRECTORY` 加载顺序、真实 `app.extensionManager` 的容器尺寸、真实画布的选中事件节奏。
+1. ~~未安装进真实 ComfyUI~~ **已补验**（2026-11-05）：`WEB_DIRECTORY` 加载、真实 `app.extensionManager` 的侧边栏注册、真实画布的提示词控件识别均正常，见 [`real-install-report.md`](real-install-report.md)。
 2. **Node 2.0 前端未验证**。控件适配取的是 `node.widgets` 与 `widget.value/callback`，两种前端都保留这些字段，但未实机确认。
-3. **浏览器上传图片路径未实测**：反推使用的是节点预览图；`<input type=file>` 分支只有代码级检查。
+3. ~~浏览器上传图片路径未实测~~ **已补验**：真实 ComfyUI 中经 `<input type=file>` 上传图片并反推成功。
 4. **停止流式生成按钮未实测**（已实现 abort）。
 5. **撤销栈是全局的**：条目按控件键写入，撤销不会写错节点；但按钮提示不区分目标，跨节点连续编辑时语义略弱。
 6. **历史较密**：撤销与重做也会各记一条版本；M2 可合并为一次编辑事件。
@@ -89,7 +89,7 @@ M1 新增覆盖：编辑操作校验（唯一性/歧义/无变化/顺序应用�
 
 ## 7. 建议的下一步
 
-1. 若批准，先在**一次授权的真实 ComfyUI 安装**中做回归：安装/卸载残留、LiteGraph 与 Node 2.0 各跑一遍闭环、真实工作流的前后文本对比。
+1. ~~真实 ComfyUI 安装回归~~ **已完成**：安装/卸载无残留、真实工作流前后一致、经典 LiteGraph 闭环通过；若要覆盖 Node 2.0，需要单独授权切换前端模式。
 2. 若批准 M2：规则包引擎、Skill 只读适配器、结构化输出与冲突报告。
 3. 发行前补：源文件 SPDX 头、对项目 A 的自动化相似度检查、GPL 源码分发说明。
 

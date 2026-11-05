@@ -11,6 +11,7 @@ import {
   nodeTitle,
   setWidgetText,
   targetKey,
+  targetWire,
 } from "../web/lib/targets.js";
 
 function widget(name, value, type = "string") {
@@ -110,6 +111,18 @@ test("imageSource reads previews and widget filenames", () => {
   assert.deepEqual(imageSource(fileName), { url: null, filename: "dog.png" });
   assert.equal(imageSource(node(3, [])), null);
   assert.equal(findImageNode(fakeApp([node(3, []), preview], [preview])), preview);
+});
+
+test("targetWire drops live references so a real graph can be serialized", () => {
+  const w = widget("text", "hello");
+  const a = node(5, [w]);
+  a.widgets[0].node = a; // circular, as on a real LiteGraph node
+  const target = findTargetByKey(fakeApp([a]), targetKey(a, w));
+  const wire = targetWire(target);
+  assert.deepEqual(wire, { node_id: 5, widget: "text", title: "Node 5", text: "hello" });
+  assert.equal(JSON.stringify(wire).includes("widgets"), false);
+  assert.doesNotThrow(() => JSON.stringify(wire));
+  assert.ok(targetWire(null) === null);
 });
 
 test("nodeTitle falls back through the usual fields", () => {

@@ -18,6 +18,7 @@ import {
   imageSource,
   nodeTitle,
   setWidgetText,
+  targetWire,
 } from "./lib/targets.js";
 import { changeCount, describeOp, describeStats, excerpt, selectOps } from "./lib/diff.js";
 import { UndoStack } from "./lib/undo.js";
@@ -677,7 +678,7 @@ async function sendChat() {
       {
         message: text,
         session_id: conversation.sessionId || undefined,
-        target,
+        target: targetWire(target),
         images: attachment ? [{ data_url: attachment }] : undefined,
       },
       (event) => {
@@ -781,7 +782,7 @@ async function requestEdit() {
   }
   setBusy(true, "模型正在准备修改…");
   try {
-    const body = await state.api.edit({ message: instruction, target });
+    const body = await state.api.edit({ message: instruction, target: targetWire(target) });
     state.proposal = body.proposal;
     state.proposalTargetKey = target.key;
     renderDiff();
@@ -870,7 +871,9 @@ function renderDiff() {
       ]),
     );
   });
-  if (changes.length > 1) card.append(opsBox);
+  // The ops box carries the per-change checkbox that enables the apply
+  // buttons, so it must be present even for a single change.
+  if (changes.length) card.append(opsBox);
 
   const applyAll = el(
     "button",

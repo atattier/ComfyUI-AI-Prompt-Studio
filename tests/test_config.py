@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+import uuid
 from pathlib import Path
 
-from prompt_studio.config import Settings, load_settings, normalize_base_url
+from prompt_studio import wincred
+from prompt_studio.config import DEFAULT_BASE_URL, DEFAULT_MODEL, Settings, load_settings, normalize_base_url
 from prompt_studio.credentials import save_credentials
 from prompt_studio.errors import ConfigError
 
@@ -67,10 +69,20 @@ class PublicViewTests(unittest.TestCase):
 
 
 class LoadOrderTests(unittest.TestCase):
+    def setUp(self):
+        # Never touch the real "default" vault entry from tests.
+        self.target = "test-" + uuid.uuid4().hex
+        self.addCleanup(wincred.delete, target=self.target)
+
+    def _save(self, path: Path) -> None:
+        save_credentials(
+            "https://from-file.example.com", "file-" + "key-" + "999", "file-model", path, target=self.target
+        )
+
     def test_environment_overrides_credential_file(self):
         tmp = Path(tempfile.mkdtemp())
         cred_path = tmp / "credentials.json"
-        save_credentials("https://from-file.example.com", "file-" + "key-" + "999", "file-model", cred_path)
+        self._save(cred_path)
         settings = load_settings(
             env={
                 "PROMPT_STUDIO_BASE_URL": "https://from-env.example.com",
@@ -87,10 +99,20 @@ class LoadOrderTests(unittest.TestCase):
     def test_credential_file_used_when_env_absent(self):
         tmp = Path(tempfile.mkdtemp())
         cred_path = tmp / "credentials.json"
-        save_credentials("https://from-file.example.com", "file-" + "key-" + "999", "file-model", cred_path)
+        self._save(cred_path)
         settings = load_settings(env={}, credential_path=cred_path, home=tmp)
         self.assertEqual(settings.base_url, "https://from-file.example.com")
         self.assertEqual(settings.model, "file-model")
+
+    def test_builtin_defaults_fill_base_and_model(self):
+        tmp = Path(tempfile.mkdtemp())
+        settings = load_settings(
+            env={"PROMPT_STUDIO_API_KEY": KEY},
+            credential_path=tmp / "missing.json",
+            home=tmp,
+        )
+        self.assertEqual(settings.base_url, DEFAULT_BASE_URL)
+        self.assertEqual(settings.model, DEFAULT_MODEL)
 
     def test_missing_configuration_is_explicit(self):
         tmp = Path(tempfile.mkdtemp())

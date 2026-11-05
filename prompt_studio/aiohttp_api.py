@@ -293,25 +293,48 @@ def install_routes(routes: Any, backend: StudioBackend | None) -> None:
             raise ConfigError("ComfyUI AI Prompt Studio is not configured. Run prompt_studio.credentials set.")
         return backend
 
+    def guarded(handler: Any) -> Any:
+        """Turn StudioError into a JSON 4xx/5xx response.
+
+        ComfyUI hands us a RouteTableDef, not an Application, so we cannot add
+        the error middleware there.  Wrapping each handler keeps validation
+        failures (bad JSON, missing fields, unknown sessions) as ordinary
+        responses instead of aiohttp's bare 500.
+        """
+
+        async def wrapper(request: web.Request) -> web.StreamResponse:
+            try:
+                return await handler(request)
+            except StudioError as err:
+                return _error_response(err)
+
+        wrapper.__name__ = getattr(handler, "__name__", "handler")
+        return wrapper
+
     @routes.get("/ai_prompt_studio/health")
+    @guarded
     async def health(_request: web.Request) -> web.Response:
         return web.json_response({"status": "ok", "version": __version__})
 
     @routes.get("/ai_prompt_studio/status")
+    @guarded
     async def status(_request: web.Request) -> web.Response:
         return web.json_response(require().status())
 
     @routes.get("/ai_prompt_studio/capabilities")
+    @guarded
     async def capabilities(_request: web.Request) -> web.Response:
         return web.json_response(require().capabilities())
 
     @routes.post("/ai_prompt_studio/probe")
+    @guarded
     async def probe(request: web.Request) -> web.Response:
         body = await _json_body(request)
         report = await asyncio.to_thread(require().probe, force=bool(body.get("force")))
         return web.json_response(report)
 
     @routes.post("/ai_prompt_studio/chat")
+    @guarded
     async def chat(request: web.Request) -> web.StreamResponse:
         service = require()
         body = await _json_body(request)
@@ -345,23 +368,27 @@ def install_routes(routes: Any, backend: StudioBackend | None) -> None:
         return response
 
     @routes.post("/ai_prompt_studio/edit")
+    @guarded
     async def edit(request: web.Request) -> web.Response:
         body = await _json_body(request)
         result = await asyncio.to_thread(require().edit, body)
         return web.json_response(result)
 
     @routes.post("/ai_prompt_studio/caption")
+    @guarded
     async def caption(request: web.Request) -> web.Response:
         body = await _json_body(request)
         result = await asyncio.to_thread(require().caption, body)
         return web.json_response(result)
 
     @routes.post("/ai_prompt_studio/apply")
+    @guarded
     async def apply(request: web.Request) -> web.Response:
         body = await _json_body(request)
         return web.json_response(require().apply_edits(body))
 
     @routes.get("/ai_prompt_studio/versions")
+    @guarded
     async def list_versions(request: web.Request) -> web.Response:
         target = request.query.get("target") or ""
         if not target:
@@ -374,11 +401,13 @@ def install_routes(routes: Any, backend: StudioBackend | None) -> None:
         return web.json_response({"versions": require().versions.list(target, limit=limit_int)})
 
     @routes.post("/ai_prompt_studio/versions")
+    @guarded
     async def add_version(request: web.Request) -> web.Response:
         body = await _json_body(request)
         return web.json_response(require().add_version(body))
 
     @routes.get("/ai_prompt_studio/versions/{version_id}")
+    @guarded
     async def get_version(request: web.Request) -> web.Response:
         version = require().versions.get(request.match_info["version_id"])
         if version is None:
@@ -386,15 +415,18 @@ def install_routes(routes: Any, backend: StudioBackend | None) -> None:
         return web.json_response(version)
 
     @routes.get("/ai_prompt_studio/sessions")
+    @guarded
     async def list_sessions(_request: web.Request) -> web.Response:
         return web.json_response({"sessions": require().sessions.list()})
 
     @routes.post("/ai_prompt_studio/sessions")
+    @guarded
     async def create_session(request: web.Request) -> web.Response:
         body = await _json_body(request)
         return web.json_response(require().sessions.create(str(body.get("title") or "") or None), status=201)
 
     @routes.get("/ai_prompt_studio/sessions/{session_id}")
+    @guarded
     async def get_session(request: web.Request) -> web.Response:
         service = require()
         session_id = request.match_info["session_id"]
@@ -406,6 +438,7 @@ def install_routes(routes: Any, backend: StudioBackend | None) -> None:
         )
 
     @routes.delete("/ai_prompt_studio/sessions/{session_id}")
+    @guarded
     async def delete_session(request: web.Request) -> web.Response:
         if not require().sessions.delete(request.match_info["session_id"]):
             raise NotFoundError("Session not found.")

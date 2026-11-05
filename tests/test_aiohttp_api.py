@@ -6,9 +6,10 @@ import unittest
 from dataclasses import replace
 from pathlib import Path
 
+from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-from prompt_studio.aiohttp_api import StudioBackend, create_app
+from prompt_studio.aiohttp_api import StudioBackend, create_app, make_routes
 from prompt_studio.client import data_url
 from prompt_studio.config import Settings
 from prompt_studio.png import make_split_probe_png
@@ -48,8 +49,11 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
         )
         self.backend = StudioBackend(self.settings)
         self.addCleanup(self.backend.close)
-        self.client = TestClient(TestServer(create_app(self.backend)))
+        self.client = TestClient(TestServer(self.build_app()))
         await self.client.start_server()
+
+    def build_app(self):
+        return create_app(self.backend)
 
     async def asyncTearDown(self):
         await self.client.close()
@@ -216,6 +220,19 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(body["error"]["code"], "config_error")
         finally:
             await client.close()
+
+
+class RouteGuardTests(ApiTests):
+    """ComfyUI hands the plugin a RouteTableDef, not an Application.
+
+    Without the app-level error middleware every StudioError would surface as
+    aiohttp's bare 500.  These tests run the same suite against routes only.
+    """
+
+    def build_app(self):
+        app = web.Application()
+        app.add_routes(make_routes(self.backend))
+        return app
 
 
 if __name__ == "__main__":

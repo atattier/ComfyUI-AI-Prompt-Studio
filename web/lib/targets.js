@@ -77,6 +77,24 @@ export function describeTarget(node, widget) {
   };
 }
 
+/**
+ * JSON-safe view of a target for HTTP bodies.
+ *
+ * `describeTarget` keeps live LiteGraph references so the panel can read and
+ * write the widget; those objects are circular, so they must never be handed
+ * to `JSON.stringify` (a real graph would throw before the request is even
+ * sent).  Only the plain fields the backend understands travel over the wire.
+ */
+export function targetWire(target) {
+  if (!target) return null;
+  return {
+    node_id: target.node_id ?? null,
+    widget: String(target.widget || ""),
+    title: String(target.title || ""),
+    text: String(target.text ?? ""),
+  };
+}
+
 export function promptWidgets(node) {
   const widgets = Array.isArray(node && node.widgets) ? node.widgets : [];
   return widgets.filter(isPromptWidget);
