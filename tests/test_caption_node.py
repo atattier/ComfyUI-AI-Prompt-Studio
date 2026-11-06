@@ -246,6 +246,20 @@ class ExecutionFallbackTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "反推|配置"):
             self.node.caption(mode="caption", payload="{}", call_model=self._model_reply)
 
+    def test_timeout_error_is_actionable_and_no_key_leaks(self):
+        def timed_out(**_kwargs):
+            from prompt_studio.errors import UpstreamTimeoutError
+            raise UpstreamTimeoutError(
+                "Upstream did not respond within 60s.",
+                detail="raw " + VALID_KEY,
+            )
+
+        with self.assertRaisesRegex(ValueError, "Magpie|重试|反推"):
+            self.node.caption(
+                mode="caption", payload="{}", image=self.image,
+                model="vision-pro", call_model=timed_out,
+            )
+
     @staticmethod
     def _model_reply(*, instruction: str, image_part: dict, model: str, max_tokens: int) -> str:
         assert "image_url" in image_part
@@ -322,7 +336,7 @@ class CaptionNodeRouteTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual((prompt, ow, oh), ("red blue", w, h))
 
-    async def test_config_route_updates_settings_without_exposing_key(self):
+    async def test_config_route_updates_settings_without_exposing_new_key(self):
         saved = []
         original = credentials_module.save_credentials
         credentials_module.save_credentials = lambda *args, **kwargs: saved.append((args, kwargs))
@@ -330,25 +344,43 @@ class CaptionNodeRouteTests(unittest.IsolatedAsyncioTestCase):
         response = await self.client.post("/ai_prompt_studio/config", json={
             "base_url": "http://127.0.0.1:3425/v1",
             "model": "auto/glm-5.3-flash",
+            "api_key": "browser-new-key-123456",
+            "timeout_s": 90,
+            "max_retries": 0,
         })
         self.assertEqual(response.status, 200)
         body = await response.json()
         self.assertEqual(body["config"]["model"], "auto/glm-5.3-flash")
         self.assertNotIn(VALID_KEY, json.dumps(body))
+        self.assertNotIn("browser-new-key-123456", json.dumps(body))
         self.assertEqual(saved[0][0][:3], (
-            "http://127.0.0.1:3425/v1", VALID_KEY, "auto/glm-5.3-flash",
+            "http://127.0.0.1:3425/v1", "browser-new-key-123456", "auto/glm-5.3-flash",
         ))
         self.assertEqual(self.backend.settings.model, "auto/glm-5.3-flash")
+        self.assertEqual(self.backend.settings.api_key, "browser-new-key-123456")
+        self.assertEqual(self.backend.settings.timeout_s, 90.0)
+        self.assertEqual(self.backend.settings.max_retries, 0)
 
-    async def test_config_route_refuses_browser_supplied_key(self):
+    async def test_config_route_keeps_existing_key_when_field_is_blank(self):
+        saved = []
+        original = credentials_module.save_credentials
+        credentials_module.save_credentials = lambda *args, **kwargs: saved.append((args, kwargs))
+        self.addCleanup(setattr, credentials_module, "save_credentials", original)
         response = await self.client.post("/ai_prompt_studio/config", json={
             "base_url": "http://127.0.0.1:3425/v1",
             "model": "auto/glm-5.3-flash",
-            "api_key": "browser-supplied",
+            "api_key": "",
+        })
+        self.assertEqual(response.status, 200)
+        self.assertEqual(saved[0][0][1], VALID_KEY)
+
+    async def test_config_route_validates_timeout_and_retries(self):
+        response = await self.client.post("/ai_prompt_studio/config", json={
+            "base_url": "http://127.0.0.1:3425/v1",
+            "model": "auto/glm-5.3-flash",
+            "timeout_s": 1,
         })
         self.assertEqual(response.status, 400)
-        body = await response.json()
-        self.assertIn("不能从网页设置", body["error"]["message"])
 
     async def test_route_image_path_priority(self):
         path = Path(self.tmp.name) / "probe.png"

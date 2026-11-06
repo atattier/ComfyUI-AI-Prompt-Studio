@@ -58,15 +58,17 @@ Diff 卡片：全部应用 / 勾选应用 / 放弃
 
 ### 怎么改模型 / URL / API Key
 
-**侧边栏配置 URL / 模型。** 打开「AI 提示词」侧边栏，点底部的「模型：… ⚙」；填 Base URL、模型名，点「保存 URL / 模型」。后端立即更新并写入本机凭据文件，刷新浏览器页面后重新检查能力徽章。
+**推荐：侧边栏配置。** 打开「AI 提示词」侧边栏，点底部的「模型：… ⚙」；填 Base URL、模型名、API Key（留空沿用已保存的 Key）、单次超时（10–300 秒）和超时重试次数（0–3），点「保存配置」。配置立即更新后端；URL/模型写入本机凭据文件，Key 写入 Windows 凭据管理器。密码框不回显、保存成功或失败后都立即清空，不进 localStorage、工作流、日志或仓库；状态只显示掩码。
 
-**API Key 只在后端设置。** 用 **ComfyUI 使用的那个 Python** 在插件目录运行：
+安全前提：Key 会短暂经过浏览器和本机同源 POST，所以 ComfyUI 必须只绑定 `127.0.0.1`；不要把 8188 暴露到局域网，也不要在共享浏览器会话里输入。Magpie 忽略 Key，但仍需一个非空占位值。
+
+也可以离线配置：用 **ComfyUI 使用的那个 Python** 在插件目录运行：
 
 ```bash
 python -m prompt_studio.credentials set
 ```
 
-依次输入 Base URL、Model、隐藏输入的 API Key。本机 Magpie 忽略 Key，但仍需一个非空占位值。非密文写在 `C:\Users\<你>\.comfyui-ai-prompt-studio\credentials.json`，Key 写入 Windows 凭据管理器；改完重启 ComfyUI。这个约束是硬性的：网页、`/config` 路由、工作流、日志和仓库都不接收或保存 Key。三个环境变量优先级更高（适合临时覆盖）：
+依次输入 Base URL、Model、隐藏输入的 API Key。非密文写在 `C:\Users\<你>\.comfyui-ai-prompt-studio\credentials.json`，Key 写入 Windows 凭据管理器；改完重启 ComfyUI。三个环境变量优先级更高（适合临时覆盖）：
 
 ```bash
 PROMPT_STUDIO_BASE_URL=http://127.0.0.1:3425/v1
@@ -132,7 +134,7 @@ LoadImage ──→ AI 图像反推提示词 ──┬─→ prompt (STRING) ─
 |---|---|---|
 | GET | `/ai_prompt_studio/health` | 存活检查 |
 | GET | `/ai_prompt_studio/status` | 版本、公开配置（密钥仅掩码）、缓存的能力报告 |
-| POST | `/ai_prompt_studio/config` | 保存 Base URL / Model（不接受 API Key），立即更新后端 |
+| POST | `/ai_prompt_studio/config` | 保存 Base URL / Model / API Key / 超时 / 重试；Key 只写入系统凭据，响应仅掩码 |
 | POST | `/ai_prompt_studio/probe` | 探测文本 / 视觉 / 流式 |
 | GET | `/ai_prompt_studio/capabilities` | 只读缓存报告 |
 | POST | `/ai_prompt_studio/chat` | SSE：`meta` → `delta` → `done`，失败为 `error` |
@@ -172,7 +174,7 @@ python scripts/dev_harness.py --port 8199 --model demo-model
 
 ## 安全边界
 
-- API Key 只存在于后端进程内存和系统凭据库（Windows Credential Manager；其他平台回退到受限权限文件），前端、审计日志和响应里都只有掩码。
+- API Key 只存在于后端进程内存和系统凭据库（Windows Credential Manager；其他平台回退到受限权限文件）。网页可输入新 Key，但不回显、不保存明文；前端、工作流、审计日志和响应里都只有掩码或没有 Key。
 - 审计日志只记录元数据（模型、耗时、状态、token 用量、chunk 数），不记录提示词、图片或请求头。
 - 图片内容只作为「素材」处理，系统提示明确禁止把图片中的文字当指令执行。
 - 编辑提案必须通过服务端校验才可能写入；写入前有 diff 审阅，写入后可撤销。

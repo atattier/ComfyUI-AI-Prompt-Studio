@@ -395,7 +395,7 @@ function buildPanel(root) {
   ui.modelNote = el("button", {
     class: "aps-model-note aps-link",
     type: "button",
-    title: "点击配置 Base URL / 模型（API Key 在后端设置）",
+    title: "点击配置 Base URL / 模型 / API Key / 超时",
     onclick: () => showSetup(null, state.status),
   });
   const footer = el("footer", { class: "aps-footer" }, [
@@ -426,32 +426,47 @@ function showSetup(error, status = null) {
   const config = status?.config || state.status?.config || {};
   const baseField = el("input", { class: "aps-input", type: "url", value: config.base_url || "http://127.0.0.1:3425/v1" });
   const modelField = el("input", { class: "aps-input", value: config.model || "auto/glm-5.3-flash" });
+  const keyField = el("input", {
+    class: "aps-input", type: "password", placeholder: "留空沿用已保存的 Key",
+    autocomplete: "new-password", spellcheck: "false",
+  });
+  const timeoutField = el("input", { class: "aps-input", type: "number", min: "10", max: "300", step: "10", value: String(config.timeout_s ?? 60) });
+  const retriesField = el("input", { class: "aps-input", type: "number", min: "0", max: "3", step: "1", value: String(config.max_retries ?? 1) });
   const form = el("div", { class: "aps-setup-form" }, [
     el("label", {}, "Base URL", baseField),
     el("label", {}, "模型", modelField),
+    el("label", {}, "API Key（留空沿用；保存后立即清空）", keyField),
+    el("label", {}, "单次超时（秒，10–300）", timeoutField),
+    el("label", {}, "超时重试次数（0–3）", retriesField),
   ]);
-  const feedback = el("span", { class: "aps-hint" }, "API Key 不进入网页；请用下方命令在 ComfyUI 的 Python 环境写入 Windows 凭据管理器。");
-  const save = iconButton("保存 URL / 模型", "写入本机凭据并立即更新后端", async () => {
+  const feedback = el("span", { class: "aps-hint" }, "Key 只经本机同源请求交给 ComfyUI 后端并写入系统凭据；不要把 8188 暴露到局域网。");
+  const save = iconButton("保存配置", "写入本机凭据并立即更新后端", async () => {
     save.disabled = true;
     feedback.textContent = "正在保存配置…";
     try {
       const body = await state.api.request("/config", { method: "POST", body: {
         base_url: baseField.value.trim(),
         model: modelField.value.trim(),
+        api_key: keyField.value,
+        timeout_s: Number(timeoutField.value),
+        max_retries: Number(retriesField.value),
       } });
+      keyField.value = "";
       state.status = { ...(state.status || {}), config: body.config };
-      setStatus("URL 和模型已保存。", "ok");
+      setStatus("配置已保存并立即生效。", "ok");
       feedback.textContent = body.message || "配置已保存。";
       await loadStatus();
     } catch (err) {
       feedback.textContent = `保存失败：${err?.message || err}`;
+    } finally {
+      keyField.value = "";
       save.disabled = false;
     }
   });
   save.classList?.add("aps-primary");
   ui.setup.append(
-    el("div", { class: "aps-setup-title" }, "配置模型 / URL（API Key 在后端设置）"),
-    el("p", {}, error && error.message ? error.message : "URL 和模型保存在本机后端；API Key 需用下方命令写入系统凭据。"),
+    el("div", { class: "aps-setup-title" }, "配置模型 / URL / API Key / 超时"),
+    el("p", {}, error && error.message ? error.message : "Key 留空沿用已保存值；网页配置写入本机凭据，保存后立即生效。"),
     form,
     el("div", { class: "aps-row" }, [save, feedback]),
     el("p", { class: "aps-hint" }, "也可以使用 ComfyUI 的 Python 环境运行："),

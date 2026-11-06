@@ -30,6 +30,7 @@ from typing import Any, Callable
 
 from .caption import SAFETY_PREFIX, _INSTRUCTIONS, _clean
 from .config import load_settings
+from .errors import StudioError
 from .images import to_api_part
 from .layout import layout_instruction, match_canvas_size, parse_model_layout
 from .sessions import MediaStore
@@ -199,10 +200,19 @@ def _generate_state(*, mode: str, raw: bytes, mime: str,
     max_tokens = 500 if mode == "caption" else 3000
     if call_model is None:
         call_model = _default_model_call
-    text = call_model(
-        instruction=instruction, image_part=part,
-        model=resolved_model, max_tokens=max_tokens,
-    )
+    try:
+        text = call_model(
+            instruction=instruction, image_part=part,
+            model=resolved_model, max_tokens=max_tokens,
+        )
+    except StudioError as exc:
+        # A gateway stall must not leak raw exception details or the API key.
+        raise ValueError(
+            "反推超时或上游暂时不可用：请检查 Magpie / Base URL / 模型名，"
+            "在侧边栏降低超时与重试后重试；也可以先点「反推」单独生成结果再排队。"
+        ) from exc
+    except (TimeoutError, OSError) as exc:
+        raise ValueError("反推网络超时；请检查 Magpie 是否可用后重试。") from exc
     state: dict[str, Any] = {
         "mode": mode,
         "width": width,

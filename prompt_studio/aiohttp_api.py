@@ -440,17 +440,17 @@ def install_routes(routes: Any, backend: StudioBackend | None) -> None:
     @routes.post("/ai_prompt_studio/config")
     @guarded
     async def save_config(request: web.Request) -> web.Response:
-        """Update non-secret settings; the key is never accepted from a browser."""
+        """Save URL/model and optionally replace the key in the OS vault.
+
+        The key is accepted here only because the user explicitly asked for a
+        browser entry.  It is never echoed, logged or written to the metadata
+        file: ``save_credentials`` puts it in Windows Credential Manager.
+        """
         body = await _json_body(request)
         from .config import normalize_base_url
         from .credentials import save_credentials
         from .errors import ConfigError
 
-        if "api_key" in body:
-            raise InvalidRequestError(
-                "API Key 不能从网页设置。请在 ComfyUI 的 Python 环境运行 "
-                "python -m prompt_studio.credentials set。"
-            )
         try:
             base_url = normalize_base_url(str(body.get("base_url") or ""))
         except ConfigError as exc:
@@ -458,15 +458,39 @@ def install_routes(routes: Any, backend: StudioBackend | None) -> None:
         model = str(body.get("model") or "").strip()
         if not model:
             raise InvalidRequestError("model is required.")
+        timeout_raw = body.get("timeout_s")
+        retries_raw = body.get("max_retries")
+        try:
+            timeout_s = float(timeout_raw) if timeout_raw not in (None, "") else 60.0
+            max_retries = int(retries_raw) if retries_raw not in (None, "") else 1
+        except (TypeError, ValueError) as exc:
+            raise InvalidRequestError("timeout_s must be a number; max_retries an integer.") from exc
+        if not 10 <= timeout_s <= 300:
+            raise InvalidRequestError("timeout_s must be between 10 and 300 seconds.")
+        if not 0 <= max_retries <= 3:
+            raise InvalidRequestError("max_retries must be between 0 and 3.")
         service = require()
-        api_key = service.settings.api_key  # process memory / OS vault only
+        supplied_key = body.get("api_key")
+        if supplied_key is not None and not isinstance(supplied_key, str):
+            raise InvalidRequestError("api_key must be a string.")
+        api_key = (supplied_key or "").strip() or service.settings.api_key
+        if not api_key:
+            raise InvalidRequestError("api_key is required when no key is configured.")
         await asyncio.to_thread(save_credentials, base_url, api_key, model)
         service.settings.base_url = base_url
         service.settings.model = model
+        service.settings.api_key = api_key
+        service.settings.timeout_s = timeout_s
+        service.settings.max_retries = max_retries
         service.client.settings = service.settings
+        service.redactor = Redactor([api_key])
+        service.audit = AuditLogger(service.settings.audit_path, service.redactor)
+        service.client.audit = service.audit
+        service.client.redactor = service.redactor
+        service.prober._cache.clear()
         return web.json_response({
             "config": service.settings.public_dict(),
-            "message": "URL 和模型已保存（API Key 沿用系统凭据）；刷新页面后生效。",
+            "message": "配置已保存并立即生效；Key 已写入系统凭据，状态只显示掩码。",
         })
 
     @routes.get("/ai_prompt_studio/capabilities")
