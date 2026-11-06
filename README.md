@@ -52,8 +52,29 @@ Diff 卡片：全部应用 / 勾选应用 / 放弃
 |---|---|
 | Base URL | `http://127.0.0.1:3425/v1` |
 | Model | `gemini-3.8-flash` |
+| API Key | 无（必须配置一个非空值；本机 Magpie 可填任意占位值） |
 
-Magpie 忽略 API Key，但仍需要一个非空的 Key 值才能通过本项目的配置校验；用 `python -m prompt_studio.credentials set` 写入任意占位值即可。凭据文件或 `PROMPT_STUDIO_BASE_URL` / `PROMPT_STUDIO_MODEL` 可以覆盖默认值。
+当前本机已保存的配置是 `http://127.0.0.1:3425/v1` + `auto/glm-5.3-flash`；Key 位于 Windows 凭据管理器，`GET /ai_prompt_studio/status` 只返回掩码。
+
+### 怎么改模型 / URL / API Key
+
+**侧边栏配置 URL / 模型。** 打开「AI 提示词」侧边栏，点底部的「模型：… ⚙」；填 Base URL、模型名，点「保存 URL / 模型」。后端立即更新并写入本机凭据文件，刷新浏览器页面后重新检查能力徽章。
+
+**API Key 只在后端设置。** 用 **ComfyUI 使用的那个 Python** 在插件目录运行：
+
+```bash
+python -m prompt_studio.credentials set
+```
+
+依次输入 Base URL、Model、隐藏输入的 API Key。本机 Magpie 忽略 Key，但仍需一个非空占位值。非密文写在 `C:\Users\<你>\.comfyui-ai-prompt-studio\credentials.json`，Key 写入 Windows 凭据管理器；改完重启 ComfyUI。这个约束是硬性的：网页、`/config` 路由、工作流、日志和仓库都不接收或保存 Key。三个环境变量优先级更高（适合临时覆盖）：
+
+```bash
+PROMPT_STUDIO_BASE_URL=http://127.0.0.1:3425/v1
+PROMPT_STUDIO_MODEL=auto/glm-5.3-flash
+PROMPT_STUDIO_API_KEY=<你的Key>
+```
+
+节点上的 `model` 控件只覆盖**这一次反推**的模型，留空使用工作台配置；URL 与 Key 始终由后端统一配置。模型名必须与网关 `/v1/models` 列出的 id 一致。
 
 ## 安装
 
@@ -97,6 +118,7 @@ LoadImage ──→ AI 图像反推提示词 ──┬─→ prompt (STRING) ─
 - **尺寸**：读原图宽高比，按 MOSS 官方约束（每边 256–2048、16 倍数、总像素 ≤ 2,097,152）以「比例误差优先、面积近 1M 次优」匹配，`width`/`height` 作为 INT 输出接口。
 - **图片链路**：`image` 输入接 LoadImage 等 IMAGE 输出（前端从上游 widget 文件名经同源 `/view` 取字节转 data URL 放进请求体）；未连接时用 `image_path` 本地绝对路径。`image` 优先，Key 始终只在后端。
 - **反推按钮**：点节点上的「反推」调用模型；结果存进 `payload` widget 随工作流保存，跑图时只读缓存、不重复烧额度。手改过内容后重新反推会弹确认，不会静默覆盖。
+- **直接排队**：新节点还没点「反推」时，第一次执行会用节点连入的 IMAGE（或 `image_path`）按当前 `mode` 自动反推一次，把 `payload` 经 `onExecuted` 写回节点；后续执行只读缓存。没有图片且 `payload` 为空时会明确提示连接图片、配置模型或先点「反推」。
 - **编辑弹窗**：点「编辑…」或双击节点；「取消」丢弃修改，「应用」写回节点。
 - **代价**：保存了该节点的工作流在没装本插件的 ComfyUI 上打开会报缺失节点（红色）。不想引入依赖就继续用侧边栏反推。
 
@@ -110,6 +132,7 @@ LoadImage ──→ AI 图像反推提示词 ──┬─→ prompt (STRING) ─
 |---|---|---|
 | GET | `/ai_prompt_studio/health` | 存活检查 |
 | GET | `/ai_prompt_studio/status` | 版本、公开配置（密钥仅掩码）、缓存的能力报告 |
+| POST | `/ai_prompt_studio/config` | 保存 Base URL / Model（不接受 API Key），立即更新后端 |
 | POST | `/ai_prompt_studio/probe` | 探测文本 / 视觉 / 流式 |
 | GET | `/ai_prompt_studio/capabilities` | 只读缓存报告 |
 | POST | `/ai_prompt_studio/chat` | SSE：`meta` → `delta` → `done`，失败为 `error` |

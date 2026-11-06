@@ -936,6 +936,22 @@
   font-weight: 600;
 }
 
+.aps-setup-form {
+  display: grid;
+  gap: 6px;
+}
+
+.aps-setup-form label {
+  display: grid;
+  gap: 3px;
+  color: var(--aps-muted, #a9b1bb);
+}
+
+.aps-setup-form .aps-input {
+  width: 100%;
+  box-sizing: border-box;
+}
+
 .aps-code {
   display: block;
   padding: 5px 7px;

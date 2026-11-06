@@ -159,6 +159,25 @@ function addButtons(node) {
 function onNodeCreated(node) {
   if (node.comfyClass !== NODE_TYPE && node.type !== NODE_TYPE) return;
   addButtons(node);
+  // An empty payload can be generated during graph execution.  ComfyUI emits
+  // that result as an ``executed`` websocket event; write it back to the widget
+  // so the next run reads the cache and the workflow serializes the result.
+  const originalExecuted = node.onExecuted;
+  node.onExecuted = function (message) {
+    const values = message?.aps_payload || message?.output?.aps_payload;
+    const state = Array.isArray(values) ? values.at(-1) : null;
+    if (state && !node._apsDirty) {
+      try {
+        setPayload(node, JSON.parse(state));
+        if (node._apsStatus) {
+          node._apsStatus.textContent = "执行期反推完成，结果已写回节点。";
+        }
+      } catch (err) {
+        console.warn("[ai-prompt-studio] failed to apply executed payload", err);
+      }
+    }
+    return originalExecuted?.apply(this, arguments);
+  };
   // Node title double-click opens the editor, as agreed.
   const original = node.onDblClick;
   node.onDblClick = function (...args) {

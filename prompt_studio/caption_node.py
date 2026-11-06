@@ -1,11 +1,13 @@
 """ComfyUI node: AI image reverse-engineering as part of the graph.
 
 Three modes (caption / layout / hybrid) produce a STRING prompt plus the
-MOSS-compatible ``width``/``height`` INT outputs.  The expensive model call is
-NOT part of graph execution: the frontend's 「反推」button posts to
-``/ai_prompt_studio/caption_node`` and stores the result in the node's
-``payload`` widget, which is serialized with the workflow.  Execution only
-reads that payload, so re-running a workflow never silently burns credits.
+MOSS-compatible ``width``/``height`` INT outputs.  The frontend's 「反推」button
+posts to ``/ai_prompt_studio/caption_node`` and stores the result in the node's
+``payload`` widget, which is serialized with the workflow.  Execution normally
+reads that payload, so re-running an unchanged workflow never repeats a model
+call.  If a freshly created node is queued before the button was clicked, its
+execution creates the result once from the graph's IMAGE input and sends the
+payload back to the browser for persistence.
 
 Image data chain (explicit, no assumptions about tensor access over HTTP):
   * if the node's ``image`` input is linked, the frontend resolves the upstream
@@ -19,14 +21,17 @@ The API key never leaves the backend.
 
 from __future__ import annotations
 
+import base64
 import json
 import struct
 import zlib
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
-from .caption import caption_image
+from .caption import SAFETY_PREFIX, _INSTRUCTIONS, _clean
+from .config import load_settings
 from .images import to_api_part
+from .layout import layout_instruction, match_canvas_size, parse_model_layout
 from .sessions import MediaStore
 
 MODES = ("caption", "layout", "hybrid")
@@ -149,6 +154,79 @@ def _image_source_part(media: MediaStore, image: Any, image_path: str) -> tuple[
     return media.put(data, mime), data
 
 
+def _default_model_call(*, instruction: str, image_part: dict[str, Any],
+                        model: str, max_tokens: int) -> str:
+    """Use the same OpenAI-compatible client and credentials as the HTTP route."""
+    import comfyui_plugin
+
+    backend = comfyui_plugin.get_backend()
+    if backend is None:
+        raise ValueError(
+            "模型后端未配置。请在 ComfyUI 的 Python 里运行 "
+            "python -m prompt_studio.credentials set，配置 Base URL / Model / API Key 后重启 ComfyUI。"
+        )
+    messages = [{"role": "user", "content": [
+        {"type": "text", "text": instruction}, image_part,
+    ]}]
+    result = backend.client.complete_via_stream(
+        messages, model=model, temperature=0.3, max_tokens=max_tokens
+    )
+    return result.text
+
+
+def _generate_state(*, mode: str, raw: bytes, mime: str,
+                    extra_instruction: str, model: str,
+                    call_model: Callable[..., str] | None) -> dict[str, Any]:
+    """Caption graph-owned image bytes once and build a serializable payload."""
+    src_w, src_h = image_dimensions(raw)
+    width, height = match_canvas_size(src_w, src_h)
+    settings = load_settings()
+    resolved_model = model.strip() or settings.model
+    media = MediaStore(settings.media_dir, max_bytes=settings.max_image_bytes)
+    part = to_api_part(media, media.put(raw, mime))
+    if part.get("type") == "image_ref":
+        # MediaStore is used by the route to avoid duplicating bytes in memory;
+        # graph execution has the bytes already, so send a data URL directly.
+        part = {"type": "image_url", "image_url": {
+            "url": "data:%s;base64,%s" % (mime, base64.b64encode(raw).decode("ascii"))
+        }}
+    instruction = (
+        SAFETY_PREFIX + _INSTRUCTIONS["prose"] if mode == "caption"
+        else SAFETY_PREFIX + layout_instruction(mode, width, height, extra_instruction)
+    )
+    if mode == "caption" and extra_instruction.strip():
+        instruction += "\n\nAdditional user requirement: " + extra_instruction.strip()
+    max_tokens = 500 if mode == "caption" else 3000
+    if call_model is None:
+        call_model = _default_model_call
+    text = call_model(
+        instruction=instruction, image_part=part,
+        model=resolved_model, max_tokens=max_tokens,
+    )
+    state: dict[str, Any] = {
+        "mode": mode,
+        "width": width,
+        "height": height,
+        "source_width": src_w,
+        "source_height": src_h,
+    }
+    if mode == "caption":
+        caption = _clean(str(text or ""), "prose")
+        if not caption:
+            raise ValueError("The model returned an empty caption.")
+        state["caption"] = caption
+    else:
+        try:
+            draft = parse_model_layout(str(text or ""), width, height)
+        except ValueError as exc:
+            raise ValueError(
+                f"布局反推失败（模型输出不是完整 JSON）：{exc}。请重试或换模型。"
+            ) from exc
+        state["caption"] = str(draft["summary"]["caption"])
+        state["draft"] = draft
+    return state
+
+
 class AIPromptStudioCaptionNode:
     """Image → prompt + MOSS canvas size, in three modes."""
 
@@ -165,7 +243,7 @@ class AIPromptStudioCaptionNode:
                     {
                         "multiline": True,
                         "default": "{}",
-                        "tooltip": "反推与编辑结果（JSON，随工作流保存）。点节点上的「反推」按钮生成。",
+                        "tooltip": "反推与编辑结果（JSON，随工作流保存）。留空 {} 时第一次排队会自动反推。",
                     },
                 ),
             },
@@ -193,19 +271,29 @@ class AIPromptStudioCaptionNode:
 
     RETURN_TYPES = ("STRING", "INT", "INT")
     RETURN_NAMES = ("prompt", "width", "height")
-    FUNCTION = "caption"
+    # Graph execution uses the 3 declared outputs.  The fourth value is only
+    # returned when ``caption`` is called directly (tests / embedders) so a
+    # freshly generated payload can be persisted; ComfyUI wraps this function
+    # through ``execute`` below.
+    FUNCTION = "execute"
     CATEGORY = "AI Prompt Studio"
     DESCRIPTION = (
         "图片反推：caption（散文）/ layout（PromptBoard 布局 JSON）/ hybrid（完整描述+布局）。"
         "三种模式都输出 width/height（MOSS 官方 16 倍数尺寸）。"
-        "点节点上的「反推」按钮调用模型，结果随工作流保存；跑图不重复调用模型。"
+        "点「反推」或第一次排队时调用模型，结果存进 payload；之后跑图只读缓存。"
     )
     OUTPUT_NODE = False
     NODE_NAME = "AI 图像反推提示词"
 
     def caption(self, *, mode: str, payload: str, image: Any = None,
                 image_path: str = "", extra_instruction: str = "",
-                model: str = "", seed: int = 0):
+                model: str = "", seed: int = 0,
+                call_model: Callable[..., str] | None = None):
+        """Return (prompt, width, height, updated_payload_or_None).
+
+        ``call_model`` is a test seam only; ComfyUI never supplies it.  Keeping
+        it out of ``INPUT_TYPES`` means ComfyUI will not serialize it.
+        """
         if mode not in MODES:
             raise ValueError(f"unknown mode: {mode}")
         try:
@@ -216,8 +304,17 @@ class AIPromptStudioCaptionNode:
             raise ValueError("payload must be a JSON object")
         width = int(state.get("width") or 0)
         height = int(state.get("height") or 0)
+        new_payload: str | None = None
         if width <= 0 or height <= 0:
-            raise ValueError("请先点节点上的「反推」按钮生成结果（payload 为空）。")
+            raw, mime = _execution_image_bytes(image, image_path)
+            state = _generate_state(
+                mode=mode, raw=raw, mime=mime,
+                extra_instruction=extra_instruction,
+                model=model, call_model=call_model,
+            )
+            width = int(state["width"])
+            height = int(state["height"])
+            new_payload = json.dumps(state, ensure_ascii=False)
         draft = state.get("draft")
         if mode == "caption":
             text = state.get("caption")
@@ -228,7 +325,49 @@ class AIPromptStudioCaptionNode:
             if not isinstance(draft, dict) or not draft.get("items"):
                 raise ValueError("payload 里没有布局草稿；请切到布局模式重新反推。")
             prompt = json.dumps(draft, ensure_ascii=False, separators=(",", ":"))
-        return (prompt, width, height)
+        return (prompt, width, height, new_payload)
+
+    def execute(self, **kwargs: Any):
+        """ComfyUI entry point: three outputs plus a UI payload when generated."""
+        prompt, width, height, new_payload = self.caption(**kwargs)
+        if new_payload is None:
+            return (prompt, width, height)
+        # ComfyUI sends {"ui": ...} to the frontend's onExecuted handler.
+        return {"ui": {"aps_payload": [new_payload]}, "result": (prompt, width, height)}
+
+    @classmethod
+    def IS_CHANGED(cls, *, payload: str = "{}", **kwargs: Any):
+        """Cache a generated result, but always run once for an empty payload."""
+        try:
+            state = json.loads(payload or "{}")
+        except json.JSONDecodeError:
+            state = {}
+        if not isinstance(state, dict) or int(state.get("width") or 0) <= 0:
+            return float("nan")
+        return payload
+
+
+def _execution_image_bytes(image: Any, image_path: str) -> tuple[bytes, str]:
+    """Read graph IMAGE bytes first, then an image_path file."""
+    png = _tensor_to_png(image)
+    if png is not None:
+        return png, "image/png"
+    source = str(image_path or "").strip()
+    if not source:
+        raise ValueError(
+            "payload 为空：请连接 LoadImage 的 IMAGE 输出，或填写 image_path，"
+            "也可以先点节点上的「反推」按钮；并确认模型 / Base URL / API Key 已配置。"
+        )
+    path = Path(source)
+    if not path.is_file():
+        raise ValueError(f"image_path is not a file: {source}")
+    data = path.read_bytes()
+    if len(data) > _MAX_MEDIA_BYTES:
+        raise ValueError(f"image_path file exceeds {_MAX_MEDIA_BYTES} bytes; downscale it first")
+    mime = _MIME_BY_EXT.get(path.suffix.lower().lstrip("."))
+    if mime is None:
+        raise ValueError(f"unsupported image type: {path.suffix}")
+    return data, mime
 
 
 def register(mappings: dict, display_names: dict) -> None:

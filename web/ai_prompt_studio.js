@@ -392,7 +392,12 @@ function buildPanel(root) {
     "重做",
   );
   ui.status = el("span", { class: "aps-status", role: "status" });
-  ui.modelNote = el("span", { class: "aps-model-note", title: "当前模型" });
+  ui.modelNote = el("button", {
+    class: "aps-model-note aps-link",
+    type: "button",
+    title: "点击配置 Base URL / 模型（API Key 在后端设置）",
+    onclick: () => showSetup(null, state.status),
+  });
   const footer = el("footer", { class: "aps-footer" }, [
     el("div", { class: "aps-row" }, [ui.undoButton, ui.redoButton]),
     ui.status,
@@ -414,16 +419,43 @@ function buildPanel(root) {
 }
 
 // ------------------------------------------------------------------ setup
-function showSetup(error) {
+function showSetup(error, status = null) {
   state.setupError = error;
   ui.setup.hidden = false;
   ui.setup.textContent = "";
+  const config = status?.config || state.status?.config || {};
+  const baseField = el("input", { class: "aps-input", type: "url", value: config.base_url || "http://127.0.0.1:3425/v1" });
+  const modelField = el("input", { class: "aps-input", value: config.model || "auto/glm-5.3-flash" });
+  const form = el("div", { class: "aps-setup-form" }, [
+    el("label", {}, "Base URL", baseField),
+    el("label", {}, "模型", modelField),
+  ]);
+  const feedback = el("span", { class: "aps-hint" }, "API Key 不进入网页；请用下方命令在 ComfyUI 的 Python 环境写入 Windows 凭据管理器。");
+  const save = iconButton("保存 URL / 模型", "写入本机凭据并立即更新后端", async () => {
+    save.disabled = true;
+    feedback.textContent = "正在保存配置…";
+    try {
+      const body = await state.api.request("/config", { method: "POST", body: {
+        base_url: baseField.value.trim(),
+        model: modelField.value.trim(),
+      } });
+      state.status = { ...(state.status || {}), config: body.config };
+      setStatus("URL 和模型已保存。", "ok");
+      feedback.textContent = body.message || "配置已保存。";
+      await loadStatus();
+    } catch (err) {
+      feedback.textContent = `保存失败：${err?.message || err}`;
+      save.disabled = false;
+    }
+  });
+  save.classList?.add("aps-primary");
   ui.setup.append(
-    el("div", { class: "aps-setup-title" }, "还没有配置模型"),
-    el("p", {}, error && error.message ? error.message : "请先在后端写入 Base URL、API Key 和模型名。"),
-    el("p", { class: "aps-hint" }, "在 ComfyUI 的 Python 环境运行："),
+    el("div", { class: "aps-setup-title" }, "配置模型 / URL（API Key 在后端设置）"),
+    el("p", {}, error && error.message ? error.message : "URL 和模型保存在本机后端；API Key 需用下方命令写入系统凭据。"),
+    form,
+    el("div", { class: "aps-row" }, [save, feedback]),
+    el("p", { class: "aps-hint" }, "也可以使用 ComfyUI 的 Python 环境运行："),
     el("code", { class: "aps-code" }, "python -m prompt_studio.credentials set"),
-    el("p", { class: "aps-hint" }, "密钥保存在 Windows 凭据管理器，不会出现在页面、日志或请求体中。"),
     iconButton("重新检查", "重新读取配置", () => loadStatus()),
   );
 }
@@ -438,8 +470,8 @@ async function loadStatus() {
     state.setupError = null;
     updateCapabilityBadges();
     if (ui.modelNote) {
-      ui.modelNote.textContent = body.config?.model ? `模型：${body.config.model}` : "";
-      ui.modelNote.title = `${body.config?.base_url || ""}\n${body.config?.api_key_masked || ""}`;
+      ui.modelNote.textContent = body.config?.model ? `模型：${body.config.model} ⚙` : "配置模型 ⚙";
+      ui.modelNote.title = `点击配置；当前：\n${body.config?.base_url || ""}\n${body.config?.api_key_masked || ""}`;
     }
     updateButtons();
   } catch (error) {

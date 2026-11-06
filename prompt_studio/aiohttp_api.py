@@ -437,6 +437,38 @@ def install_routes(routes: Any, backend: StudioBackend | None) -> None:
     async def status(_request: web.Request) -> web.Response:
         return web.json_response(require().status())
 
+    @routes.post("/ai_prompt_studio/config")
+    @guarded
+    async def save_config(request: web.Request) -> web.Response:
+        """Update non-secret settings; the key is never accepted from a browser."""
+        body = await _json_body(request)
+        from .config import normalize_base_url
+        from .credentials import save_credentials
+        from .errors import ConfigError
+
+        if "api_key" in body:
+            raise InvalidRequestError(
+                "API Key 不能从网页设置。请在 ComfyUI 的 Python 环境运行 "
+                "python -m prompt_studio.credentials set。"
+            )
+        try:
+            base_url = normalize_base_url(str(body.get("base_url") or ""))
+        except ConfigError as exc:
+            raise InvalidRequestError(str(exc)) from exc
+        model = str(body.get("model") or "").strip()
+        if not model:
+            raise InvalidRequestError("model is required.")
+        service = require()
+        api_key = service.settings.api_key  # process memory / OS vault only
+        await asyncio.to_thread(save_credentials, base_url, api_key, model)
+        service.settings.base_url = base_url
+        service.settings.model = model
+        service.client.settings = service.settings
+        return web.json_response({
+            "config": service.settings.public_dict(),
+            "message": "URL 和模型已保存（API Key 沿用系统凭据）；刷新页面后生效。",
+        })
+
     @routes.get("/ai_prompt_studio/capabilities")
     @guarded
     async def capabilities(_request: web.Request) -> web.Response:
