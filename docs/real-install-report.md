@@ -121,3 +121,19 @@ Node 2.0 会重复调用侧边栏的 `render(element)`；旧实现每次都 `bui
 | 截图 | [`evidence/node2-real-proposal.jpg`](../evidence/node2-real-proposal.jpg) |
 
 验证结束后 `Comfy.VueNodes.Enabled` 已设回 `false`（磁盘设置文件确认），插件已卸载，临时服务与 launch 配置已清理。
+
+## 9. 多格式反推实机验证（2026-11-06）
+
+同一回归实例（经典 LiteGraph 模式），模型切换为 Magpie `auto/glm-5.3-flash`（gemini-3.8-flash 通道已被上游停用：`model_not_supported` 400 / 403 ToS violation，与插件无关）。
+
+| 步骤 | 实测结果 |
+|---|---|
+| 三格式勾选 | 自然语言 / 逗号标签 / MOSS 风格 三个复选框，默认勾选自然语言；一个不选时「开始反推」禁用 |
+| 三格式运行 | 一次点击逐格式发 3 个独立请求（各自流式聚合），状态「正在反推图片（3 种格式，逐个请求）…」→「反推完成：自然语言、逗号标签、MOSS 风格。」；三个结果框分别 1106 / 478 / 1477 字符，内容风格正确（prose 连贯描述、tags 单行逗号、MOSS 段落） |
+| 单格式运行 | 只勾「逗号标签」→ 只发 1 个请求，只有 tags 框显示（601 字符），其余框隐藏；状态「反推完成：逗号标签。」 |
+| 写入 | 选中目标后「替换提示词」可用，写入后历史出现 `CAPTION` 版本，状态「反推结果已写入，可撤销。」 |
+| 上游波动 | 一次运行中某格式 60 s 流式超时，界面如实报错；重试即成功（Magpie 侧瞬时故障，glm 通道直连 2.7 s 正常） |
+
+截图：[`evidence/multicaption-three-boxes.jpg`](../evidence/multicaption-three-boxes.jpg)（三结果框）、[`evidence/multicaption-tags-write.jpg`](../evidence/multicaption-tags-write.jpg)（tags 写入后）。
+
+验证后已卸载插件、删除回归用临时 `.claude/launch.json`（含 glm 临时环境变量）、停止预览与静态服务；回归数据仍在 `99_运行数据` 隔离目录。

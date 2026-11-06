@@ -282,15 +282,20 @@ function buildPanel(root) {
   ui.captionPreview = el("div", { class: "aps-caption-preview" }, [
     el("div", { class: "aps-placeholder" }, "还没有选择参考图片"),
   ]);
-  ui.captionFormat = el(
-    "select",
-    { class: "aps-select" },
-    [
-      el("option", { value: "prose" }, "自然语言描述"),
-      el("option", { value: "tags" }, "逗号分隔标签"),
-      el("option", { value: "moss" }, "MOSS 图像风格"),
-    ],
-  );
+  // One checkbox per format: tick any combination of 1-3, one reverse run
+  // returns every ticked format as its own editable result.
+  ui.captionFormatBoxes = {};
+  const formatBox = (value, label, title) => {
+    const box = el("input", { type: "checkbox", value, checked: value === "prose" });
+    box.addEventListener("change", updateCaptionFormatButtons);
+    ui.captionFormatBoxes[value] = box;
+    return el("label", { class: "aps-check", title }, [box, el("span", {}, label)]);
+  };
+  ui.captionFormatRow = el("div", { class: "aps-row aps-format-row" }, [
+    formatBox("prose", "自然语言", "自然语言描述（2-4 句英文）"),
+    formatBox("tags", "逗号标签", "逗号分隔的图像生成标签"),
+    formatBox("moss", "MOSS 风格", "MOSS-Image 风格的紧凑段落"),
+  ]);
   ui.captionInstruction = el("input", {
     class: "aps-input",
     type: "text",
@@ -322,29 +327,44 @@ function buildPanel(root) {
     "开始反推",
   );
   ui.captionNotice = el("div", { class: "aps-notice", hidden: true });
-  ui.captionResult = el("textarea", {
-    class: "aps-caption-result",
-    rows: 6,
-    placeholder: "反推结果会出现在这里，可以先修改再写入。",
-  });
-  ui.captionReplace = iconButton("替换提示词", "用反推结果替换当前提示词（可撤销）", () =>
+  // Per-format result blocks; each is independently editable and writable.
+  ui.captionResults = el("div", { class: "aps-caption-results" });
+  ui.captionResultBoxes = {};
+  for (const [value, label] of [
+    ["prose", "自然语言描述"],
+    ["tags", "逗号分隔标签"],
+    ["moss", "MOSS 图像风格"],
+  ]) {
+    const textarea = el("textarea", {
+      class: "aps-caption-result",
+      rows: 4,
+      "data-format": value,
+      placeholder: `${label}的结果会出现在这里，可以先修改再写入。`,
+      hidden: true,
+    });
+    textarea.addEventListener("input", updateCaptionWriteTargets);
+    ui.captionResultBoxes[value] = textarea;
+    ui.captionResults.append(textarea);
+  }
+  ui.captionReplace = iconButton("替换提示词", "用当前编辑的格式结果替换提示词（可撤销）", () =>
     insertCaption("replace"),
   );
-  ui.captionAppend = iconButton("追加到末尾", "把反推结果追加到当前提示词后面（可撤销）", () =>
+  ui.captionAppend = iconButton("追加到末尾", "把当前编辑的格式结果追加到提示词后面（可撤销）", () =>
     insertCaption("append"),
   );
+  ui.captionActiveFormat = null;
   const captionPanel = el("section", { class: "aps-panel", "data-panel": "caption", hidden: true }, [
     ui.captionNotice,
     ui.captionPreview,
     el("div", { class: "aps-caption-controls" }, [
-      el("label", { class: "aps-field" }, [el("span", {}, "格式"), ui.captionFormat]),
+      el("div", { class: "aps-field aps-field-wide" }, [el("span", {}, "输出格式（可多选）"), ui.captionFormatRow]),
       el("label", { class: "aps-field" }, [el("span", {}, "额外要求"), ui.captionInstruction]),
     ]),
     el("div", { class: "aps-row" }, [ui.captionNodeButton, ui.captionUploadButton, ui.captionRun]),
     ui.captionFile,
-    ui.captionResult,
+    ui.captionResults,
     el("div", { class: "aps-row" }, [ui.captionReplace, ui.captionAppend]),
-    el("p", { class: "aps-hint" }, "图片中的文字只作为画面内容处理，不会被当作指令执行。"),
+    el("p", { class: "aps-hint" }, "图片中的文字只作为画面内容处理，不会被当作指令执行。勾选多种格式时每种都会单独请求一次。"),
   ]);
 
   // History --------------------------------------------------------------
@@ -597,9 +617,10 @@ function updateButtons() {
   ui.editButton.disabled = !configured || !hasTarget || state.busy || streaming;
   ui.stopButton.hidden = !streaming;
   ui.captionRun.disabled =
-    !configured || state.caption.busy || state.busy || !state.caption.image || state.capability?.vision === false;
-  ui.captionReplace.disabled = !state.caption.text.trim() || !hasTarget;
-  ui.captionAppend.disabled = !state.caption.text.trim() || !hasTarget;
+    !configured || state.caption.busy || state.busy || !state.caption.image || state.capability?.vision === false ||
+    !Object.values(ui.captionFormatBoxes || {}).some((box) => box.checked);
+  ui.captionReplace.disabled = !activeCaptionResult() || !hasTarget;
+  ui.captionAppend.disabled = !activeCaptionResult() || !hasTarget;
   ui.undoButton.disabled = !state.undo.canUndo || state.busy;
   ui.redoButton.disabled = !state.undo.canRedo || state.busy;
   const undo = state.undo.peekUndo();
@@ -1075,34 +1096,106 @@ async function runCaption() {
     setStatus("当前模型不支持图片输入，反推不可用。", "warn");
     return;
   }
+  const formats = Object.entries(ui.captionFormatBoxes)
+    .filter(([, box]) => box.checked)
+    .map(([value]) => value);
+  if (!formats.length) {
+    setStatus("请至少勾选一种输出格式。", "warn");
+    return;
+  }
   state.caption.busy = true;
   updateButtons();
-  setStatus("正在反推图片…", "info");
+  setStatus(
+    formats.length > 1
+      ? `正在反推图片（${formats.length} 种格式，逐个请求）…`
+      : "正在反推图片…",
+    "info",
+  );
+  for (const box of Object.values(ui.captionResultBoxes)) {
+    box.value = "";
+    box.hidden = true;
+  }
+  state.caption.text = "";
+  ui.captionActiveFormat = null;
   try {
     const body = await state.api.caption({
       image: { data_url: state.caption.image },
-      format: ui.captionFormat.value,
+      format: formats,
       instruction: ui.captionInstruction.value.trim(),
     });
-    state.caption.text = body.text || "";
-    ui.captionResult.value = state.caption.text;
-    setStatus(`反推完成（${body.format || ui.captionFormat.value}）。`, "ok");
+    const results = body.multi ? body.results : { [body.format || formats[0]]: body };
+    const names = { prose: "自然语言", tags: "逗号标签", moss: "MOSS 风格" };
+    let filled = 0;
+    for (const [format, result] of Object.entries(results)) {
+      const box = ui.captionResultBoxes[format];
+      if (!box || !result || !result.text) continue;
+      box.value = result.text;
+      box.hidden = false;
+      if (!ui.captionActiveFormat) ui.captionActiveFormat = format;
+      filled += 1;
+    }
+    if (!filled) {
+      setStatus("模型没有返回内容。", "warn");
+    } else {
+      const got = Object.keys(results).filter((f) => ui.captionResultBoxes[f]?.value).map((f) => names[f] || f);
+      setStatus(`反推完成：${got.join("、")}。`, "ok");
+    }
   } catch (error) {
     setStatus(error.message || String(error), "error");
   } finally {
     state.caption.busy = false;
     updateButtons();
+    updateCaptionWriteTargets();
   }
 }
 
+/** The write buttons act on the format block the user last edited or picked. */
+function activeCaptionResult() {
+  if (ui.captionActiveFormat) {
+    const box = ui.captionResultBoxes[ui.captionActiveFormat];
+    if (box && !box.hidden && box.value.trim()) return box;
+  }
+  for (const box of Object.values(ui.captionResultBoxes)) {
+    if (!box.hidden && box.value.trim()) {
+      ui.captionActiveFormat = box.dataset.format;
+      return box;
+    }
+  }
+  return null;
+}
+
+function updateCaptionWriteTargets() {
+  // Highlight the block the write buttons will use; per-format labels keep
+  // the user oriented when several blocks are on screen at once.
+  const any = activeCaptionResult();
+  for (const box of Object.values(ui.captionResultBoxes)) {
+    box.classList.toggle(
+      "is-active",
+      box === any && Object.values(ui.captionResultBoxes).some((b) => !b.hidden),
+    );
+  }
+  if (ui.captionReplace) ui.captionReplace.disabled = !any;
+  if (ui.captionAppend) ui.captionAppend.disabled = !any;
+}
+
+function updateCaptionFormatButtons() {
+  const any = Object.values(ui.captionFormatBoxes).some((box) => box.checked);
+  if (ui.captionRun) ui.captionRun.disabled = !any || !state.caption.image;
+}
+
 async function insertCaption(mode) {
-  const text = ui.captionResult.value.trim();
-  if (!text) return;
+  const box = activeCaptionResult();
+  const text = box ? box.value.trim() : "";
+  if (!text) {
+    setStatus("先反推，或在结果框里编辑出内容。", "warn");
+    return;
+  }
   const target = activeTarget();
   if (!target) {
     setStatus("先在画布上选择一个带提示词的节点。", "warn");
     return;
   }
+  const formatLabel = { prose: "自然语言", tags: "逗号标签", moss: "MOSS 风格" }[box.dataset.format] || box.dataset.format;
   let next = text;
   if (mode === "append" && target.text.trim()) {
     const separator = /[\s,，]$/.test(target.text) ? " " : ", ";
@@ -1112,10 +1205,10 @@ async function insertCaption(mode) {
     await applyText(next, {
       key: target.key,
       source: mode === "append" ? "caption-append" : "caption",
-      label: "反推写入",
+      label: `反推写入（${formatLabel}）`,
     });
     switchTab("chat");
-    addMessage("assistant", mode === "append" ? "已把反推结果追加到提示词末尾。" : "已用反推结果替换提示词。", "可点底部“撤销”恢复。");
+    addMessage("assistant", mode === "append" ? `已把${formatLabel}结果追加到提示词末尾。` : `已用${formatLabel}结果替换提示词。`, "可点底部“撤销”恢复。");
     setStatus("反推结果已写入，可撤销。", "ok");
   } catch (error) {
     setStatus(error.message || String(error), "error");

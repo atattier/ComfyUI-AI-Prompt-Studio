@@ -7,7 +7,7 @@
 
 ## 1. 结论
 
-M1 的出口标准「反推 → 对话改 → 应用 → 撤销」已在浏览器中完整复现，并通过 142 个 Python 测试与 32 个 JavaScript 测试。模型输出不能直接覆盖提示词：所有写入都经过结构化操作校验、块级 diff 审阅、撤销栈和版本记录。
+M1 的出口标准「反推 → 对话改 → 应用 → 撤销」已在浏览器中完整复现，并通过 146 个 Python 测试与 32 个 JavaScript 测试。模型输出不能直接覆盖提示词：所有写入都经过结构化操作校验、块级 diff 审阅、撤销栈和版本记录。
 
 真实 ComfyUI 的安装回归（安装 → 闭环 → 卸载）已于 2026-11-05 完成：节点与扩展集合完全还原，同一工作流在安装/卸载两种状态下序列化哈希一致。回归中发现并修复了 3 个只在真实环境暴露的缺陷（见真实安装报告 §5）。剩余未验证项只剩 Node 2.0 前端等少数交互，详见 §6。
 
@@ -23,7 +23,7 @@ M1 的出口标准「反推 → 对话改 → 应用 → 撤销」已在浏览�
 | 后端 | `prompt_studio/aiohttp_api.py` | 在 ComfyUI 的 aiohttp 上注册 `/ai_prompt_studio/*` |
 | 后端 | `prompt_studio/edit_agent.py` | 编辑提案的 JSON 契约与解析 |
 | 后端 | `prompt_studio/diff.py` | 操作校验、应用、块级 diff |
-| 后端 | `prompt_studio/caption.py` | 三种反推格式 |
+| 后端 | `prompt_studio/caption.py` | 三种反推格式；支持一次勾选 1–3 种格式（逐格式独立请求，`MultiCaptionResult`） |
 | 后端 | `prompt_studio/versions.py` | 版本历史（SQLite，每控件 100 条） |
 | 后端 | `prompt_studio/wincred.py`、`credentials.py` | Windows 凭据库保管与明文迁移 |
 | 接入 | `__init__.py`、`comfyui_plugin.py` | `WEB_DIRECTORY`、路由注册、幂等保护、零节点类 |
@@ -71,7 +71,7 @@ M1 的出口标准「反推 → 对话改 → 应用 → 撤销」已在浏览�
 
 | 套件 | 命令 | 结果 | 记录 |
 |---|---|---|---|
-| Python（142） | `python -m unittest discover -s tests -t .` | OK | `evidence/test-run-real-install-20261105-230523.txt` |
+| Python（146） | `python -m unittest discover -s tests -t .` | OK | `evidence/test-run-real-install-20261105-230523.txt`（142）；多格式反推补验后 146 |
 | JavaScript（32） | `node --test tests_js/*.test.mjs` | 32 pass | `evidence/test-js-real-install-20261105-230728.txt` |
 | 浏览器闭环 | 开发环境手工脚本化操作 | 见 §3 | 三张截图 |
 

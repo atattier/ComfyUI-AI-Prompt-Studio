@@ -7,8 +7,9 @@ generic: the MOSS-specific rule pack and the dual rule engine arrive in M2.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
-from typing import Any
+import time
+from dataclasses import dataclass, field
+from typing import Any, Sequence
 
 from .client import ChatClient, ChatResult
 
@@ -60,6 +61,29 @@ class CaptionResult:
         }
 
 
+@dataclass(slots=True)
+class MultiCaptionResult:
+    """One caption per requested format, from separate model calls."""
+
+    formats: list[str]
+    results: dict[str, CaptionResult]
+    usage: dict[str, Any] | None
+    request_id: str
+    request_ids: list[str] = field(default_factory=list)
+    latency_ms: int = 0
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "formats": self.formats,
+            "results": {name: result.to_dict() for name, result in self.results.items()},
+            "usage": self.usage,
+            "request_id": self.request_id,
+            "request_ids": self.request_ids,
+            "latency_ms": self.latency_ms,
+            "multi": True,
+        }
+
+
 def _clean(text: str, fmt: str) -> str:
     out = text.strip()
     out = re.sub(r"^```[a-zA-Z]*\s*", "", out)
@@ -80,14 +104,76 @@ def caption_image(
     client: ChatClient,
     image_part: dict[str, Any],
     *,
-    fmt: str = "prose",
+    fmt: str | Sequence[str] = "prose",
     model: str | None = None,
     extra_instruction: str = "",
     max_tokens: int = 500,
+) -> CaptionResult | MultiCaptionResult:
+    """Caption an image in one or several formats.
+
+    ``fmt`` accepts a single format name or any non-empty subset of
+    ``FORMATS`` (order given by the caller).  For multiple formats the image
+    is analysed once per format: the outputs are independent prompt styles,
+    and one instruction that asks for all of them at once reliably produces
+    muddled, half-converted text.  The result is a ``MultiCaptionResult``
+    whose ``results`` maps format name → ``CaptionResult``.
+    """
+    formats = _normalize_formats(fmt)
+    if len(formats) == 1:
+        return _caption_one(
+            client, image_part, fmt=formats[0], model=model,
+            extra_instruction=extra_instruction, max_tokens=max_tokens,
+        )
+    results: dict[str, CaptionResult] = {}
+    total_usage: dict[str, Any] = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+    started = time.perf_counter()
+    request_ids: list[str] = []
+    for name in formats:
+        one = _caption_one(
+            client, image_part, fmt=name, model=model,
+            extra_instruction=extra_instruction, max_tokens=max_tokens,
+        )
+        results[name] = one
+        request_ids.append(one.request_id)
+        usage = one.usage or {}
+        for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
+            total_usage[key] += int(usage.get(key) or 0)
+    return MultiCaptionResult(
+        formats=list(formats),
+        results=results,
+        usage=total_usage,
+        request_id=request_ids[0],
+        request_ids=request_ids,
+        latency_ms=int((time.perf_counter() - started) * 1000),
+    )
+
+
+def _normalize_formats(fmt: str | Sequence[str]) -> tuple[str, ...]:
+    if isinstance(fmt, str):
+        names = [fmt]
+    else:
+        names = list(fmt)
+    if not names:
+        raise ValueError("at least one caption format is required.")
+    seen: list[str] = []
+    for name in names:
+        lowered = str(name).lower()
+        if lowered not in FORMATS:
+            raise ValueError(f"unsupported caption format: {name}")
+        if lowered not in seen:
+            seen.append(lowered)
+    return tuple(seen)
+
+
+def _caption_one(
+    client: ChatClient,
+    image_part: dict[str, Any],
+    *,
+    fmt: str,
+    model: str | None,
+    extra_instruction: str,
+    max_tokens: int,
 ) -> CaptionResult:
-    fmt = (fmt or "prose").lower()
-    if fmt not in FORMATS:
-        raise ValueError(f"unsupported caption format: {fmt}")
     instruction = SAFETY_PREFIX + _INSTRUCTIONS[fmt]
     if extra_instruction.strip():
         instruction += "\n\nAdditional user requirement: " + extra_instruction.strip()

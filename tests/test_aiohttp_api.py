@@ -178,6 +178,33 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
         body = await response.json()
         self.assertEqual(body["text"], "quality, red, blue")
 
+    async def test_caption_multiple_formats(self):
+        image = {"data_url": data_url(make_split_probe_png(32))}
+        response = await self.client.post(
+            "/ai_prompt_studio/caption",
+            json={"image": image, "format": ["tags", "prose"], "model": "caption-model"},
+        )
+        body = await response.json()
+        self.assertEqual(response.status, 200)
+        self.assertTrue(body["multi"])
+        self.assertEqual(body["formats"], ["tags", "prose"])
+        self.assertEqual(body["results"]["tags"]["text"], "quality, red, blue")
+        self.assertEqual(body["results"]["prose"]["text"], "A vertically split poster in red and blue.")
+        self.assertGreaterEqual(body["usage"]["prompt_tokens"], 20)  # summed from both calls
+
+    async def test_caption_multiple_formats_rejects_unknown(self):
+        image = {"data_url": data_url(make_split_probe_png(32))}
+        response = await self.client.post(
+            "/ai_prompt_studio/caption",
+            json={"image": image, "format": ["prose", "yaml"]},
+        )
+        self.assertEqual(response.status, 400)
+        response = await self.client.post(
+            "/ai_prompt_studio/caption",
+            json={"image": image, "format": []},
+        )
+        self.assertEqual(response.status, 400)
+
     async def test_versions_endpoints(self):
         response = await self.client.post(
             "/ai_prompt_studio/versions", json={"target": "wf:12:text", "text": "v1", "source": "apply"}

@@ -185,9 +185,14 @@ class StudioBackend:
         return {"target": target, "proposal": proposal.to_dict()}
 
     def caption(self, body: dict[str, Any]) -> dict[str, Any]:
-        fmt = str(body.get("format") or "prose").lower()
-        if fmt not in FORMATS:
-            raise InvalidRequestError(f"format must be one of: {', '.join(FORMATS)}")
+        fmt = body.get("format")
+        # Single string keeps the M1 shape; a list selects any 1-3 formats.
+        if isinstance(fmt, list):
+            formats = [str(name) for name in fmt]
+        elif fmt is None:
+            formats = ["prose"]
+        else:
+            formats = [str(fmt)]
         image = body.get("image")
         if not image:
             raise InvalidRequestError("image is required.")
@@ -202,7 +207,7 @@ class StudioBackend:
             result = caption_image(
                 self.client,
                 part,
-                fmt=fmt,
+                fmt=formats,
                 model=body.get("model") or None,
                 extra_instruction=str(body.get("instruction") or ""),
             )
