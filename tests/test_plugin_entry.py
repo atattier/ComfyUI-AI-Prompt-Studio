@@ -47,14 +47,21 @@ class PluginRegistrationTests(unittest.TestCase):
         self.assertTrue(self.plugin.register())
         self.assertEqual(len(list(self.routes)), before)
 
-    def test_package_registers_no_node_classes(self):
+    def test_package_registers_caption_node_only(self):
         spec = importlib.util.spec_from_file_location("aps_root_entry", ROOT / "__init__.py")
         module = importlib.util.module_from_spec(spec)
         assert spec.loader is not None
         spec.loader.exec_module(module)
         self.assertEqual(module.WEB_DIRECTORY, "./web")
-        self.assertEqual(module.NODE_CLASS_MAPPINGS, {})
-        self.assertEqual(module.NODE_DISPLAY_NAME_MAPPINGS, {})
+        # Exactly one node: the caption node. The workbench itself stays a
+        # sidebar extension and never injects nodes into existing workflows.
+        self.assertEqual(
+            set(module.NODE_CLASS_MAPPINGS), {"AIPromptStudioCaption"}
+        )
+        self.assertEqual(
+            module.NODE_DISPLAY_NAME_MAPPINGS,
+            {"AIPromptStudioCaption": "AI 图像反推提示词"},
+        )
         paths = [route.path for route in self.routes]
         self.assertIn("/ai_prompt_studio/health", paths)
 

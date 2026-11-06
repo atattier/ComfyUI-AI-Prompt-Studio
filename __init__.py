@@ -4,8 +4,9 @@ The repository root doubles as the ComfyUI custom-node folder.  The Python
 backend lives in ``prompt_studio/`` and is also usable standalone (M0);
 ``comfyui_plugin.py`` wires it into ComfyUI's own HTTP server.
 
-No node classes are registered in M1: the workbench is a sidebar extension, so
-loading the plugin cannot change an existing workflow's node list.
+One node class is registered: AIPromptStudioCaption (image → prompt STRING).
+Workflows that use it need the plugin installed to reopen; the sidebar
+workbench itself remains zero-footprint.
 """
 
 from __future__ import annotations
@@ -28,5 +29,12 @@ try:
 except Exception as exc:  # noqa: BLE001
     # Never take ComfyUI down because the workbench could not start.
     print(f"[ai_prompt_studio] plugin failed to register: {exc}")
+
+try:
+    from prompt_studio.caption_node import register as _register_node
+
+    _register_node(NODE_CLASS_MAPPINGS, NODE_DISPLAY_NAME_MAPPINGS)
+except Exception as exc:  # noqa: BLE001
+    print(f"[ai_prompt_studio] caption node failed to register: {exc}")
 
 __all__ = ["WEB_DIRECTORY", "NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS"]
