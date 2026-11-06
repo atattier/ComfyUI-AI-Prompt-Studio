@@ -1,0 +1,48 @@
+✔ request joins the base path and parses JSON (10.388ms)
+✔ error payloads become ApiError with code and status (1.5949ms)
+✔ network failures are reported as retryable network errors (0.767ms)
+✔ chat streams events and resolves after done (1.6787ms)
+✔ an SSE error event rejects the chat promise (0.4558ms)
+✔ chat surfaces pre-stream JSON validation errors (0.4483ms)
+✔ summarises block types (1.1389ms)
+✔ selectOps keeps only checked indices and their order (0.1749ms)
+✔ operations carry readable labels (0.1352ms)
+✔ excerpt flattens whitespace and truncates (0.2019ms)
+✔ cloneDraft makes an independent working copy (cancel discards edits) (0.7833ms)
+✔ normalizeDraft clamps boxes into the canvas (0.9935ms)
+✔ normalizeDraft forces literal text for text items and removes it otherwise (0.2141ms)
+✔ normalizeDraft keeps summary caption and fills empty captions (0.2017ms)
+✔ clamp keeps pointer coordinates inside canvas bounds (0.1359ms)
+✔ mode switching keeps payload fields (no data loss) (0.1664ms)
+✔ payload round-trips through JSON serialization (save/reload) (1.0147ms)
+✔ normalized draft output is PromptBoard-shaped (0.3354ms)
+✔ parses events across arbitrary chunk boundaries (2.1765ms)
+✔ handles CRLF, comments and multi-line data (1.459ms)
+✔ flush dispatches a trailing event without a blank line (0.2796ms)
+✔ plain data that is not JSON stays a string (0.2364ms)
+✔ readSSE consumes a streaming response (2.4128ms)
+✔ readSSE rejects non-OK responses with the body preview (1.8383ms)
+✔ recognises common prompt widgets only (0.7728ms)
+✔ targets list selected nodes first, without duplicates (0.8449ms)
+✔ nodes without prompt widgets are skipped (0.1427ms)
+✔ currentTarget prefers the selection and tolerates ambiguity (0.2016ms)
+✔ findTargetByKey resolves a descriptor with a live widget (0.2711ms)
+✔ setWidgetText writes the value, fires callbacks and repaints (0.2722ms)
+✔ imageSource reads previews and widget filenames (0.2876ms)
+✔ targetWire drops live references so a real graph can be serialized (0.3382ms)
+✔ nodeTitle falls back through the usual fields (0.1314ms)
+✔ record then undo returns the previous text (1.533ms)
+✔ a new record clears the redo branch (0.2965ms)
+✔ no-op entries are ignored (0.1839ms)
+✔ invalid entries throw (0.3354ms)
+✔ limit keeps the most recent entries (0.2016ms)
+✔ undo and redo expose the next entry for tooltips (0.172ms)
+✔ clear empties both branches (0.2457ms)
+ℹ tests 40
+ℹ suites 0
+ℹ pass 40
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 137.2875

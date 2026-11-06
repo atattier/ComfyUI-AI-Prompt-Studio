@@ -1,48 +1,55 @@
-"""ComfyUI node: AI image captioning as part of the graph.
+"""ComfyUI node: AI image reverse-engineering as part of the graph.
 
-Unlike the sidebar workbench (which only edits existing widgets), this node is
-a regular graph node: it takes an IMAGE tensor (ComfyUI's NHWC float 0-1
-format) or a file path, sends it through the same backend used by the sidebar
-(``caption_image``), and outputs a STRING prompt in any of the three formats.
+Three modes (caption / layout / hybrid) produce a STRING prompt plus the
+MOSS-compatible ``width``/``height`` INT outputs.  The expensive model call is
+NOT part of graph execution: the frontend's 「反推」button posts to
+``/ai_prompt_studio/caption_node`` and stores the result in the node's
+``payload`` widget, which is serialized with the workflow.  Execution only
+reads that payload, so re-running a workflow never silently burns credits.
 
-Trade-off accepted by design: workflows saved with this node need the plugin
-installed to reopen (ComfyUI marks missing node types in red).  The sidebar
-remains the zero-footprint way to use the studio.
+Image data chain (explicit, no assumptions about tensor access over HTTP):
+  * if the node's ``image`` input is linked, the frontend resolves the upstream
+    LoadImage widget's filename through same-origin ``/view`` and sends a data
+    URL to the route;
+  * otherwise, if ``image_path`` is set, the route reads that local file
+    server-side;
+  * ``image`` takes priority over ``image_path``; neither present -> error.
+The API key never leaves the backend.
 """
 
 from __future__ import annotations
 
-import base64
-import io
+import json
 import struct
 import zlib
 from pathlib import Path
 from typing import Any
 
-from .caption import FORMATS, caption_image
+from .caption import caption_image
 from .images import to_api_part
-from .sessions import MediaStore, decode_data_url
+from .sessions import MediaStore
 
-_FORMAT_NAMES = {"prose": "自然语言", "tags": "逗号标签", "moss": "MOSS 风格"}
-
+MODES = ("caption", "layout", "hybrid")
 _MAX_MEDIA_BYTES = 8 * 1024 * 1024
+_MIME_BY_EXT = {
+    "jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png",
+    "webp": "image/webp", "gif": "image/gif",
+}
 
 
 def _tensor_to_png(image: Any) -> bytes | None:
     """Encode a ComfyUI IMAGE tensor (NHWC float 0-1) as an 8-bit RGB PNG.
 
-    Returns None when ``image`` does not look like a tensor (no shape
-    attribute) so the caller can fall back to treating it as a path or URL.
-    Accepts torch tensors and anything else exposing ``.shape`` plus
-    sequence-style indexing (numpy arrays included); torch itself is
-    imported lazily and only when a tensor-shaped input is present.
+    Returns None when ``image`` does not look like a tensor.  Only used when
+    the node is executed directly with an IMAGE input (e.g. from a script);
+    the browser route uses the byte-based path instead.
     """
     shape = getattr(image, "shape", None)
     if shape is None or len(shape) != 4 or shape[-1] not in (1, 3, 4):
         return None
     import numpy as np  # numpy ships with ComfyUI
 
-    frame = np.asarray(image[0]) if shape[0] > 1 else np.asarray(image[0])
+    frame = np.asarray(image[0])
     if frame.ndim != 3:
         return None
     channels = frame.shape[-1]
@@ -70,8 +77,52 @@ def _tensor_to_png(image: Any) -> bytes | None:
     )
 
 
-def _image_source_part(media: MediaStore, image: Any, image_path: str) -> dict[str, Any]:
-    """Turn the node's inputs into one stored image part for the model call."""
+def image_dimensions(data: bytes) -> tuple[int, int]:
+    """Read pixel dimensions from PNG/JPEG/GIF/WebP headers, stdlib only."""
+    if not data:
+        raise ValueError("empty image data")
+    if data[:8] == b"\x89PNG\r\n\x1a\n" and len(data) >= 24:
+        w, h = struct.unpack(">II", data[16:24])
+        return int(w), int(h)
+    if data[:2] == b"\xff\xd8":
+        pos = 2
+        while pos + 9 < len(data):
+            if data[pos] != 0xFF:
+                pos += 1
+                continue
+            marker = data[pos + 1]
+            pos += 2
+            if marker in (0xD8, 0xD9, 0x01) or 0xD0 <= marker <= 0xD7:
+                continue
+            if pos + 2 > len(data):
+                break
+            (length,) = struct.unpack(">H", data[pos:pos + 2])
+            if marker in (0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7,
+                          0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF):
+                h, w = struct.unpack(">HH", data[pos + 3:pos + 7])
+                return int(w), int(h)
+            pos += length
+        raise ValueError("cannot read JPEG dimensions")
+    if data[:6] in (b"GIF87a", b"GIF89a") and len(data) >= 10:
+        w, h = struct.unpack("<HH", data[6:10])
+        return int(w), int(h)
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        kind = data[12:16]
+        if kind == b"VP8X" and len(data) >= 30:
+            w = int.from_bytes(data[24:27], "little") + 1
+            h = int.from_bytes(data[27:30], "little") + 1
+            return w, h
+        if kind == b"VP8 " and len(data) >= 30:
+            w, h = struct.unpack("<HH", data[26:30])
+            return w & 0x3FFF, h & 0x3FFF
+        if kind == b"VP8L" and len(data) >= 25:
+            bits = int.from_bytes(data[21:25], "little")
+            return (bits & 0x3FFF) + 1, ((bits >> 14) & 0x3FFF) + 1
+    raise ValueError("unsupported image format; use PNG/JPEG/GIF/WebP")
+
+
+def _image_source_part(media: MediaStore, image: Any, image_path: str) -> tuple[dict[str, Any], bytes]:
+    """Turn the node's inputs into (stored image part, raw bytes)."""
     png = _tensor_to_png(image)
     if png is not None:
         if len(png) > media.max_bytes:
@@ -79,46 +130,50 @@ def _image_source_part(media: MediaStore, image: Any, image_path: str) -> dict[s
                 f"image too large after encoding ({len(png)} bytes > {media.max_bytes}); "
                 "downscale it before captioning"
             )
-        return media.put(png, "image/png")
+        return media.put(png, "image/png"), png
     source = str(image_path or "").strip()
     if not source:
         raise ValueError("connect an IMAGE input or set image_path.")
     if source.lower().startswith(("http://", "https://")):
-        # Stored as a plain part; the client fetches it server-side.
-        return {"type": "image_url", "image_url": {"url": source}}
+        raise ValueError("image_path must be a local file; use the image input for URLs.")
     path = Path(source)
     if not path.is_file():
         raise ValueError(f"image_path is not a file: {source}")
     data = path.read_bytes()
     if len(data) > _MAX_MEDIA_BYTES:
-        raise ValueError(
-            f"image_path file exceeds {_MAX_MEDIA_BYTES} bytes; downscale it first"
-        )
+        raise ValueError(f"image_path file exceeds {_MAX_MEDIA_BYTES} bytes; downscale it first")
     ext = path.suffix.lower().lstrip(".")
-    mime = {"jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png",
-            "webp": "image/webp", "gif": "image/gif"}.get(ext)
+    mime = _MIME_BY_EXT.get(ext)
     if mime is None:
         raise ValueError(f"unsupported image type: .{ext}")
-    return media.put(data, mime)
+    return media.put(data, mime), data
 
 
 class AIPromptStudioCaptionNode:
-    """Image → text prompt, any 1-3 of the three studio formats."""
+    """Image → prompt + MOSS canvas size, in three modes."""
 
     @classmethod
     def INPUT_TYPES(cls) -> dict[str, Any]:
         return {
             "required": {
-                "format": (
-                    list(FORMATS),
-                    {"default": "prose", "tooltip": "输出格式：自然语言 / 逗号标签 / MOSS 风格"},
+                "mode": (
+                    list(MODES),
+                    {"default": "caption", "tooltip": "出图方式：散文描述 / 分区域布局 / 完整描述+布局"},
+                ),
+                "payload": (
+                    "STRING",
+                    {
+                        "multiline": True,
+                        "default": "{}",
+                        "tooltip": "反推与编辑结果（JSON，随工作流保存）。点节点上的「反推」按钮生成。",
+                    },
                 ),
             },
             "optional": {
                 "image": ("IMAGE", {"tooltip": "画布上的图片张量（LoadImage 等的输出）"}),
                 "image_path": (
                     "STRING",
-                    {"default": "", "tooltip": "或给一个本地图片绝对路径（image 未连接时使用）"},
+                    {"default": "", "tooltip": "本地图片绝对路径；image 输入优先，未连接时使用"},
                 ),
                 "extra_instruction": (
                     "STRING",
@@ -136,47 +191,49 @@ class AIPromptStudioCaptionNode:
             },
         }
 
-    RETURN_TYPES = ("STRING",)
-    RETURN_NAMES = ("prompt",)
+    RETURN_TYPES = ("STRING", "INT", "INT")
+    RETURN_NAMES = ("prompt", "width", "height")
     FUNCTION = "caption"
     CATEGORY = "AI Prompt Studio"
     DESCRIPTION = (
-        "把图片反推成提示词（自然语言 / 逗号标签 / MOSS 风格），"
-        "走工作台同一模型网关。输出可直接连到 CLIP Text Encode。"
+        "图片反推：caption（散文）/ layout（PromptBoard 布局 JSON）/ hybrid（完整描述+布局）。"
+        "三种模式都输出 width/height（MOSS 官方 16 倍数尺寸）。"
+        "点节点上的「反推」按钮调用模型，结果随工作流保存；跑图不重复调用模型。"
     )
     OUTPUT_NODE = False
     NODE_NAME = "AI 图像反推提示词"
 
-    def caption(self, *, format: str, image: Any = None, image_path: str = "",
-                extra_instruction: str = "", model: str = "", seed: int = 0):
-        # comfyui_plugin lives at the package root (ComfyUI imports it there);
-        # the lazy import keeps this module importable without ComfyUI present.
-        import comfyui_plugin
-
-        backend = comfyui_plugin.get_backend()
-        if backend is None:
-            raise RuntimeError(
-                "AI Prompt Studio 后端未配置：请先运行 prompt_studio.credentials set（见插件 README）。"
-            )
-        part = _image_source_part(backend.media, image, image_path)
-        api_part = to_api_part(backend.media, part)
-        result = caption_image(
-            backend.client,
-            api_part,
-            fmt=format,
-            model=(model or "").strip() or None,
-            extra_instruction=extra_instruction,
-        )
-        text = result.text
-        backend.audit.log(
-            "node_caption",
-            request_id=result.request_id,
-            format=result.format,
-            latency_ms=result.latency_ms,
-        )
-        return {"ui": {"format": result.format}, "result": (text,)}
+    def caption(self, *, mode: str, payload: str, image: Any = None,
+                image_path: str = "", extra_instruction: str = "",
+                model: str = "", seed: int = 0):
+        if mode not in MODES:
+            raise ValueError(f"unknown mode: {mode}")
+        try:
+            state = json.loads(payload or "{}")
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"payload is not valid JSON: {exc}") from exc
+        if not isinstance(state, dict):
+            raise ValueError("payload must be a JSON object")
+        width = int(state.get("width") or 0)
+        height = int(state.get("height") or 0)
+        if width <= 0 or height <= 0:
+            raise ValueError("请先点节点上的「反推」按钮生成结果（payload 为空）。")
+        draft = state.get("draft")
+        if mode == "caption":
+            text = state.get("caption")
+            if not isinstance(text, str) or not text.strip():
+                raise ValueError("payload 里没有 caption 文本；请重新反推或在编辑弹窗里填写。")
+            prompt = text.strip()
+        else:
+            if not isinstance(draft, dict) or not draft.get("items"):
+                raise ValueError("payload 里没有布局草稿；请切到布局模式重新反推。")
+            prompt = json.dumps(draft, ensure_ascii=False, separators=(",", ":"))
+        return (prompt, width, height)
 
 
 def register(mappings: dict, display_names: dict) -> None:
     mappings["AIPromptStudioCaption"] = AIPromptStudioCaptionNode
     display_names["AIPromptStudioCaption"] = "AI 图像反推提示词"
+
+
+__all__ = ["AIPromptStudioCaptionNode", "register", "image_dimensions", "MODES"]

@@ -78,18 +78,29 @@ python -m prompt_studio.credentials set
 
 ## 图节点：AI 图像反推提示词
 
-除了侧边栏，还提供一个可连线的图节点 `AIPromptStudioCaption`（画布右键菜单 → AI Prompt Studio）：
+除了侧边栏，还提供一个可连线的图节点 `AIPromptStudioCaption`（画布右键菜单 → AI Prompt Studio），三种出图方式由 `mode` 下拉切换：
 
 ```
-LoadImage ──→ AI 图像反推提示词 ──→ CLIP Text Encode
-                format: 自然语言 / 逗号标签 / MOSS 风格
-                可选: image_path / extra_instruction / model / seed
+LoadImage ──→ AI 图像反推提示词 ──┬─→ prompt (STRING) ──→ CLIP Text Encode / PromptBoard
+                mode:             ├─→ width  (INT)
+                 caption          └─→ height (INT)    ──→ MOSI 出图尺寸 / 空白 Latent
+                 layout
+                 hybrid
 ```
 
-- 输入 `image` 接 ComfyUI 的 IMAGE 张量；未连接时用 `image_path` 的本地路径（jpg/png/webp/gif）。
-- 输出 `prompt`（STRING）可直接连到任何文本输入。
-- 反推结果同时写入运行目录的审计日志；走侧边栏同一套凭据与网关配置。
+| 模式 | `prompt` 输出 | 弹窗 |
+|---|---|---|
+| `caption` | 英文散文描述 | 只编辑文本，无布局画布 |
+| `layout` | PromptBoard 兼容的 Layout 草稿 JSON（`bbox_coord_space:"abs"` / `xyxy`，可直接粘进 `MOSSPromptBoard.draft`） | 预览框可拖动/缩放/增删区域，改标签与描述 |
+| `hybrid` | 完整 2–4 句描述 + 布局草稿 JSON | 同 layout，整体描述也可完整编辑 |
+
+- **尺寸**：读原图宽高比，按 MOSS 官方约束（每边 256–2048、16 倍数、总像素 ≤ 2,097,152）以「比例误差优先、面积近 1M 次优」匹配，`width`/`height` 作为 INT 输出接口。
+- **图片链路**：`image` 输入接 LoadImage 等 IMAGE 输出（前端从上游 widget 文件名经同源 `/view` 取字节转 data URL 放进请求体）；未连接时用 `image_path` 本地绝对路径。`image` 优先，Key 始终只在后端。
+- **反推按钮**：点节点上的「反推」调用模型；结果存进 `payload` widget 随工作流保存，跑图时只读缓存、不重复烧额度。手改过内容后重新反推会弹确认，不会静默覆盖。
+- **编辑弹窗**：点「编辑…」或双击节点；「取消」丢弃修改，「应用」写回节点。
 - **代价**：保存了该节点的工作流在没装本插件的 ComfyUI 上打开会报缺失节点（红色）。不想引入依赖就继续用侧边栏反推。
+
+验收报告：[`docs/three-mode-acceptance.md`](docs/three-mode-acceptance.md)。
 
 ## ComfyUI 路由
 
@@ -104,7 +115,8 @@ LoadImage ──→ AI 图像反推提示词 ──→ CLIP Text Encode
 | POST | `/ai_prompt_studio/chat` | SSE：`meta` → `delta` → `done`，失败为 `error` |
 | POST | `/ai_prompt_studio/edit` | 生成编辑提案（含 diff 与校验） |
 | POST | `/ai_prompt_studio/apply` | 对当前文本重新校验并返回结果文本 |
-| POST | `/ai_prompt_studio/caption` | 图片反推 |
+| POST | `/ai_prompt_studio/caption` | 侧边栏图片反推（1–3 种格式） |
+| POST | `/ai_prompt_studio/caption_node` | 图节点反推：图片 → prompt + MOSS 尺寸 + 布局草稿 |
 | GET/POST | `/ai_prompt_studio/versions` | 版本列表 / 新增 |
 | GET | `/ai_prompt_studio/versions/{id}` | 版本详情 |
 | GET/POST | `/ai_prompt_studio/sessions` | 会话列表 / 新建 |

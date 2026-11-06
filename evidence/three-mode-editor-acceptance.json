@@ -1,0 +1,89 @@
+{
+  "steps": [
+    [
+      "opened",
+      true
+    ],
+    [
+      "boxesBefore",
+      2
+    ],
+    [
+      "geometry",
+      {
+        "svg": 688,
+        "box": 330.76922607421875,
+        "modal": 1400
+      }
+    ],
+    [
+      "coordsAfterDrag",
+      "109, 0, 709, 832"
+    ],
+    [
+      "coordsAfterResize",
+      "600, 200, 1018, 608"
+    ],
+    [
+      "closedAfterCancel",
+      true
+    ],
+    [
+      "cancelDiscardedCaption",
+      true
+    ],
+    [
+      "cancelDiscardedCoords",
+      true
+    ],
+    [
+      "rowsAfterAdd",
+      3
+    ],
+    [
+      "appliedCaption",
+      "Applied caption."
+    ],
+    [
+      "appliedItems",
+      3
+    ],
+    [
+      "dirtyFlag",
+      true
+    ],
+    [
+      "closedAfterApply",
+      true
+    ],
+    [
+      "captionModeTitle",
+      "编辑反推描述"
+    ],
+    [
+      "captionModeCanvasHidden",
+      true
+    ],
+    [
+      "modeSwitchKeepsItems",
+      true
+    ],
+    [
+      "serializedHasPayload",
+      true
+    ],
+    [
+      "restored",
+      {
+        "caption": "Applied caption.",
+        "items": 3,
+        "size": [
+          1248,
+          832
+        ],
+        "bbox0": "0,0,600,832"
+      }
+    ]
+  ],
+  "ok": true
+}

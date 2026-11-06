@@ -215,6 +215,117 @@ class StudioBackend:
             raise InvalidRequestError(str(exc)) from exc
         return result.to_dict()
 
+    def caption_node(self, body: dict[str, Any]) -> dict[str, Any]:
+        """One model call for the graph node: image bytes → prompt+canvas+draft.
+
+        Body: ``{mode, image:{data_url}, image_path?, extra_instruction?,
+        model?, overwrite?: bool}``.  ``image`` takes priority over
+        ``image_path``.  The image is read from the request body (data URL) or
+        from a local file on the server; the API key never reaches the browser.
+        """
+        from .caption import SAFETY_PREFIX, _INSTRUCTIONS, _clean
+        from .client import ChatResult
+        from .layout import (
+            draft_json, layout_instruction, match_canvas_size, parse_model_layout,
+        )
+        from .caption_node import MODES, image_dimensions
+        from .images import image_to_part
+        from .sessions import decode_data_url
+
+        mode = str(body.get("mode") or "caption")
+        if mode not in MODES:
+            raise InvalidRequestError(f"mode must be one of {', '.join(MODES)}.")
+        image = body.get("image")
+        image_path = str(body.get("image_path") or "").strip()
+        raw: bytes
+        mime: str
+        if isinstance(image, dict) and image.get("data_url"):
+            try:
+                raw, mime = decode_data_url(str(image["data_url"]))
+            except ValueError as exc:
+                raise InvalidRequestError(f"image rejected: {exc}") from exc
+        elif image_path:
+            from pathlib import Path
+
+            path = Path(image_path)
+            if not path.is_file():
+                raise InvalidRequestError(f"image_path is not a file: {image_path}")
+            raw = path.read_bytes()
+            ext = path.suffix.lower().lstrip(".")
+            mime = {"jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png",
+                    "webp": "image/webp", "gif": "image/gif"}.get(ext, "")
+            if not mime:
+                raise InvalidRequestError(f"unsupported image type: .{ext}")
+        else:
+            raise InvalidRequestError("image.data_url or image_path is required.")
+        if not raw or len(raw) > MAX_BODY:
+            raise InvalidRequestError("image is empty or too large (25 MB max).")
+        try:
+            src_w, src_h = image_dimensions(raw)
+        except ValueError as exc:
+            raise InvalidRequestError(str(exc)) from exc
+        width, height = match_canvas_size(src_w, src_h)
+
+        part = to_api_part(self.media, image_to_part(
+            self.media, {"base64": __import__("base64").b64encode(raw).decode("ascii"), "mime": mime}
+        ))
+        messages = [{"role": "user", "content": [
+            {"type": "text", "text": (
+                SAFETY_PREFIX + _INSTRUCTIONS["prose"] if mode == "caption"
+                else SAFETY_PREFIX + layout_instruction(
+                    mode, width, height, str(body.get("extra_instruction") or "")
+                )
+            )},
+            part,
+        ]}]
+        result: ChatResult = self.client.complete_via_stream(
+            messages,
+            model=str(body.get("model") or "").strip() or None,
+            temperature=0.3,
+            max_tokens=3000 if mode != "caption" else 500,
+        )
+        state: dict[str, Any] = {
+            "mode": mode,
+            "width": width,
+            "height": height,
+            "source_width": src_w,
+            "source_height": src_h,
+            "request_id": result.request_id,
+        }
+        if mode == "caption":
+            text = _clean(result.text, "prose")
+            if not text:
+                raise InvalidRequestError("The model returned an empty caption.")
+            state["caption"] = text
+        else:
+            try:
+                draft = parse_model_layout(result.text, width, height)
+            except ValueError as exc:
+                # A truncated/malformed model reply is a retryable upstream
+                # failure, not a bare 500. Keep the message actionable.
+                raise InvalidRequestError(
+                    f"布局反推失败（模型输出不是完整 JSON，通常是被长度截断）：{exc}。"
+                    "请点「反推」重试；仍失败可换模型或减少画面文字。"
+                ) from exc
+            state["caption"] = str(draft["summary"]["caption"])
+            state["draft"] = draft
+        self.audit.log(
+            "node_caption", request_id=result.request_id, mode=mode,
+            source=f"{src_w}x{src_h}", canvas=f"{width}x{height}",
+            operation="stream",
+        )
+        return {
+            "mode": mode,
+            "width": width,
+            "height": height,
+            "source_width": src_w,
+            "source_height": src_h,
+            "caption": state["caption"],
+            "draft": state.get("draft"),
+            "payload": state,
+            "request_id": result.request_id,
+        }
+
     def apply_edits(self, body: dict[str, Any]) -> dict[str, Any]:
         text = body.get("text")
         if not isinstance(text, str):
@@ -384,6 +495,13 @@ def install_routes(routes: Any, backend: StudioBackend | None) -> None:
     async def caption(request: web.Request) -> web.Response:
         body = await _json_body(request)
         result = await asyncio.to_thread(require().caption, body)
+        return web.json_response(result)
+
+    @routes.post("/ai_prompt_studio/caption_node")
+    @guarded
+    async def caption_node(request: web.Request) -> web.Response:
+        body = await _json_body(request)
+        result = await asyncio.to_thread(require().caption_node, body)
         return web.json_response(result)
 
     @routes.post("/ai_prompt_studio/apply")

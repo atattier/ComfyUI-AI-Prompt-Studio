@@ -1,0 +1,45 @@
+E:\TOOL\Python3.14.7\Lib\tempfile.py:484: ResourceWarning: Implicitly cleaning up <HTTPError 400: 'Bad Request'>
+  _warnings.warn(self.warn_message, ResourceWarning)
+..................................E:\TOOL\Python3.14.7\Lib\tempfile.py:484: ResourceWarning: Implicitly cleaning up <HTTPError 401: 'Unauthorized'>
+  _warnings.warn(self.warn_message, ResourceWarning)
+...................................................................................E:\TOOL\Python3.14.7\Lib\tempfile.py:484: ResourceWarning: Implicitly cleaning up <HTTPError 401: 'Unauthorized'>
+  _warnings.warn(self.warn_message, ResourceWarning)
+..E:\TOOL\Python3.14.7\Lib\tempfile.py:484: ResourceWarning: Implicitly cleaning up <HTTPError 429: 'Too Many Requests'>
+  _warnings.warn(self.warn_message, ResourceWarning)
+...E:\TOOL\Python3.14.7\Lib\tempfile.py:484: ResourceWarning: Implicitly cleaning up <HTTPError 503: 'Service Unavailable'>
+  _warnings.warn(self.warn_message, ResourceWarning)
+...................E:\TOOL\Python3.14.7\Lib\tempfile.py:484: ResourceWarning: Implicitly cleaning up <HTTPError 400: 'Bad Request'>
+  _warnings.warn(self.warn_message, ResourceWarning)
+.................----------------------------------------
+Exception occurred during processing of request from ('127.0.0.1', 60000)
+Traceback (most recent call last):
+  File "E:\TOOL\Python3.14.7\Lib\socketserver.py", line 697, in process_request_thread
+    self.finish_request(request, client_address)
+    ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\TOOL\Python3.14.7\Lib\socketserver.py", line 362, in finish_request
+    self.RequestHandlerClass(request, client_address, self)
+    ~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\TOOL\Python3.14.7\Lib\socketserver.py", line 766, in __init__
+    self.handle()
+    ~~~~~~~~~~~^^
+  File "E:\TOOL\Python3.14.7\Lib\http\server.py", line 502, in handle
+    self.handle_one_request()
+    ~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "E:\TOOL\Python3.14.7\Lib\http\server.py", line 468, in handle_one_request
+    self.raw_requestline = self.rfile.readline(65537)
+                           ~~~~~~~~~~~~~~~~~~~^^^^^^^
+  File "E:\TOOL\Python3.14.7\Lib\socket.py", line 729, in readinto
+    return self._sock.recv_into(b)
+           ~~~~~~~~~~~~~~~~~~~~^^^
+ConnectionResetError: [WinError 10054] 远程主机强迫关闭了一个现有的连接。
+----------------------------------------
+......................
+----------------------------------------------------------------------
+Ran 180 tests in 66.859s
+
+OK
+[ai_prompt_studio] routes registered at /ai_prompt_studio/*
+[ai_prompt_studio] routes already registered, skipping
+[ai_prompt_studio] ComfyUI PromptServer unavailable, routes not registered: cannot import name 'PromptServer' from 'server' (unknown location)
+[ai_prompt_studio] routes registered at /ai_prompt_studio/*
+[ai_prompt_studio] routes registered at /ai_prompt_studio/*
