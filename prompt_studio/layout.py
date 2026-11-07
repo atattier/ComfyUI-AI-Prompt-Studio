@@ -64,7 +64,7 @@ def _clamp_int(value: Any, lo: int, hi: int, default: int) -> int:
         return default
 
 
-def parse_model_layout(raw: str, width: int, height: int) -> dict[str, Any]:
+def parse_model_layout(raw: str, width: int, height: int, *, max_items: int = MAX_ITEMS) -> dict[str, Any]:
     """Parse a model's layout JSON and convert normalized boxes to pixels.
 
     The model is asked for bbox values in 0..1000 normalized space (models are
@@ -151,7 +151,8 @@ def parse_model_layout(raw: str, width: int, height: int) -> dict[str, Any]:
         items.append(item)
     if not items:
         raise ValueError("The model layout has no usable items.")
-    if len(items) > MAX_ITEMS:
+    limit = max(1, min(MAX_ITEMS, int(max_items or MAX_ITEMS)))
+    if len(items) > limit:
         # Models over-segment screenshots into dozens of tiny UI text boxes.
         # Keep the largest regions (by area), preserving model order afterwards.
         ranked = sorted(
@@ -161,7 +162,7 @@ def parse_model_layout(raw: str, width: int, height: int) -> dict[str, Any]:
                 * (items[i]["bbox"][3] - items[i]["bbox"][1])
             ),
             reverse=True,
-        )[:MAX_ITEMS]
+        )[:limit]
         items = [items[i] for i in sorted(ranked)]
     return {
         "width": int(width),
@@ -173,8 +174,21 @@ def parse_model_layout(raw: str, width: int, height: int) -> dict[str, Any]:
     }
 
 
-def layout_instruction(mode: str, width: int, height: int, extra: str = "") -> str:
+def layout_instruction(
+    mode: str,
+    width: int,
+    height: int,
+    extra: str = "",
+    *,
+    max_regions: int = 6,
+) -> str:
     """Build the model instruction for layout/hybrid mode."""
+    region_limit = max(1, min(8, int(max_regions or 6)))
+    region_clause = (
+        "AT MOST 6 regions"
+        if region_limit == 6
+        else f"AT MOST {region_limit} regions (up to at most 6 regions by default)"
+    )
     strict = (
         "Analyse the image and identify the main visual regions (subjects, "
         "objects, background, visible text). Output ONE strictly valid JSON "
@@ -185,8 +199,8 @@ def layout_instruction(mode: str, width: int, height: int, extra: str = "") -> s
         "(top-left origin, xyxy), NOT pixels. Use the full extent of the image. "
         "label must be one of object, character, text; for label=text include "
         "the literal visible text as 'text'. captions are concise English "
-        "descriptions of visible appearance. items must contain at least one "
-        "entry and AT MOST 6 regions: group small details together and ignore "
+        f"descriptions of visible appearance. items must contain at least one "
+        f"entry and {region_clause}: group small details together and ignore "
         "tiny UI labels/text unless they are a dominant subject."
     )
     if mode == "hybrid":

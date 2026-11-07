@@ -49,6 +49,19 @@ class ParseProposalTests(unittest.TestCase):
         with self.assertRaises(EditValidationError):
             parse_proposal(raw, "a cat")
 
+    def test_allow_empty_normalizes_initial_draft_ops(self):
+        raw = json.dumps(
+            {
+                "reply": "已从空状态起草提示词",
+                "changes": [{"op": "replace", "before": "", "after": "cinematic neon skyline, 35mm"}],
+            },
+            ensure_ascii=False,
+        )
+        proposal = parse_proposal(raw, "", allow_empty=True)
+        self.assertEqual(proposal.text, "cinematic neon skyline, 35mm")
+        self.assertTrue(proposal.changed)
+        self.assertEqual(proposal.changes[0]["op"], "append")
+
 
 class MessageTests(unittest.TestCase):
     def test_edit_messages_include_prompt_verbatim(self):
@@ -57,6 +70,15 @@ class MessageTests(unittest.TestCase):
         self.assertIn("a cat, sunny", messages[1]["content"])
         self.assertIn("make it rainy", messages[1]["content"])
         self.assertIn("JSON", messages[0]["content"])
+
+    def test_edit_messages_with_history_and_allow_empty(self):
+        history = [
+            {"role": "user", "content": "反推参考图"},
+            {"role": "assistant", "content": "海报主视觉，前景产品特写"},
+        ]
+        messages = build_edit_messages("", "帮我生成英文提示词", history=history, allow_empty=True)
+        self.assertEqual([m["role"] for m in messages], ["system", "user", "assistant", "user"])
+        self.assertIn("empty", messages[-1]["content"])
 
     def test_chat_messages_history_order(self):
         history = [
@@ -84,6 +106,14 @@ class RequestEditTests(unittest.TestCase):
         self.assertEqual(proposal.text, "a dog on a mat, sunny")
         self.assertEqual(proposal.changes[0]["before"], "a cat")
         self.assertGreater(proposal.latency_ms, -1)
+
+    def test_request_edit_allow_empty_drafts_from_scratch(self):
+        _mock, _settings, client, _audit = make_client(self, model="demo-model")
+        proposal = request_edit(
+            client, current_text="   ", instruction="写一段赛博朋克街景提示词", allow_empty=True
+        )
+        self.assertTrue(proposal.changed)
+        self.assertTrue(proposal.text.strip())
 
     def test_request_edit_noop(self):
         _mock, _settings, client, _audit = make_client(self, model="editor-noop")

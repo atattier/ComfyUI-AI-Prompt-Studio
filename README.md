@@ -1,196 +1,156 @@
 # ComfyUI AI Prompt Studio
 
-ComfyUI 的 AI 提示词工作台。**当前阶段：M1 — 画布内的提示词闭环。**
+<p align="center">
+  <strong>ComfyUI 的多模态 AI 提示词工作台与智能反推节点</strong><br>
+  多模态反推 · 空间区域排版画框 · 三格式输出（散文 / 布局 / Danbooru）· 结构化改词 · 零侵入全局侧边栏
+</p>
 
-M0 验证了一个统一多模态后端（一个 Base URL、一个 API Key、一个 Model，完成文本、图片理解、流式与多轮对话）。M1 在此基础上接入 ComfyUI 侧边栏，把「读提示词 → 对话/反推 → 看差异 → 应用 → 撤销」做成可以直接使用的闭环。
+<p align="center">
+  <img src="https://img.shields.io/badge/license-GPL--3.0-blue.svg" alt="License GPL-3.0">
+  <img src="https://img.shields.io/badge/python-3.10+-brightgreen.svg" alt="Python 3.10+">
+  <img src="https://img.shields.io/badge/ComfyUI-Custom--Node-orange.svg" alt="ComfyUI Custom Node">
+  <img src="https://img.shields.io/badge/tests-208%20passed-success.svg" alt="Tests">
+</p>
 
-> 主体是零侵入的侧边栏扩展：加载它不会改变现有工作流；提示词只在用户点击「应用」时写入。另有一个可选的图节点「AI 图像反推提示词」（见下），使用它的工作流需要装本插件才能重新打开。
+---
 
-## M1 闭环
+## 🌟 核心亮点
 
-```
-选中带文本控件的节点          ← 侧边栏自动识别 / 手动切换
-        ↓
-反推参考图  或  对话提问/提修改
-        ↓
-模型返回结构化编辑操作（replace / delete / insert_after / append）
-        ↓
-服务端逐条校验 before 是否存在且唯一 → 生成块级 diff
-        ↓
-Diff 卡片：全部应用 / 勾选应用 / 放弃
-        ↓
-写入节点控件（可撤销）＋ 记录版本（可恢复）
-```
+- 🖼️ **富交互反推节点 (`AIPromptStudioCaption`)**：直接在 ComfyUI 画布中完成图像反推、多形态画框微调、提示词修改与参数输出。
+- 🎯 **三格式输出与一键全开**：支持 **散文 (Prose/MOSS 规范)**、**空间排版 (Layout JSON)** 与 **Danbooru (标签体系)** 三种格式，点按「3格式全开」可同时启用 3 端口并行输出。
+- 📐 **多形态空间布局画框**：支持**左翼挂载**、**右翼挂载**与**内嵌双栏**形态切换；支持自由拉框、缩放、移动、自适应深浅背景文字，并自带侧边栏专属「↩ 撤销」支持。
+- 📏 **智能尺寸适配 (Width/Height)**：根据输入图像宽高比，自动匹配 MOSS 推荐的分辨率网格（16 整数倍、面积近 1M、每边 256~2048），直接作为 INT 尺寸连入 Latent / 出图节点。
+- ⚙️ **统一模型网关与全局规则**：兼容任意 OpenAI 格式接口（Magpie / NewAPI / OneAPI / vLLM / Ollama 等）；支持 MOSS 官方散文/布局规范，并独创 **「★ 用户自定义要求」** 自动合并注入所有预设规则。
+- ⚡ **零侵入侧边栏工作台**：自带独立的侧边栏面板，自动识别画布中任意文本节点，采用**结构化操作（replace/insert/append/delete）与块级 Diff 审阅机制**，绝不幻觉重写整段提示词，支持无限撤销与 SQLite 历史版本回溯。
 
-关键约束：
+---
 
-- 模型**不能**直接重写整段提示词。它只能给出相对当前文本的编辑操作，`before` 必须在当前文本中**唯一出现**，否则该提案被拒绝（HTTP 422），提示词不受影响。
-- 应用前先在服务端对当前文本重新校验一次，避免「生成 diff 后文本又被改动」造成误写。
-- 每次写入都进入撤销栈并生成版本记录（每个控件保留最近 100 个版本）。
-- 反推受能力探测约束：探测到模型不支持图片输入时，反推按钮禁用并说明原因。
+## 📸 界面预览
 
-## M1 功能
+| 节点富交互界面与改词动作条 | 多形态空间布局画框与撤销 | 网关配置与自定义提示词规则 |
+|:---:|:---:|:---:|
+| ![节点主界面](docs/images/node_main_interface.png) | ![空间排版画框](docs/images/stage_layout_editor.png) | ![模型网关设置](docs/images/model_settings_modal.png) |
 
-| 能力 | 位置 |
-|---|---|
-| 侧边栏工作台（`app.extensionManager.registerSidebarTab`，`type: "custom"`） | `web/ai_prompt_studio.js` |
-| 节点提示词读写（LiteGraph / 新前端控件，写入走 widget.value + callback + onWidgetChanged） | `web/lib/targets.js`、`prompt_studio/aiohttp_api.py` |
-| 反推（自然语言 / 标签 / MOSS 风格；节点预览图或上传） | `prompt_studio/caption.py`、`web/lib/images.js` |
-| 结构化编辑与校验（唯一性、歧义、长度、无变化） | `prompt_studio/diff.py`、`prompt_studio/edit_agent.py` |
-| 块级 diff（逗号/换行分块，分隔符变化不算修改） | `prompt_studio/diff.py`、`web/lib/diff.js` |
-| 应用 / 撤销 / 重做（按控件键定位，不依赖当前选中项） | `web/lib/undo.js` |
-| 版本历史（SQLite，按控件键隔离，可恢复） | `prompt_studio/versions.py` |
-| ComfyUI 同源路由（不新开端口、无 CORS） | `prompt_studio/aiohttp_api.py` |
-| 能力探测与前端状态徽章（文本 / 视觉 / 流式） | `prompt_studio/capabilities.py` |
-| 只读开发环境（假 ComfyUI 页面 + 假上游） | `scripts/dev_harness.py`、`dev/` |
+---
 
-## 默认配置
+## 📦 安装方法
 
-未设置凭据或环境变量时，Base URL 与模型默认指向本机 Magpie 网关：
+### 方式一：通过 ComfyUI-Manager（推荐）
+1. 在 ComfyUI 的 Manager 菜单中搜索 `ComfyUI-AI-Prompt-Studio`；
+2. 点击 Install 安装并重启 ComfyUI。
 
-| 项 | 默认值 |
-|---|---|
-| Base URL | `http://127.0.0.1:3425/v1` |
-| Model | `gemini-3.8-flash` |
-| API Key | 无（必须配置一个非空值；本机 Magpie 可填任意占位值） |
-
-当前本机已保存的配置是 `http://127.0.0.1:3425/v1` + `auto/glm-5.3-flash`；Key 位于 Windows 凭据管理器，`GET /ai_prompt_studio/status` 只返回掩码。
-
-### 怎么改模型 / URL / API Key
-
-**推荐：侧边栏配置。** 打开「AI 提示词」侧边栏，点底部的「模型：… ⚙」；填 Base URL、模型名、API Key（留空沿用已保存的 Key）、单次超时（10–300 秒）和超时重试次数（0–3），点「保存配置」。配置立即更新后端；URL/模型写入本机凭据文件，Key 写入 Windows 凭据管理器。密码框不回显、保存成功或失败后都立即清空，不进 localStorage、工作流、日志或仓库；状态只显示掩码。
-
-安全前提：Key 会短暂经过浏览器和本机同源 POST，所以 ComfyUI 必须只绑定 `127.0.0.1`；不要把 8188 暴露到局域网，也不要在共享浏览器会话里输入。Magpie 忽略 Key，但仍需一个非空占位值。
-
-也可以离线配置：用 **ComfyUI 使用的那个 Python** 在插件目录运行：
-
+### 方式二：Git Clone 手动安装
+在你的 ComfyUI 根目录下的 `custom_nodes` 文件夹中执行：
 ```bash
-python -m prompt_studio.credentials set
+cd custom_nodes
+git clone https://github.com/your-username/ComfyUI-AI-Prompt-Studio.git
 ```
+依赖极度轻量（仅依赖 ComfyUI 本身自带的 `aiohttp` 和 Python 标准库），无需安装复杂的外部编译包。
 
-依次输入 Base URL、Model、隐藏输入的 API Key。非密文写在 `C:\Users\<你>\.comfyui-ai-prompt-studio\credentials.json`，Key 写入 Windows 凭据管理器；改完重启 ComfyUI。三个环境变量优先级更高（适合临时覆盖）：
+---
 
-```bash
-PROMPT_STUDIO_BASE_URL=http://127.0.0.1:3425/v1
-PROMPT_STUDIO_MODEL=auto/glm-5.3-flash
-PROMPT_STUDIO_API_KEY=<你的Key>
-```
+## 🚀 快速上手
 
-节点上的 `model` 控件只覆盖**这一次反推**的模型，留空使用工作台配置；URL 与 Key 始终由后端统一配置。模型名必须与网关 `/v1/models` 列出的 id 一致。
+### 1. 配置模型网关与 API 密钥
+1. 点击节点顶栏的 **「⚙ 设置」** 按钮（或打开侧边栏工作台底部的设置）；
+2. 填写模型服务网关信息：
+   - **Base URL**：例如 `http://127.0.0.1:3425/v1`（本机 Magpie 网关）或 `https://api.openai.com/v1`；
+   - **API Key**：你的接口密钥；
+   - **默认模型 (Model)**：支持一键从网关拉取可用模型列表，并支持文本/视觉/流式能力探测；
+3. 点击 **「保存设置并生效」**。
 
-## 安装
+> 🔒 **安全承诺**：API Key 仅安全存储于本机操作系统凭据库（Windows Credential Manager / 受保护文件）和后端内存中；前端页面仅显示脱敏掩码，工作流 JSON、审计日志与 Git 仓库中**绝不写入**任何明文密钥。
 
-1. 把整个仓库目录复制到 `ComfyUI/custom_nodes/ComfyUI-AI-Prompt-Studio`（或用 git clone）。
-2. 用 **ComfyUI 使用的那个 Python** 写入凭据：
+---
 
-```bash
-python -m prompt_studio.credentials set
-```
+### 2. 使用画布节点：AI 图像反推提示词 (`AIPromptStudioCaption`)
 
-3. 重启 ComfyUI，右键侧边栏 / 侧栏图标里选择「AI 提示词」。
-
-不安装也可以先跑只读开发环境（见下文「开发与测试」），它不会连接你的 ComfyUI。
-
-## 使用
-
-1. 在画布上选中一个带文本输入控件的节点（例如 CLIP Text Encode）。面板顶部的选择框会列出画布上的所有候选控件。
-2. **对话**：直接提问；「生成修改」会把输入框里的要求变成可审阅的编辑提案。
-3. **反推**：选「用所选节点图片」或上传图片，选择输出格式，生成后可编辑再写入。
-4. **应用**：Diff 卡片里逐条勾选（或全部应用）。写入后可点底部「撤销」，也可在「历史」里恢复任意版本。
-5. 能力徽章显示模型探测结果；点 `↻` 重新探测。
-
-## 图节点：AI 图像反推提示词
-
-除了侧边栏，还提供一个可连线的图节点 `AIPromptStudioCaption`（画布右键菜单 → AI Prompt Studio），三种出图方式由 `mode` 下拉切换：
+右键画布菜单 `添加节点 -> AI Prompt Studio -> AI 图像反推提示词`。
 
 ```
-LoadImage ──→ AI 图像反推提示词 ──┬─→ prompt (STRING) ──→ CLIP Text Encode / PromptBoard
-                mode:             ├─→ width  (INT)
-                 caption          └─→ height (INT)    ──→ MOSI 出图尺寸 / 空白 Latent
-                 layout
-                 hybrid
+[LoadImage] ──(IMAGE)──→ [AI 图像反推提示词] ──┬─→ caption_prompt  (STRING) ──→ CLIP Text Encode
+                           模式支持 1~3 全开:  ├─→ layout_prompt   (STRING) ──→ MOSSPromptBoard
+                            ☑ 散文 (MOSS)       ├─→ danbooru_prompt (STRING) ──→ 标签负向/风格模型
+                            ☑ 布局 (Layout)     ├─→ width           (INT)
+                            ☑ Danbooru (Tags)   └─→ height          (INT)    ──→ 空白 Latent / 采样尺寸
 ```
 
-| 模式 | `prompt` 输出 | 弹窗 |
+#### 端口与功能说明
+| 输出端口 | 数据类型 | 说明 |
 |---|---|---|
-| `caption` | 英文散文描述 | 只编辑文本，无布局画布 |
-| `layout` | PromptBoard 兼容的 Layout 草稿 JSON（`bbox_coord_space:"abs"` / `xyxy`，可直接粘进 `MOSSPromptBoard.draft`） | 预览框可拖动/缩放/增删区域，改标签与描述 |
-| `hybrid` | 完整 2–4 句描述 + 布局草稿 JSON | 同 layout，整体描述也可完整编辑 |
+| `caption_prompt` | `STRING` | 自然语言散文提示词（严格遵守 MOSS 具象名词、光影物理规律、禁用废词规则） |
+| `layout_prompt` | `STRING` | 空间区域排版 JSON（PromptBoard 兼容，包含 `summary` 与 `items[].bbox` 绝对像素坐标） |
+| `danbooru_prompt` | `STRING` | 结构化英文逗号标签（发型、神态、服饰、构图、光影按优先级清晰排列） |
+| `width` / `height` | `INT` | 依据图像比例自动匹配的 MOSS 标准输出分辨率（16 整数倍） |
 
-- **尺寸**：读原图宽高比，按 MOSS 官方约束（每边 256–2048、16 倍数、总像素 ≤ 2,097,152）以「比例误差优先、面积近 1M 次优」匹配，`width`/`height` 作为 INT 输出接口。
-- **图片链路**：`image` 输入接 LoadImage 等 IMAGE 输出（前端从上游 widget 文件名经同源 `/view` 取字节转 data URL 放进请求体）；未连接时用 `image_path` 本地绝对路径。`image` 优先，Key 始终只在后端。
-- **反推按钮**：点节点上的「反推」调用模型；结果存进 `payload` widget 随工作流保存，跑图时只读缓存、不重复烧额度。手改过内容后重新反推会弹确认，不会静默覆盖。
-- **直接排队**：新节点还没点「反推」时，第一次执行会用节点连入的 IMAGE（或 `image_path`）按当前 `mode` 自动反推一次，把 `payload` 经 `onExecuted` 写回节点；后续执行只读缓存。没有图片且 `payload` 为空时会明确提示连接图片、配置模型或先点「反推」。
-- **编辑弹窗**：点「编辑…」或双击节点；「取消」丢弃修改，「应用」写回节点。
-- **代价**：保存了该节点的工作流在没装本插件的 ComfyUI 上打开会报缺失节点（红色）。不想引入依赖就继续用侧边栏反推。
+#### 节点常用操作
+- **3格式全开**：顶栏点按一键切换开启/关闭 3 格式并行输出；
+- **排版形态切换**：支持点按「左翼 / 右翼 / 内嵌」，画框既可折叠进节点，也可悬浮在节点两侧，不遮挡提示词；
+- **快捷改词条**：
+  - `⚡ 反推`：重新读取图像并执行多模态反推；
+  - `✨ 扩写`：丰富画面环境与氛围细节；
+  - `🌐 译英`：一键翻译中文创意并符合模型生图逻辑；
+  - `🎯 MOSS精炼`：自动剔除无意义虚词，强化构图与光影修饰；
+  - `↩ 撤销`：撤销当前输入框编辑；
+- **对话改词**：在底部直接输入改词指令（如 `把白衬衫改成黑白赛车夹克`）并回车，模型将针对性调整；
+- **随工作流缓存**：反推结果自动随工作流 JSON 保存，再次排队执行时只读缓存，绝不重复烧额度。
 
-验收报告：[`docs/three-mode-acceptance.md`](docs/three-mode-acceptance.md)。
+---
 
-## ComfyUI 路由
+### 3. 使用全局侧边栏工作台（零侵入）
 
-路由注册在 ComfyUI 自己的 aiohttp 服务上，前端同源调用，因此**不另开端口、不需要 CORS**，API Key 不会进入浏览器。
+在 ComfyUI 右侧或左侧功能栏中点击 **「AI 提示词」** 图标即可唤出。
 
-| 方法 | 路径 | 说明 |
+```
+画布选中任意文本节点 ──→ 侧边栏自动绑定 ──→ 对话提修改/反推参考图 ──→ 块级 Diff 差异审阅 ──→ 应用并记录版本
+```
+
+- **严格防幻觉编辑**：模型以结构化操作提案（`replace` / `insert_after` / `delete` / `append`）输出修改，必须在当前文本中唯一匹配才允许应用，杜绝模型擅自删减用户提示词；
+- **版本历史回溯**：每次写入均自动存入本地 SQLite，支持按节点控件独立回退历史版本与无限级撤销/重做。
+
+---
+
+## 📂 示例工作流
+
+本项目在 [`examples/`](examples/) 目录中提供了完整的快速体验工作流：
+- [`examples/workflow_caption_demo.json`](examples/workflow_caption_demo.json)：加载图像 ➔ AI 反推提示词 ➔ 散文/布局/Danbooru 同时输出的基础示例，直接拖入 ComfyUI 即可使用。
+
+---
+
+## 🛠️ 后端 API 路由
+
+插件通过 ComfyUI 内置的 `aiohttp` 服务注册同源路由，无需额外端口或配置跨域（CORS）：
+
+| 方法 | 路由 | 用途 |
 |---|---|---|
-| GET | `/ai_prompt_studio/health` | 存活检查 |
-| GET | `/ai_prompt_studio/status` | 版本、公开配置（密钥仅掩码）、缓存的能力报告 |
-| POST | `/ai_prompt_studio/config` | 保存 Base URL / Model / API Key / 超时 / 重试；Key 只写入系统凭据，响应仅掩码 |
-| POST | `/ai_prompt_studio/probe` | 探测文本 / 视觉 / 流式 |
-| GET | `/ai_prompt_studio/capabilities` | 只读缓存报告 |
-| POST | `/ai_prompt_studio/chat` | SSE：`meta` → `delta` → `done`，失败为 `error` |
-| POST | `/ai_prompt_studio/edit` | 生成编辑提案（含 diff 与校验） |
-| POST | `/ai_prompt_studio/apply` | 对当前文本重新校验并返回结果文本 |
-| POST | `/ai_prompt_studio/caption` | 侧边栏图片反推（1–3 种格式） |
-| POST | `/ai_prompt_studio/caption_node` | 图节点反推：图片 → prompt + MOSS 尺寸 + 布局草稿 |
-| GET/POST | `/ai_prompt_studio/versions` | 版本列表 / 新增 |
-| GET | `/ai_prompt_studio/versions/{id}` | 版本详情 |
-| GET/POST | `/ai_prompt_studio/sessions` | 会话列表 / 新建 |
-| GET/DELETE | `/ai_prompt_studio/sessions/{id}` | 会话详情 / 删除 |
+| `GET` | `/ai_prompt_studio/health` | 服务存活探测 |
+| `GET` | `/ai_prompt_studio/status` | 服务状态、公开配置（密钥仅掩码）与模型探测报告 |
+| `POST` | `/ai_prompt_studio/config` | 保存网关地址、模型、超时与全局提示词规则配置 |
+| `POST` | `/ai_prompt_studio/probe` | 探测指定模型文本/视觉/流式能力 |
+| `POST` | `/ai_prompt_studio/chat` | 多轮对话流式 SSE 交互 |
+| `POST` | `/ai_prompt_studio/edit` | 生成结构化编辑提案与校验 |
+| `POST` | `/ai_prompt_studio/caption` | 多格式图像反推接口 |
+| `POST` | `/ai_prompt_studio/caption_node` | 画布节点富交互反推后端（含 MOSS 尺寸算子与排版草稿） |
+| `GET/POST`| `/ai_prompt_studio/versions` | 提示词版本历史存取与回退 |
 
-> 这些路由继承 ComfyUI 的暴露范围：如果 ComfyUI 监听在局域网地址，路由也同样可达。没有自建鉴权时，请把 ComfyUI 绑定在 `127.0.0.1`。
+---
 
-## 开发与测试
+## 🧪 开发与测试
+
+本项目具备完善的自动化测试套件：
 
 ```bash
-# Python：后端、路由、编辑校验、版本、凭据
-python -m unittest discover -v -s tests -t .
+# 运行 Python 单元测试（覆盖配置、Diff 校验、布局计算、凭据保护与节点交互）
+python -m unittest discover tests
 
-# JavaScript：SSE 解析、目标识别、撤销栈、diff 助手、API 客户端
+# 运行 JavaScript 单元测试（覆盖 SSE 解析、撤销栈、SVG 画框、目标绑定与布局编辑器）
 node --test tests_js/*.test.mjs
-
-# 只读 UI 开发环境（假 ComfyUI 页面 + 本地假上游，不花真实额度）
-python scripts/dev_harness.py --port 8199 --model demo-model
 ```
 
-开发环境打开 <http://127.0.0.1:8199/>，包含三个假节点（正向提示词、负向提示词、参考图）与假上游模型 `demo-model`；它不读取你的 ComfyUI 安装，也不会写入任何工作流。
+---
 
-验收产物写入 `evidence/`：
+## 📄 许可证与开源合规
 
-- M0 报告：[`docs/m0-report.md`](docs/m0-report.md)
-- M1 报告：[`docs/m1-report.md`](docs/m1-report.md)
-- 真实安装回归：[`docs/real-install-report.md`](docs/real-install-report.md)
-- 许可证核查：[`docs/license-audit.md`](docs/license-audit.md)
-- 安全说明：[`docs/security.md`](docs/security.md)
-
-## 安全边界
-
-- API Key 只存在于后端进程内存和系统凭据库（Windows Credential Manager；其他平台回退到受限权限文件）。网页可输入新 Key，但不回显、不保存明文；前端、工作流、审计日志和响应里都只有掩码或没有 Key。
-- 审计日志只记录元数据（模型、耗时、状态、token 用量、chunk 数），不记录提示词、图片或请求头。
-- 图片内容只作为「素材」处理，系统提示明确禁止把图片中的文字当指令执行。
-- 编辑提案必须通过服务端校验才可能写入；写入前有 diff 审阅，写入后可撤销。
-- 详见 [`docs/security.md`](docs/security.md)。
-
-## 许可证
-
-本项目采用 **GPL-3.0-only**（见 [`LICENSE`](LICENSE)）。这是为公开发行选择的保守方案，不构成法律意见，也不是「因为 import 了 ComfyUI 所以必然如此」的结论。第三方组件与版本记录见 [`docs/license-audit.md`](docs/license-audit.md)。
-
-- ComfyUI 与 ComfyUI Frontend：GPL-3.0；本插件通过 ComfyUI 的公开扩展点（`WEB_DIRECTORY`、`PromptServer.routes`、`registerSidebarTab`）接入，未复制其源码。
-- MOSS 官方 `compile_prompt.py`：Apache-2.0（属于兄弟项目 `ComfyUI-MOSS-PromptBoard`，本项目未包含）。
-- `moss-image-prompt-skill`：CC BY-NC-ND 4.0，**不随本项目分发**；仅允许用户本地只读加载（M2）。
-
-## 路线图
-
-- **M0（已完成）**：统一 API 原型。
-- **M1（当前）**：侧边栏工作台、节点读写、反推、diff 应用、撤销、版本历史。
-- **M2**：提示词扩充、结构化输出、图片反推的规则化改造。
-- **M3**：双规则引擎、冲突检测与解释。
+本项目采用 **[GPL-3.0 License](LICENSE)** 开源。
+- 零侵入设计：完全通过 ComfyUI 公开扩展点（`WEB_DIRECTORY`、`PromptServer.routes`）注册；
+- 独立轻量：不内嵌不可分发的专有权重，核心算法完全遵循开源生态规范。

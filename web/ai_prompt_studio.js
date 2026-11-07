@@ -1,10 +1,10 @@
 /**
- * ComfyUI AI Prompt Studio — sidebar workbench (M1).
+ * ComfyUI AI Prompt Studio — workbench & dual-column studio launcher.
  *
- * Read a prompt from a selected node, discuss it, caption a reference image,
- * then apply a validated diff with undo and version history.  The API key
- * never touches this file: every model call goes through the same-origin
- * routes registered in `prompt_studio.aiohttp_api`.
+ * Read or edit a prompt from a selected node, launch the wide Left-Right
+ * Dual-Column Studio Workbench, reverse-engineer reference images into the
+ * active conversation context, and apply validated diffs with undo and
+ * version history.  The API key never touches this file.
  */
 
 import { app } from "../../scripts/app.js";
@@ -20,13 +20,37 @@ import {
   setWidgetText,
   targetWire,
 } from "./lib/targets.js";
-import { changeCount, describeOp, describeStats, excerpt, selectOps } from "./lib/diff.js";
+import { describeOp, describeStats, excerpt, selectOps } from "./lib/diff.js";
+import { openLayoutEditor } from "./lib/layout_editor.js";
 import { UndoStack } from "./lib/undo.js";
 import { fileToDataUrl, sourceToDataUrl } from "./lib/images.js";
 
 const EXTENSION_NAME = "ComfyUI-AI-Prompt-Studio";
 const TAB_ID = "ai-prompt-studio";
 const SESSION_KEY = "aps.sessions.v1";
+
+const QUICK_CHIPS = [
+  {
+    label: "✨ 扩写",
+    title: "补充具象光影、构图与材质细节",
+    prompt: "Expand and enrich the prompt with concrete visual lighting, composition, and texture details in English.",
+  },
+  {
+    label: "🌐 译英",
+    title: "将中文部分翻译为地道英文提示词",
+    prompt: "Translate all Chinese parts of the prompt into natural, idiomatic English image-generation phrasing.",
+  },
+  {
+    label: "🎯 MOSS",
+    title: "按 MOSS-Image 规范清理权重括号并具象化描述",
+    prompt: "Optimize for MOSS-Image: remove (tag:weight) parentheses and convert abstract tags into concrete visible lighting and spatial descriptions.",
+  },
+  {
+    label: "🧹 精简",
+    title: "去除重复与冗余修饰词",
+    prompt: "Clean up duplicate tags and redundant modifiers while keeping key visual details concise.",
+  },
+];
 
 const state = {
   api: new StudioApi(),
@@ -78,11 +102,12 @@ function iconButton(label, title, onClick, className = "") {
 }
 
 function mountStyles() {
-  if (document.querySelector('link[data-aps-style="1"]')) return;
+  if (document.querySelector('link[data-aps-style="20261107_v7"]')) return;
+  document.querySelectorAll("link[data-aps-style]").forEach((n) => n.remove());
   const link = el("link", {
     rel: "stylesheet",
-    href: new URL("./style.css", import.meta.url).href,
-    "data-aps-style": "1",
+    href: new URL("./style.css?v=20261107_v7", import.meta.url).href,
+    "data-aps-style": "20261107_v7",
   });
   document.head.append(link);
 }
@@ -162,11 +187,23 @@ function buildPanel(root) {
     { class: "aps-icon", type: "button", title: "探测当前模型能力", onclick: () => probeCapabilities() },
     "↻",
   );
+  ui.openWorkbenchBtn = el(
+    "button",
+    {
+      class: "aps-btn aps-accent aps-btn-sm",
+      type: "button",
+      title: "打开宽屏左右双栏精细工作台（参考图/布局画布 + 实时编辑 + 多轮对话）",
+      onclick: () => openDualColumnWorkbench(),
+    },
+    "🖥 双栏工作台",
+  );
   const header = el("header", { class: "aps-header" }, [
-    el("div", { class: "aps-brand" }, [
-      el("span", { class: "aps-logo" }, "✳"),
-      el("span", { class: "aps-title" }, "AI 提示词工作台"),
-      el("span", { class: "aps-version" }, "M1"),
+    el("div", { class: "aps-brand-row" }, [
+      el("div", { class: "aps-brand" }, [
+        el("span", { class: "aps-logo" }, "✳"),
+        el("span", { class: "aps-title" }, "AI 提示词工作台"),
+      ]),
+      ui.openWorkbenchBtn,
     ]),
     el("div", { class: "aps-badges" }, [ui.capText, ui.capVision, ui.capStream, ui.capProbe]),
   ]);
@@ -185,10 +222,23 @@ function buildPanel(root) {
   ui.targetHint = el("div", { class: "aps-target-hint", hidden: true });
   ui.prompt = el("textarea", {
     class: "aps-prompt",
-    readonly: true,
     spellcheck: "false",
     rows: 3,
-    title: "当前提示词（在画布上直接编辑也可以，这里会自动同步）",
+    placeholder: "当前节点提示词为空，可直接在此输入，或在下方用 AI 生成与修改…",
+    title: "当前提示词（支持直接编辑并自动写回节点，也可在画布上编辑）",
+    onchange: () => {
+      const target = activeTarget();
+      if (!target) return;
+      if (ui.prompt.value !== target.text) {
+        void applyText(ui.prompt.value, {
+          key: target.key,
+          source: "manual",
+          label: "工作台直接编辑",
+        }).then((res) => {
+          if (res.applied) setStatus("已同步写入节点（可撤销）。", "ok");
+        });
+      }
+    },
   });
   const targetSection = el("section", { class: "aps-target" }, [
     el("div", { class: "aps-target-row" }, [ui.targetSelect, ui.targetRefresh]),
@@ -200,16 +250,20 @@ function buildPanel(root) {
   ui.tabButtons = {};
   const tabs = el("nav", { class: "aps-tabs", role: "tablist" });
   for (const [id, label] of [
-    ["chat", "对话"],
-    ["caption", "反推"],
-    ["history", "历史"],
+    ["chat", "对话与改词"],
+    ["caption", "图片反推"],
+    ["history", "版本历史"],
   ]) {
-    const button = el("button", {
-      class: "aps-tab",
-      type: "button",
-      role: "tab",
-      onclick: () => switchTab(id),
-    }, label);
+    const button = el(
+      "button",
+      {
+        class: "aps-tab",
+        type: "button",
+        role: "tab",
+        onclick: () => switchTab(id),
+      },
+      label,
+    );
     ui.tabButtons[id] = button;
     tabs.append(button);
   }
@@ -217,14 +271,45 @@ function buildPanel(root) {
   // Chat -----------------------------------------------------------------
   ui.messages = el("div", { class: "aps-messages", "aria-live": "polite" });
   ui.diffHost = el("div", { class: "aps-diff-host" });
+  ui.quickBar = el(
+    "div",
+    { class: "aps-quick-chips" },
+    [
+      el(
+        "button",
+        {
+          class: "aps-chip-btn",
+          type: "button",
+          title: "读取画布图片反推并载入当前对话",
+          onclick: () => quickReverseIntoChat(),
+        },
+        "🖼 读图反推",
+      ),
+      ...QUICK_CHIPS.map((chip) =>
+        el(
+          "button",
+          {
+            class: "aps-chip-btn",
+            type: "button",
+            title: chip.title,
+            onclick: () => requestEdit(chip.prompt, chip.label),
+          },
+          chip.label,
+        ),
+      ),
+    ],
+  );
   ui.composer = el("textarea", {
     class: "aps-composer-input",
     rows: 2,
-    placeholder: "描述想要的变化，或直接提问。Ctrl+Enter 发送。",
+    placeholder: "描述想要的变化（点“生成修改”）或直接提问（Ctrl+Enter 发送）。",
     onkeydown: (event) => {
       if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
         event.preventDefault();
         sendChat();
+      } else if (event.key === "Enter" && event.altKey) {
+        event.preventDefault();
+        requestEdit();
       }
     },
   });
@@ -241,6 +326,8 @@ function buildPanel(root) {
         ui.attachNote.textContent = `已附加：${file.name}`;
         ui.attachNote.hidden = false;
         ui.attachNote.dataset.dataUrl = dataUrl;
+        state.caption.image = dataUrl;
+        state.caption.sourceLabel = file.name;
       } catch (error) {
         setStatus(error.message, "error");
       }
@@ -249,7 +336,7 @@ function buildPanel(root) {
   ui.attachNote = el("div", { class: "aps-attach-note", hidden: true });
   ui.sendButton = el(
     "button",
-    { class: "aps-btn aps-primary", type: "button", onclick: () => sendChat() },
+    { class: "aps-btn", type: "button", title: "发送对话消息（Ctrl+Enter）", onclick: () => sendChat() },
     "发送",
   );
   ui.stopButton = el(
@@ -259,8 +346,13 @@ function buildPanel(root) {
   );
   ui.editButton = el(
     "button",
-    { class: "aps-btn aps-accent", type: "button", title: "让模型给出可审阅的修改", onclick: () => requestEdit() },
-    "生成修改",
+    {
+      class: "aps-btn aps-primary",
+      type: "button",
+      title: "让模型生成可审阅的提示词修改提案（Alt+Enter）",
+      onclick: () => requestEdit(),
+    },
+    "生成修改 ✦",
   );
   ui.attachButton = iconButton("图片", "附加参考图片", () => ui.attachInput.click());
   ui.newChatButton = iconButton("新对话", "开始新的对话（不会删除历史版本）", () => resetConversation());
@@ -268,6 +360,7 @@ function buildPanel(root) {
     ui.messages,
     ui.diffHost,
     el("div", { class: "aps-composer" }, [
+      ui.quickBar,
       ui.attachNote,
       ui.composer,
       el("div", { class: "aps-composer-actions" }, [
@@ -282,8 +375,6 @@ function buildPanel(root) {
   ui.captionPreview = el("div", { class: "aps-caption-preview" }, [
     el("div", { class: "aps-placeholder" }, "还没有选择参考图片"),
   ]);
-  // One checkbox per format: tick any combination of 1-3, one reverse run
-  // returns every ticked format as its own editable result.
   ui.captionFormatBoxes = {};
   const formatBox = (value, label, title) => {
     const box = el("input", { type: "checkbox", value, checked: value === "prose" });
@@ -327,7 +418,6 @@ function buildPanel(root) {
     "开始反推",
   );
   ui.captionNotice = el("div", { class: "aps-notice", hidden: true });
-  // Per-format result blocks; each is independently editable and writable.
   ui.captionResults = el("div", { class: "aps-caption-results" });
   ui.captionResultBoxes = {};
   for (const [value, label] of [
@@ -346,10 +436,10 @@ function buildPanel(root) {
     ui.captionResultBoxes[value] = textarea;
     ui.captionResults.append(textarea);
   }
-  ui.captionReplace = iconButton("替换提示词", "用当前编辑的格式结果替换提示词（可撤销）", () =>
+  ui.captionReplace = iconButton("替换提示词", "用当前编辑的格式结果替换提示词并进入对话微调（可撤销）", () =>
     insertCaption("replace"),
   );
-  ui.captionAppend = iconButton("追加到末尾", "把当前编辑的格式结果追加到提示词后面（可撤销）", () =>
+  ui.captionAppend = iconButton("追加到末尾", "把当前编辑的格式结果追加到提示词后面并进入对话微调（可撤销）", () =>
     insertCaption("append"),
   );
   ui.captionActiveFormat = null;
@@ -364,7 +454,7 @@ function buildPanel(root) {
     ui.captionFile,
     ui.captionResults,
     el("div", { class: "aps-row" }, [ui.captionReplace, ui.captionAppend]),
-    el("p", { class: "aps-hint" }, "图片中的文字只作为画面内容处理，不会被当作指令执行。勾选多种格式时每种都会单独请求一次。"),
+    el("p", { class: "aps-hint" }, "反推结果会自动加入当前对话上下文，写入后可直接在「对话与改词」中继续追问微调。"),
   ]);
 
   // History --------------------------------------------------------------
@@ -418,6 +508,105 @@ function buildPanel(root) {
   return panel;
 }
 
+// -------------------------------------------------- dual-column workbench
+async function openDualColumnWorkbench() {
+  refreshTargets();
+  const target = activeTarget();
+  const conversation = currentConversation();
+  if (!state.caption.image) {
+    const imgNode = findImageNode(graphApp());
+    const src = imgNode ? imageSource(imgNode) : null;
+    if (src) {
+      try {
+        state.caption.image = await sourceToDataUrl(src);
+        state.caption.sourceLabel = `${nodeTitle(imgNode)} 的预览图`;
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+  openLayoutEditor({
+    state: {
+      mode: "caption",
+      width: 1024,
+      height: 1024,
+      caption: target ? target.text : ui.prompt?.value || "",
+    },
+    mode: "caption",
+    imageUrl: state.caption.image || null,
+    api: state.api,
+    sessionId: conversation.sessionId || null,
+    onSessionChange: (sid) => {
+      conversation.sessionId = sid;
+      saveSessionId(state.targetKey, sid);
+      void restoreSession(conversation);
+    },
+    onImageChange: (dataUrl) => {
+      state.caption.image = dataUrl;
+      renderCaptionPreview();
+    },
+    onApply: async (next) => {
+      if (!target) {
+        if (ui.prompt) ui.prompt.value = next.caption || "";
+        setStatus("已在双栏工作台中完成编辑。", "ok");
+        return;
+      }
+      const nextText =
+        next.mode && next.mode !== "caption" && next.draft
+          ? JSON.stringify(next.draft)
+          : String(next.caption || "");
+      await applyText(nextText, {
+        key: target.key,
+        source: "workbench",
+        label: "双栏工作台应用",
+      });
+      setStatus("双栏工作台修改已写回节点（可撤销）。", "ok");
+    },
+  });
+}
+
+async function quickReverseIntoChat() {
+  if (!state.caption.image) {
+    await useNodeImage();
+  }
+  if (!state.caption.image) {
+    ui.attachInput.click();
+    return;
+  }
+  const conversation = currentConversation();
+  setBusy(true, "正在反推参考图并载入对话…");
+  try {
+    const body = await state.api.caption({
+      image: { data_url: state.caption.image },
+      format: "prose",
+      session_id: conversation.sessionId || undefined,
+      create_session: true,
+    });
+    if (body.session_id) {
+      conversation.sessionId = body.session_id;
+      saveSessionId(state.targetKey, body.session_id);
+    }
+    const text = body.text || "";
+    if (text) {
+      addMessage("user", `🖼 反推参考图（${state.caption.sourceLabel || "参考图"}）`);
+      addMessage("assistant", text, "已自动同步至当前提示词与对话上下文，可直接继续提修改要求。");
+      const target = activeTarget();
+      if (target) {
+        await applyText(text, {
+          key: target.key,
+          source: "caption",
+          label: "读图反推",
+        });
+      }
+      setStatus("反推完成并已写入节点，可直接在下方对话微调。", "ok");
+    }
+  } catch (error) {
+    setStatus(error.message || String(error), "error");
+  } finally {
+    setBusy(false);
+  }
+}
+
 // ------------------------------------------------------------------ setup
 function showSetup(error, status = null) {
   state.setupError = error;
@@ -427,11 +616,28 @@ function showSetup(error, status = null) {
   const baseField = el("input", { class: "aps-input", type: "url", value: config.base_url || "http://127.0.0.1:3425/v1" });
   const modelField = el("input", { class: "aps-input", value: config.model || "auto/glm-5.3-flash" });
   const keyField = el("input", {
-    class: "aps-input", type: "password", placeholder: "留空沿用已保存的 Key",
-    autocomplete: "new-password", spellcheck: "false",
+    class: "aps-input",
+    type: "password",
+    placeholder: "留空沿用已保存的 Key",
+    autocomplete: "new-password",
+    spellcheck: "false",
   });
-  const timeoutField = el("input", { class: "aps-input", type: "number", min: "10", max: "300", step: "10", value: String(config.timeout_s ?? 60) });
-  const retriesField = el("input", { class: "aps-input", type: "number", min: "0", max: "3", step: "1", value: String(config.max_retries ?? 1) });
+  const timeoutField = el("input", {
+    class: "aps-input",
+    type: "number",
+    min: "10",
+    max: "300",
+    step: "10",
+    value: String(config.timeout_s ?? 60),
+  });
+  const retriesField = el("input", {
+    class: "aps-input",
+    type: "number",
+    min: "0",
+    max: "3",
+    step: "1",
+    value: String(config.max_retries ?? 1),
+  });
   const form = el("div", { class: "aps-setup-form" }, [
     el("label", {}, "Base URL", baseField),
     el("label", {}, "模型", modelField),
@@ -444,13 +650,16 @@ function showSetup(error, status = null) {
     save.disabled = true;
     feedback.textContent = "正在保存配置…";
     try {
-      const body = await state.api.request("/config", { method: "POST", body: {
-        base_url: baseField.value.trim(),
-        model: modelField.value.trim(),
-        api_key: keyField.value,
-        timeout_s: Number(timeoutField.value),
-        max_retries: Number(retriesField.value),
-      } });
+      const body = await state.api.request("/config", {
+        method: "POST",
+        body: {
+          base_url: baseField.value.trim(),
+          model: modelField.value.trim(),
+          api_key: keyField.value,
+          timeout_s: Number(timeoutField.value),
+          max_retries: Number(retriesField.value),
+        },
+      });
       keyField.value = "";
       state.status = { ...(state.status || {}), config: body.config };
       setStatus("配置已保存并立即生效。", "ok");
@@ -464,8 +673,14 @@ function showSetup(error, status = null) {
     }
   });
   save.classList?.add("aps-primary");
+  const closeBtn = iconButton("收起", "关闭配置面板", () => {
+    ui.setup.hidden = true;
+  });
   ui.setup.append(
-    el("div", { class: "aps-setup-title" }, "配置模型 / URL / API Key / 超时"),
+    el("div", { class: "aps-row aps-row-between" }, [
+      el("div", { class: "aps-setup-title" }, "配置模型 / URL / API Key / 超时"),
+      closeBtn,
+    ]),
     el("p", {}, error && error.message ? error.message : "Key 留空沿用已保存值；网页配置写入本机凭据，保存后立即生效。"),
     form,
     el("div", { class: "aps-row" }, [save, feedback]),
@@ -529,8 +744,7 @@ function updateCapabilityBadges() {
   if (vision === false) {
     ui.captionNotice.hidden = false;
     ui.captionNotice.dataset.kind = "warn";
-    ui.captionNotice.textContent =
-      `当前模型不支持图片输入（${reason || "探测未通过"}），反推已禁用。可以在配置中换成视觉模型后重新探测。`;
+    ui.captionNotice.textContent = `当前模型不支持图片输入（${reason || "探测未通过"}），反推已禁用。可以在配置中换成视觉模型后重新探测。`;
   } else if (vision === null && report) {
     ui.captionNotice.hidden = false;
     ui.captionNotice.dataset.kind = "info";
@@ -602,7 +816,7 @@ function refreshTargets({ force = false } = {}) {
     ui.targetSelect.disabled = true;
     ui.prompt.value = "";
     ui.targetHint.hidden = false;
-    ui.targetHint.textContent = "在画布上选择一个带文本输入控件的节点（例如 CLIP Text Encode），或先添加一个。";
+    ui.targetHint.textContent = "在画布上选择一个带文本输入控件的节点（例如 CLIP Text Encode），或添加「AI 图像反推提示词」节点。";
     updateButtons();
     return;
   }
@@ -619,8 +833,6 @@ function refreshTargets({ force = false } = {}) {
   }
 
   ui.targetSelect.disabled = false;
-  // Compare the rendered options with the targets themselves: a re-render can
-  // leave the placeholder option behind while the counts still look equal.
   const optionKeys = new Set(
     [...ui.targetSelect.options].map((option) => option.value).filter(Boolean),
   );
@@ -664,7 +876,11 @@ function updateButtons() {
   ui.editButton.disabled = !configured || !hasTarget || state.busy || streaming;
   ui.stopButton.hidden = !streaming;
   ui.captionRun.disabled =
-    !configured || state.caption.busy || state.busy || !state.caption.image || state.capability?.vision === false ||
+    !configured ||
+    state.caption.busy ||
+    state.busy ||
+    !state.caption.image ||
+    state.capability?.vision === false ||
     !Object.values(ui.captionFormatBoxes || {}).some((box) => box.checked);
   ui.captionReplace.disabled = !activeCaptionResult() || !hasTarget;
   ui.captionAppend.disabled = !activeCaptionResult() || !hasTarget;
@@ -692,8 +908,12 @@ function renderMessages() {
   if (!conversation.messages.length) {
     ui.messages.append(
       el("div", { class: "aps-empty" }, [
-        el("div", { class: "aps-empty-title" }, "先看看这段提示词"),
-        el("div", { class: "aps-hint" }, "可以直接提问，例如“这段提示词哪里可以更具体？”；也可以点“生成修改”让模型给出可审阅的改动。"),
+        el("div", { class: "aps-empty-title" }, "看图反推 · 对话迭代 · 局部改词"),
+        el(
+          "div",
+          "aps-hint",
+          "点「🖼 读图反推」或快捷指令一键优化提示词；也可点右上角「🖥 双栏工作台」在大视野中同时看图、调框与对话改词。",
+        ),
       ]),
     );
     return;
@@ -839,7 +1059,7 @@ function switchTab(tab) {
 }
 
 // -------------------------------------------------------------------- edit
-async function requestEdit() {
+async function requestEdit(overrideInstruction = null, chipLabel = null) {
   if (state.busy || state.streaming) return;
   const target = activeTarget();
   if (!target) {
@@ -847,14 +1067,39 @@ async function requestEdit() {
     return;
   }
   const conversation = currentConversation();
-  const instruction = ui.composer.value.trim() || [...conversation.messages].reverse().find((m) => m.role === "user")?.text || "";
+  const instruction =
+    (typeof overrideInstruction === "string" ? overrideInstruction : "") ||
+    ui.composer.value.trim() ||
+    [...conversation.messages].reverse().find((m) => m.role === "user")?.text ||
+    "";
   if (!instruction) {
     setStatus("先写下想要的修改，例如“把晴天改成雨夜”。", "warn");
     return;
   }
+  if (!overrideInstruction && ui.composer.value.trim()) {
+    addMessage("user", instruction);
+    ui.composer.value = "";
+  } else if (chipLabel) {
+    addMessage("user", `${chipLabel}`);
+  }
+  const attachment = ui.attachNote.hidden ? null : ui.attachNote.dataset.dataUrl;
+  ui.attachNote.hidden = true;
+  delete ui.attachNote.dataset.dataUrl;
+
   setBusy(true, "模型正在准备修改…");
   try {
-    const body = await state.api.edit({ message: instruction, target: targetWire(target) });
+    const body = await state.api.edit({
+      message: instruction,
+      target: targetWire(target),
+      images: attachment ? [{ data_url: attachment }] : undefined,
+      session_id: conversation.sessionId || undefined,
+      create_session: true,
+      allow_empty: true,
+    });
+    if (body.session_id) {
+      conversation.sessionId = body.session_id;
+      saveSessionId(state.targetKey, body.session_id);
+    }
     state.proposal = body.proposal;
     state.proposalTargetKey = target.key;
     renderDiff();
@@ -894,8 +1139,6 @@ function renderDiff() {
   if (!ui.diffHost) return;
   ui.diffHost.textContent = "";
   const proposal = state.proposal;
-  // A proposal takes over the panel: reviewing the diff matters more than the
-  // chat transcript, which comes back as soon as the card is applied/closed.
   if (ui.panels && ui.panels.chat) ui.panels.chat.dataset.diff = proposal ? "1" : "0";
   if (!proposal) return;
 
@@ -943,8 +1186,6 @@ function renderDiff() {
       ]),
     );
   });
-  // The ops box carries the per-change checkbox that enables the apply
-  // buttons, so it must be present even for a single change.
   if (changes.length) card.append(opsBox);
 
   const applyAll = el(
@@ -1150,6 +1391,7 @@ async function runCaption() {
     setStatus("请至少勾选一种输出格式。", "warn");
     return;
   }
+  const conversation = currentConversation();
   state.caption.busy = true;
   updateButtons();
   setStatus(
@@ -1169,7 +1411,13 @@ async function runCaption() {
       image: { data_url: state.caption.image },
       format: formats,
       instruction: ui.captionInstruction.value.trim(),
+      session_id: conversation.sessionId || undefined,
+      create_session: true,
     });
+    if (body.session_id) {
+      conversation.sessionId = body.session_id;
+      saveSessionId(state.targetKey, body.session_id);
+    }
     const results = body.multi ? body.results : { [body.format || formats[0]]: body };
     const names = { prose: "自然语言", tags: "逗号标签", moss: "MOSS 风格" };
     let filled = 0;
@@ -1212,8 +1460,6 @@ function activeCaptionResult() {
 }
 
 function updateCaptionWriteTargets() {
-  // Highlight the block the write buttons will use; per-format labels keep
-  // the user oriented when several blocks are on screen at once.
   const any = activeCaptionResult();
   for (const box of Object.values(ui.captionResultBoxes)) {
     box.classList.toggle(
@@ -1255,7 +1501,11 @@ async function insertCaption(mode) {
       label: `反推写入（${formatLabel}）`,
     });
     switchTab("chat");
-    addMessage("assistant", mode === "append" ? `已把${formatLabel}结果追加到提示词末尾。` : `已用${formatLabel}结果替换提示词。`, "可点底部“撤销”恢复。");
+    addMessage(
+      "assistant",
+      mode === "append" ? `已把${formatLabel}结果追加到提示词末尾。` : `已用${formatLabel}结果替换提示词。`,
+      "图片与反推文本已保存在当前对话上下文中，可直接继续提修改要求；也可点底部“撤销”恢复。",
+    );
     setStatus("反推结果已写入，可撤销。", "ok");
   } catch (error) {
     setStatus(error.message || String(error), "error");
@@ -1378,9 +1628,6 @@ function updateHistoryTarget() {
 // ------------------------------------------------------------------- mount
 function mount(root, canvasApp) {
   state.app = canvasApp || app;
-  // Node 2.0 re-runs the tab render when the sidebar container updates (for
-  // example on every canvas selection).  Rebuilding would wipe the target
-  // options and the draft, so reuse the panel already attached to this root.
   const alreadyMounted = Boolean(ui.panel && ui.panel.parentElement === root);
   if (!alreadyMounted) {
     buildPanel(root);
@@ -1400,7 +1647,6 @@ function mount(root, canvasApp) {
   updateButtons();
   if (state.capability) updateCapabilityBadges();
 
-  // Keep the panel in sync with canvas selection without polling the model.
   if (!state.syncTimer) {
     state.syncTimer = setInterval(() => {
       if (!panel.isConnected || state.busy || state.streaming) return;
@@ -1415,34 +1661,12 @@ function mount(root, canvasApp) {
 }
 
 // ------------------------------------------------------------- registration
-function register() {
-  const manager = app && app.extensionManager;
-  if (!manager || typeof manager.registerSidebarTab !== "function") {
-    console.warn(`[${EXTENSION_NAME}] 当前前端没有侧边栏 API，工作台不会显示。`);
-    return false;
-  }
-  manager.registerSidebarTab({
-    id: TAB_ID,
-    icon: "pi pi-sparkles",
-    title: "AI 提示词",
-    tooltip: "AI 提示词工作台：反推、对话修改、差异审阅、撤销",
-    type: "custom",
-    render: (element) => {
-      try {
-        mount(element, app);
-      } catch (error) {
-        console.error("[ai-prompt-studio] panel failed", error);
-        element.textContent = `AI 提示词工作台加载失败：${error && error.message ? error.message : error}`;
-      }
-    },
-  });
-  return true;
-}
-
+// Sidebar tab registration is disabled by user preference: all functionality
+// lives directly inside the AIPromptStudioCaption graph node, its Dual-Column
+// Workbench modal, and its Settings modal.
 app.registerExtension({
   name: EXTENSION_NAME,
   setup() {
     mountStyles();
-    register();
   },
 });

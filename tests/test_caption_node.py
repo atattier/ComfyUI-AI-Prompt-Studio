@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import tempfile
 import unittest
 from dataclasses import replace
@@ -39,9 +40,9 @@ def _fake_tensor(png_bytes: bytes):
     while pos < len(png_bytes):
         (length,), tag = struct.unpack(">I", png_bytes[pos:pos + 4]), png_bytes[pos + 4:pos + 8]
         data = png_bytes[pos + 8:pos + 8 + length]
-        if tag == b"IHDR":
+        if tag == "IHDR" or tag == b"IHDR":
             width, height = struct.unpack(">II", data[:8])
-        elif tag == b"IDAT":
+        elif tag == "IDAT" or tag == b"IDAT":
             idat += data
         pos += 12 + length
     raw = zlib.decompress(idat)
@@ -149,18 +150,33 @@ class NodeExecutionTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.node.caption(mode="yaml", payload=json.dumps(_payload("caption")))
 
-    def test_input_types_expose_mode_and_three_outputs(self):
+    def test_input_types_expose_mode_and_five_outputs(self):
         types = AIPromptStudioCaptionNode.INPUT_TYPES()
         self.assertIn("mode", types["required"])
         self.assertIn("payload", types["required"])
         self.assertIn("image", types["optional"])
-        self.assertEqual(AIPromptStudioCaptionNode.RETURN_TYPES, ("STRING", "INT", "INT"))
+        self.assertIn("enable_caption", types["optional"])
+        self.assertIn("enable_layout", types["optional"])
+        self.assertIn("enable_hybrid", types["optional"])
+        self.assertEqual(
+            AIPromptStudioCaptionNode.RETURN_TYPES,
+            ("STRING", "STRING", "STRING", "INT", "INT"),
+        )
+        self.assertEqual(
+            AIPromptStudioCaptionNode.RETURN_NAMES,
+            ("caption_prompt", "layout_prompt", "danbooru_prompt", "width", "height"),
+        )
         self.assertEqual(AIPromptStudioCaptionNode.FUNCTION, "execute")
 
-    def test_is_changed_caches_generated_payload(self):
+    def test_is_changed_caches_generated_payload_and_invalidates_missing_layout(self):
         cached = json.dumps(_payload("caption"))
-        self.assertEqual(AIPromptStudioCaptionNode.IS_CHANGED(payload=cached), cached)
+        self.assertEqual(
+            AIPromptStudioCaptionNode.IS_CHANGED(mode="caption", payload=cached),
+            f"caption:caption:{cached}",
+        )
         self.assertNotEqual(AIPromptStudioCaptionNode.IS_CHANGED(payload="{}"), "{}")
+        # Switching mode to layout when payload only has caption invalidates cache
+        self.assertTrue(math.isnan(AIPromptStudioCaptionNode.IS_CHANGED(mode="layout", payload=cached)))
 
     def test_registration(self):
         mappings: dict = {}
@@ -171,7 +187,7 @@ class NodeExecutionTests(unittest.TestCase):
 
 
 class ExecutionFallbackTests(unittest.TestCase):
-    """An empty payload must caption the graph's IMAGE instead of failing."""
+    """An empty or incomplete payload must caption the graph's IMAGE instead of failing."""
 
     def setUp(self):
         self.node = AIPromptStudioCaptionNode()
@@ -206,6 +222,55 @@ class ExecutionFallbackTests(unittest.TestCase):
         self.assertEqual(draft["summary"]["caption"], "A complete description of the whole image.")
         self.assertIn("draft", json.loads(new_payload))
 
+    def test_switching_from_caption_to_layout_with_image_generates_draft_automatically(self):
+        """Regression test: if payload only has caption (from a previous caption run)
+        and the user switches mode to layout/hybrid with an image connected, it must
+        automatically generate the missing draft instead of raising ValueError."""
+        caption_only_payload = json.dumps(_payload("caption"))
+        prompt, w, h, new_payload = self.node.caption(
+            mode="layout", payload=caption_only_payload, image=self.image,
+            model="vision-pro", call_model=self._model_reply,
+        )
+        self.assertIsNotNone(new_payload)
+        draft = json.loads(prompt)
+        self.assertEqual(draft["items"][0]["bbox"], [0, 0, w // 2, h])
+        updated_state = json.loads(new_payload)
+        self.assertIn("draft", updated_state)
+
+    def test_execute_in_layout_mode_without_image_synthesizes_fallback_draft(self):
+        """Even if no image is connected and payload only has caption text, ComfyUI
+        graph execution (execute()) synthesizes a valid fallback draft instead of crashing."""
+        caption_only_payload = json.dumps(_payload("caption"))
+        cap_p, lay_p, hyb_p, w, h = self.node.execute(
+            mode="layout", payload=caption_only_payload
+        )
+        self.assertEqual(cap_p, "A red and blue poster.")
+        lay_draft = json.loads(lay_p)
+        hyb_draft = json.loads(hyb_p)
+        self.assertEqual(lay_draft["bbox_format"], "xyxy")
+        self.assertEqual(len(lay_draft["items"]), 1)
+        self.assertEqual(hyb_draft["summary"]["caption"], "A red and blue poster.")
+        self.assertEqual((w, h), (1024, 1024))
+
+    def test_multi_mode_simultaneous_generation_and_three_prompt_outputs(self):
+        result = self.node.execute(
+            mode="hybrid",
+            payload="{}",
+            enable_caption=True,
+            enable_layout=True,
+            enable_hybrid=True,
+            image=self.image,
+            model="vision-pro",
+            call_model=self._model_reply,
+        )
+        cap_p, lay_p, hyb_p, w, h = result["result"]
+        self.assertEqual(cap_p, "A red and blue poster.")
+        lay_draft = json.loads(lay_p)
+        hyb_draft = json.loads(hyb_p)
+        self.assertEqual(lay_draft["items"][0]["bbox"], [0, 0, w // 2, h])
+        self.assertEqual(hyb_draft["summary"]["caption"], "A red and blue poster.")
+        self.assertEqual((w, h), match_canvas_size(8, 8))
+
     def test_cached_payload_does_not_call_model(self):
         def forbidden(*_args, **_kwargs):
             raise AssertionError("a cached payload must not call the model")
@@ -229,18 +294,22 @@ class ExecutionFallbackTests(unittest.TestCase):
         self.assertEqual(prompt, "A hand-edited caption.")
         self.assertIsNone(new_payload)
 
-    def test_execute_returns_three_outputs_and_ui_payload(self):
+    def test_execute_returns_five_outputs_and_ui_payload(self):
         result = self.node.execute(
             mode="caption", payload="{}", image=self.image,
             model="vision-pro", call_model=self._model_reply,
         )
-        self.assertEqual(result["result"], ("A red and blue poster.", *match_canvas_size(8, 8)))
+        cap_p, lay_p, hyb_p, w, h = result["result"]
+        self.assertEqual(cap_p, "A red and blue poster.")
+        self.assertEqual(json.loads(lay_p)["bbox_format"], "xyxy")
+        self.assertEqual(json.loads(hyb_p)["bbox_format"], "xyxy")
+        self.assertEqual((w, h), match_canvas_size(8, 8))
         self.assertEqual(len(result["ui"]["aps_payload"]), 1)
 
     def test_execute_cached_payload_has_no_ui_update(self):
         result = self.node.execute(mode="caption", payload=json.dumps(_payload("caption")))
         self.assertIsInstance(result, tuple)
-        self.assertEqual(len(result), 3)
+        self.assertEqual(len(result), 5)
 
     def test_empty_payload_without_image_reports_configuration_help(self):
         with self.assertRaisesRegex(ValueError, "反推|配置"):
@@ -263,7 +332,7 @@ class ExecutionFallbackTests(unittest.TestCase):
     @staticmethod
     def _model_reply(*, instruction: str, image_part: dict, model: str, max_tokens: int) -> str:
         assert "image_url" in image_part
-        assert "Describe the image" in instruction or "AT MOST 6 regions" in instruction
+        assert "Describe the image" in instruction or ("AT MOST " in instruction and "regions" in instruction)
         assert model == "vision-pro"
         assert max_tokens in (500, 3000)
         if "summary.caption" in instruction:
@@ -330,11 +399,33 @@ class CaptionNodeRouteTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(body["caption"], "red blue")
         self.assertEqual(body["payload"]["mode"], "caption")
         self.assertIsNone(body["draft"])
+        self.assertIn("outputs", body)
+        self.assertEqual(body["outputs"]["caption_prompt"], "red blue")
         # payload alone can drive graph execution
         prompt, ow, oh, _ = AIPromptStudioCaptionNode().caption(
             mode="caption", payload=json.dumps(body["payload"])
         )
         self.assertEqual((prompt, ow, oh), ("red blue", w, h))
+
+    async def test_route_multi_modes_returns_all_three_outputs(self):
+        image = {"data_url": data_url(make_split_probe_png(32))}
+        response = await self.client.post(
+            "/ai_prompt_studio/caption_node",
+            json={
+                "mode": "hybrid",
+                "modes": ["caption", "layout", "hybrid"],
+                "image": image,
+                "model": "demo-model",
+            },
+        )
+        self.assertEqual(response.status, 200)
+        body = await response.json()
+        self.assertEqual(body["modes"], ["caption", "layout", "hybrid"])
+        self.assertIsInstance(body["draft"], dict)
+        outputs = body["outputs"]
+        self.assertTrue(outputs["caption_prompt"])
+        self.assertEqual(json.loads(outputs["layout_prompt"])["bbox_format"], "xyxy")
+        self.assertEqual(json.loads(outputs["hybrid_prompt"])["bbox_format"], "xyxy")
 
     async def test_config_route_updates_settings_without_exposing_new_key(self):
         saved = []
@@ -401,6 +492,34 @@ class CaptionNodeRouteTests(unittest.IsolatedAsyncioTestCase):
         )
         body = await response.json()
         self.assertEqual((body["source_width"], body["source_height"]), (32, 32))
+
+    async def test_route_cleans_legacy_shifted_widget_values(self):
+        response = await self.client.post(
+            "/ai_prompt_studio/caption_node",
+            json={
+                "mode": "caption",
+                "modes": ["caption", "layout"],
+                "image": {"data_url": data_url(make_split_probe_png(32))},
+                "image_path": "4037085137",
+                "extra_instruction": "randomize",
+                "model": "null",
+            },
+        )
+        self.assertEqual(response.status, 400)  # vision-pro returns "red blue" which is not layout JSON
+        response_cap = await self.client.post(
+            "/ai_prompt_studio/caption_node",
+            json={
+                "mode": "caption",
+                "modes": ["caption"],
+                "image": {"data_url": data_url(make_split_probe_png(32))},
+                "image_path": "4037085137",
+                "extra_instruction": "randomize",
+                "model": "null",
+            },
+        )
+        self.assertEqual(response_cap.status, 200)
+        body = await response_cap.json()
+        self.assertEqual(body["caption"], "red blue")
 
 
 if __name__ == "__main__":

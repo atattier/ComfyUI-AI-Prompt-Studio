@@ -152,6 +152,58 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
         applied = await response.json()
         self.assertEqual(applied["text"], "a dog on a mat, sunny")
 
+    async def test_caption_to_edit_session_continuity_and_allow_empty(self):
+        image = {"data_url": data_url(make_split_probe_png(32))}
+        cap_resp = await self.client.post(
+            "/ai_prompt_studio/caption",
+            json={"image": image, "format": "prose", "model": "vision-pro", "create_session": True},
+        )
+        cap_body = await cap_resp.json()
+        self.assertEqual(cap_resp.status, 200)
+        session_id = cap_body.get("session_id")
+        self.assertTrue(session_id)
+
+        edit_resp = await self.client.post(
+            "/ai_prompt_studio/edit",
+            json={
+                "message": "生成一段电影感提示词",
+                "model": "demo-model",
+                "target": {**TARGET, "text": ""},
+                "allow_empty": True,
+                "session_id": session_id,
+            },
+        )
+        edit_body = await edit_resp.json()
+        self.assertEqual(edit_resp.status, 200)
+        self.assertEqual(edit_body["session_id"], session_id)
+        self.assertTrue(edit_body["proposal"]["text"].strip())
+
+        sess_resp = await self.client.get(f"/ai_prompt_studio/sessions/{session_id}")
+        sess_body = await sess_resp.json()
+        self.assertEqual(len(sess_body["messages"]), 4)  # caption user/assistant + edit user/assistant
+
+    async def test_caption_node_endpoint(self):
+        image = {"data_url": data_url(make_split_probe_png(32))}
+        response = await self.client.post(
+            "/ai_prompt_studio/caption_node",
+            json={
+                "image": image,
+                "mode": "hybrid",
+                "style": "detailed",
+                "width": 1024,
+                "height": 1024,
+                "max_regions": 4,
+                "model": "demo-model",
+                "create_session": True,
+            },
+        )
+        body = await response.json()
+        self.assertEqual(response.status, 200)
+        self.assertTrue(body["caption"])
+        self.assertIsInstance(body["draft"], dict)
+        self.assertTrue(body["payload"])
+        self.assertTrue(body.get("session_id"))
+
     async def test_invalid_edit_returns_422(self):
         response = await self.client.post(
             "/ai_prompt_studio/edit",
@@ -226,6 +278,37 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(listing["sessions"][0]["id"], session["id"])
         response = await self.client.delete(f"/ai_prompt_studio/sessions/{session['id']}")
         self.assertEqual(response.status, 200)
+
+    async def test_models_list_and_config_prompt_rules(self):
+        models_resp = await self.client.get("/ai_prompt_studio/models")
+        self.assertEqual(models_resp.status, 200)
+        models_body = await models_resp.json()
+        model_ids = [m["id"] for m in models_body["models"]]
+        self.assertIn("vision-pro", model_ids)
+        self.assertIn("demo-model", model_ids)
+
+        cfg_resp = await self.client.post(
+            "/ai_prompt_studio/config",
+            json={
+                "base_url": self.mock.base_url,
+                "model": "demo-model",
+                "timeout_s": 45,
+                "max_retries": 1,
+                "rule_preset": "moss",
+                "output_language": "zh",
+                "prompt_rules": "Always describe physical light direction.",
+                "user_custom_rules": "Always include fine details.",
+                "max_regions": 4,
+            },
+        )
+        self.assertEqual(cfg_resp.status, 200)
+        cfg_body = await cfg_resp.json()
+        self.assertEqual(cfg_body["config"]["model"], "demo-model")
+        self.assertEqual(cfg_body["config"]["rule_preset"], "moss")
+        self.assertEqual(cfg_body["config"]["output_language"], "zh")
+        self.assertEqual(cfg_body["config"]["prompt_rules"], "Always describe physical light direction.")
+        self.assertEqual(cfg_body["config"]["user_custom_rules"], "Always include fine details.")
+        self.assertEqual(cfg_body["config"]["max_regions"], 4)
 
     async def test_validation_errors(self):
         response = await self.client.post("/ai_prompt_studio/chat", json={"message": "", "target": TARGET})

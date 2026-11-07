@@ -14,6 +14,7 @@ key itself.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 from dataclasses import dataclass, field
@@ -33,6 +34,63 @@ _ENV_MODEL = "PROMPT_STUDIO_MODEL"
 # overridden by credentials or environment variables.
 DEFAULT_BASE_URL = "http://127.0.0.1:3425/v1"
 DEFAULT_MODEL = "gemini-3.8-flash"
+
+RULE_PRESETS: dict[str, str] = {
+    "moss": (
+        "Follow official MOSS-Image prompt conventions: describe concrete visible choices "
+        "(main subject & action, physical appearance, spatial setting, camera angle and framing, medium, directional lighting, surface materials, palette and mood); "
+        "preserve explicit user intent, counts, spatial relationships, exclusions, and intended visible text verbatim inside quotation marks; "
+        "strictly forbid weighted parentheses syntax like (word:1.2) and generic quality tags (masterpiece, 8k, photorealistic); "
+        "distinguish visible text from tool instructions and constraints."
+    ),
+    "layout": (
+        "Follow official MOSS-Image spatial layout planning conventions: "
+        "use summary for global visual composition and canvas metadata; "
+        "use flat items array with absolute pixel bounding boxes [x_min, y_min, x_max, y_max] from top-left origin (0,0); "
+        "canvas dimensions must be positive multiples of 16; "
+        "labels must be character, object, or text; "
+        "for text items, quote exact visible characters verbatim with intended line breaks; "
+        "establish clear visual reading order, prominence hierarchy, and natural spatial layering."
+    ),
+    "danbooru": (
+        "Output clean, comma-separated Danbooru-style descriptive English tags (all lowercase, underscores or spaces inside multi-word tags). "
+        "Strict hierarchy order: quality/medium, core character and count (e.g. 1girl, solo), hair/eye features, facial expression, clothing and accessories, pose/action, background/setting, lighting, camera angle, art style. "
+        "Strictly forbid narrative prose sentences, forbid weighted syntax like (word:1.2), and forbid markdown quotes or numbers. "
+        "For specific visible text to render, specify with quote or text tag."
+    ),
+    "tags": (
+        "Output clean, comma-separated Danbooru-style descriptive English tags (all lowercase, underscores or spaces inside multi-word tags). "
+        "Strict hierarchy order: quality/medium, core character and count (e.g. 1girl, solo), hair/eye features, facial expression, clothing and accessories, pose/action, background/setting, lighting, camera angle, art style. "
+        "Strictly forbid narrative prose sentences, forbid weighted syntax like (word:1.2), and forbid markdown quotes or numbers."
+    ),
+    "custom": "",
+}
+OUTPUT_LANGUAGES = ("en", "zh", "auto")
+
+
+def load_preferences(home: Path) -> dict[str, Any]:
+    """Load non-secret user preferences (prompt rules, language, timeouts) from home."""
+    path = Path(home) / "preferences.json"
+    if not path.is_file():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def save_preferences(home: Path, prefs: Mapping[str, Any]) -> Path:
+    """Persist non-secret user preferences atomically in home/preferences.json."""
+    home_path = Path(home)
+    home_path.mkdir(parents=True, exist_ok=True)
+    path = home_path / "preferences.json"
+    existing = load_preferences(home_path)
+    existing.update(dict(prefs))
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(existing, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    os.replace(tmp, path)
+    return path
 
 
 def normalize_base_url(url: str) -> str:
@@ -85,6 +143,11 @@ class Settings:
     db_path: Path = field(default=None)  # type: ignore[assignment]
     media_dir: Path = field(default=None)  # type: ignore[assignment]
     max_image_bytes: int = 8 * 1024 * 1024
+    rule_preset: str = "moss"
+    output_language: str = "en"
+    prompt_rules: str = ""
+    user_custom_rules: str = ""
+    max_regions: int = 6
 
     def __post_init__(self) -> None:
         self.base_url = normalize_base_url(self.base_url)
@@ -97,6 +160,24 @@ class Settings:
         self.audit_path = Path(self.audit_path or (self.home / "audit.jsonl"))
         self.db_path = Path(self.db_path or (self.home / "sessions.sqlite3"))
         self.media_dir = Path(self.media_dir or (self.home / "media"))
+        self.rule_preset = str(self.rule_preset or "moss").strip().lower()
+        if self.rule_preset in ("prose", "moss"):
+            self.rule_preset = "moss"
+        elif self.rule_preset in ("tags", "danbooru"):
+            self.rule_preset = "danbooru"
+        elif self.rule_preset in ("hybrid", "layout"):
+            self.rule_preset = "layout"
+        elif self.rule_preset not in RULE_PRESETS:
+            self.rule_preset = "moss"
+        self.output_language = str(self.output_language or "en").strip().lower()
+        if self.output_language not in OUTPUT_LANGUAGES:
+            self.output_language = "en"
+        self.prompt_rules = str(self.prompt_rules or "").strip()
+        self.user_custom_rules = str(self.user_custom_rules or "").strip()
+        try:
+            self.max_regions = max(1, min(8, int(self.max_regions or 6)))
+        except (TypeError, ValueError):
+            self.max_regions = 6
 
     # -- endpoints ---------------------------------------------------------
     def api_url(self, path: str) -> str:
@@ -117,6 +198,11 @@ class Settings:
             "max_retries": self.max_retries,
             "host": self.host,
             "port": self.port,
+            "rule_preset": self.rule_preset,
+            "output_language": self.output_language,
+            "prompt_rules": self.prompt_rules,
+            "user_custom_rules": self.user_custom_rules,
+            "max_regions": self.max_regions,
         }
 
     def ensure_local_bind(self) -> None:
@@ -127,6 +213,60 @@ class Settings:
                 "Refusing to bind the backend to a non-loopback address. "
                 "Set PROMPT_STUDIO_ALLOW_REMOTE=1 only if you understand the risk."
             )
+
+
+def build_rule_suffix(
+    settings: Settings | None,
+    extra_instruction: str = "",
+    *,
+    for_json_layout: bool = False,
+) -> str:
+    """Build combined prompt rule & extra requirement text from Settings."""
+    clauses: list[str] = []
+    if settings is not None:
+        preset = str(settings.rule_preset or "moss").strip().lower()
+        if preset in ("prose", "moss"):
+            canonical_preset = "moss"
+        elif preset in ("tags", "danbooru"):
+            canonical_preset = "danbooru"
+        elif preset in ("hybrid", "layout"):
+            canonical_preset = "layout"
+        else:
+            canonical_preset = preset
+
+        # 1. Base rule of selected preset
+        base_rule = str(settings.prompt_rules or "").strip()
+        if not base_rule and canonical_preset in RULE_PRESETS:
+            base_rule = RULE_PRESETS[canonical_preset].strip()
+
+        if base_rule:
+            if for_json_layout and canonical_preset in ("danbooru", "tags"):
+                clauses.append(
+                    "For summary.caption and items[].caption inside the JSON, use structured comma-separated descriptive phrases."
+                )
+            else:
+                clauses.append(f"Prompt style preset ({canonical_preset}):\n{base_rule}")
+
+        # 2. User's global custom requirements (automatically appended to EVERY rule)
+        user_custom = str(settings.user_custom_rules or "").strip()
+        if user_custom:
+            clauses.append(f"User custom requirements (strictly follow across all presets):\n{user_custom}")
+
+        lang = str(settings.output_language or "en").strip().lower()
+        if lang == "zh":
+            clauses.append(
+                "Write all descriptive prompt text (or summary.caption and items[].caption in JSON) in fluent, natural Chinese (简体中文)."
+            )
+        elif lang == "auto":
+            clauses.append(
+                "Match the language of the user's extra requirement (defaulting to English if unspecified)."
+            )
+    extra = str(extra_instruction or "").strip()
+    if extra:
+        clauses.append(f"Additional user requirement: {extra}")
+    if not clauses:
+        return ""
+    return "\n\n" + "\n\n".join(clauses)
 
 
 def load_settings(
@@ -142,6 +282,7 @@ def load_settings(
     home = Path(home or env.get("PROMPT_STUDIO_HOME") or default_home())
 
     creds = Credentials.load(credential_path) if credential_path else Credentials.load()
+    prefs = load_preferences(home)
 
     resolved_base = (
         base_url or env.get(_ENV_BASE_URL) or (creds.base_url if creds else None) or DEFAULT_BASE_URL
@@ -153,13 +294,15 @@ def load_settings(
 
     host = env.get("PROMPT_STUDIO_HOST", "127.0.0.1")
     port = _as_int(env.get("PROMPT_STUDIO_PORT"), "PROMPT_STUDIO_PORT", 8791)
+    default_timeout = _as_float(prefs.get("timeout_s"), "timeout_s", 60.0)
+    default_retries = _as_int(prefs.get("max_retries"), "max_retries", 2)
     settings = Settings(
         base_url=resolved_base or "",
         model=resolved_model or "",
         api_key=resolved_key or "",
         home=home,
-        timeout_s=_as_float(env.get("PROMPT_STUDIO_TIMEOUT_S"), "PROMPT_STUDIO_TIMEOUT_S", 60.0),
-        max_retries=_as_int(env.get("PROMPT_STUDIO_MAX_RETRIES"), "PROMPT_STUDIO_MAX_RETRIES", 2),
+        timeout_s=_as_float(env.get("PROMPT_STUDIO_TIMEOUT_S"), "PROMPT_STUDIO_TIMEOUT_S", default_timeout),
+        max_retries=_as_int(env.get("PROMPT_STUDIO_MAX_RETRIES"), "PROMPT_STUDIO_MAX_RETRIES", default_retries),
         backoff_s=_as_float(env.get("PROMPT_STUDIO_BACKOFF_S"), "PROMPT_STUDIO_BACKOFF_S", 0.5),
         host=host,
         port=port,
@@ -168,6 +311,11 @@ def load_settings(
         audit_path=Path(env["PROMPT_STUDIO_AUDIT"]) if env.get("PROMPT_STUDIO_AUDIT") else None,
         db_path=Path(env["PROMPT_STUDIO_DB"]) if env.get("PROMPT_STUDIO_DB") else None,
         media_dir=Path(env["PROMPT_STUDIO_MEDIA"]) if env.get("PROMPT_STUDIO_MEDIA") else None,
+        rule_preset=str(prefs.get("rule_preset") or "moss"),
+        output_language=str(prefs.get("output_language") or "en"),
+        prompt_rules=str(prefs.get("prompt_rules") or ""),
+        user_custom_rules=str(prefs.get("user_custom_rules") or ""),
+        max_regions=_as_int(prefs.get("max_regions"), "max_regions", 6),
     )
     settings.ensure_local_bind()
     return settings

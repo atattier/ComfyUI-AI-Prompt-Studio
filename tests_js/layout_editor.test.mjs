@@ -3,7 +3,15 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { normalizeDraft, _test as editorInternals } from "../web/lib/layout_editor.js";
+import {
+  OUTPUT_LANGUAGE_OPTIONS,
+  PRESET_RULE_TEMPLATES,
+  QUICK_RULE_TEMPLATES,
+  RULE_PRESET_OPTIONS,
+  normalizeDraft,
+  renderSvgStage,
+  _test as editorInternals,
+} from "../web/lib/layout_editor.js";
 
 const { cloneDraft, clamp } = editorInternals;
 
@@ -100,4 +108,72 @@ test("normalized draft output is PromptBoard-shaped", () => {
     assert.ok(item.bbox[0] < item.bbox[2]);
     assert.ok(item.bbox[1] < item.bbox[3]);
   }
+});
+
+test("renderSvgStage renders background reference image and region bounding boxes", () => {
+  function fakeEl(tag) {
+    return {
+      tag,
+      attrs: {},
+      style: {},
+      children: [],
+      textContent: "",
+      setAttribute(k, v) {
+        this.attrs[k] = String(v);
+      },
+      append(...nodes) {
+        this.children.push(...nodes);
+      },
+    };
+  }
+  const prevDoc = globalThis.document;
+  globalThis.document = {
+    createElementNS(_ns, tag) {
+      return fakeEl(tag);
+    },
+  };
+  try {
+    const svg = fakeEl("svg");
+    const state = sampleState();
+    renderSvgStage(svg, {
+      width: 1248,
+      height: 832,
+      draft: state.draft,
+      imageUrl: "data:image/png;base64,AA==",
+      selected: 0,
+      showBoxes: true,
+      dimImage: true,
+    });
+    assert.equal(svg.attrs.viewBox, "0 0 1248 832");
+    const tags = svg.children.map((c) => c.tag);
+    assert.deepEqual(tags, ["rect", "image", "g", "g"]);
+    assert.equal(svg.children[1].attrs.href, "data:image/png;base64,AA==");
+    assert.equal(svg.children[1].attrs.opacity, "0.52");
+  } finally {
+    globalThis.document = prevDoc;
+  }
+});
+
+test("RULE_PRESET_OPTIONS and PRESET_RULE_TEMPLATES cover all preset keys with non-empty templates", () => {
+  const presetKeys = RULE_PRESET_OPTIONS.map(([key]) => key);
+  assert.ok(presetKeys.includes("moss"));
+  assert.ok(presetKeys.includes("layout"));
+  assert.ok(presetKeys.includes("danbooru"));
+  assert.ok(presetKeys.includes("custom"));
+
+  for (const key of ["moss", "layout", "danbooru", "tags"]) {
+    const tpl = PRESET_RULE_TEMPLATES[key];
+    assert.equal(typeof tpl, "string", `Template for ${key} must be a string`);
+    assert.ok(tpl.trim().length > 0, `Template for ${key} must not be empty`);
+    assert.ok(tpl.includes("- "), `Template for ${key} must contain bulleted rules`);
+  }
+});
+
+test("QUICK_RULE_TEMPLATES and OUTPUT_LANGUAGE_OPTIONS integrity", () => {
+  assert.ok(Array.isArray(QUICK_RULE_TEMPLATES) && QUICK_RULE_TEMPLATES.length >= 5);
+  for (const item of QUICK_RULE_TEMPLATES) {
+    assert.ok(item.label && item.text);
+  }
+  const langKeys = OUTPUT_LANGUAGE_OPTIONS.map(([k]) => k);
+  assert.deepEqual(langKeys, ["en", "zh", "auto"]);
 });

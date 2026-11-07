@@ -1,46 +1,57 @@
 """ComfyUI node: AI image reverse-engineering as part of the graph.
 
-Three modes (caption / layout / hybrid) produce a STRING prompt plus the
-MOSS-compatible ``width``/``height`` INT outputs.  The frontend's 「反推」button
-posts to ``/ai_prompt_studio/caption_node`` and stores the result in the node's
-``payload`` widget, which is serialized with the workflow.  Execution normally
-reads that payload, so re-running an unchanged workflow never repeats a model
-call.  If a freshly created node is queued before the button was clicked, its
-execution creates the result once from the graph's IMAGE input and sends the
-payload back to the browser for persistence.
-
-Image data chain (explicit, no assumptions about tensor access over HTTP):
-  * if the node's ``image`` input is linked, the frontend resolves the upstream
-    LoadImage widget's filename through same-origin ``/view`` and sends a data
-    URL to the route;
-  * otherwise, if ``image_path`` is set, the route reads that local file
-    server-side;
-  * ``image`` takes priority over ``image_path``; neither present -> error.
-The API key never leaves the backend.
+Supports selecting 1 to 3 modes (caption / layout / hybrid) simultaneously and
+outputs three STRING prompt ports (``caption_prompt``, ``layout_prompt``,
+``hybrid_prompt``) plus MOSS-compatible ``width``/``height`` INT outputs.
+The frontend's 「反推」button posts to ``/ai_prompt_studio/caption_node`` and
+stores the result in the node's ``payload`` widget, which is serialized with
+the workflow. Execution normally reads that payload, so re-running an unchanged
+workflow never repeats a model call. If a freshly created node is queued before
+the button was clicked—or if the user switches/enables a layout mode whose
+draft is not yet in ``payload``—execution automatically generates the missing
+data from the graph's IMAGE input and sends the updated payload back to the
+browser for persistence.
 """
 
 from __future__ import annotations
 
 import base64
+import copy
 import json
+import re
 import struct
 import zlib
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Sequence
 
 from .caption import SAFETY_PREFIX, _INSTRUCTIONS, _clean
-from .config import load_settings
+from .config import build_rule_suffix, load_settings
 from .errors import StudioError
 from .images import to_api_part
 from .layout import layout_instruction, match_canvas_size, parse_model_layout
 from .sessions import MediaStore
 
-MODES = ("caption", "layout", "hybrid")
+MODES = ("caption", "layout", "danbooru", "hybrid")
 _MAX_MEDIA_BYTES = 8 * 1024 * 1024
 _MIME_BY_EXT = {
     "jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png",
     "webp": "image/webp", "gif": "image/gif",
 }
+_LEGACY_WIDGET_GARBAGE = {
+    "null", "none", "undefined", "randomize", "fixed", "increment", "decrement", "true", "false",
+}
+
+
+def clean_widget_str(value: Any, *, is_path: bool = False) -> str:
+    """Clean widget strings that may have been shifted by legacy workflow serialization."""
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if text.lower() in _LEGACY_WIDGET_GARBAGE:
+        return ""
+    if is_path and text.isdigit():
+        return ""
+    return text
 
 
 def _tensor_to_png(image: Any) -> bytes | None:
@@ -175,70 +186,320 @@ def _default_model_call(*, instruction: str, image_part: dict[str, Any],
     return result.text
 
 
+def _concise_summary(text: str) -> str:
+    """Extract a concise 1-sentence summary for layout mode from a longer description."""
+    cleaned = " ".join(str(text or "").strip().split())
+    if not cleaned:
+        return "A composed image."
+    for sep in (". ", "。", "！", "!", "; "):
+        idx = cleaned.find(sep)
+        if 12 <= idx <= 200:
+            return cleaned[: idx + 1].strip()
+    if len(cleaned) > 200:
+        return cleaned[:197].rstrip() + "..."
+    return cleaned
+
+
+def _fallback_draft(caption: str, width: int, height: int) -> dict[str, Any]:
+    """Build a valid single-region PromptBoard draft when only caption text is present."""
+    w = max(256, int(width or 1024))
+    h = max(256, int(height or 1024))
+    summary = str(caption or "").strip() or "A composed image."
+    return {
+        "width": w,
+        "height": h,
+        "bbox_coord_space": "abs",
+        "bbox_format": "xyxy",
+        "summary": {"caption": summary, "canvas": "single"},
+        "items": [
+            {
+                "label": "object",
+                "caption": _concise_summary(summary),
+                "bbox": [0, 0, w, h],
+            }
+        ],
+    }
+
+
+def _normalize_state_payload(raw_state: dict[str, Any]) -> dict[str, Any]:
+    """Normalize both backend state payloads and frontend v1 schema payloads."""
+    state = dict(raw_state)
+    size = state.get("size")
+    if (not state.get("width") or not state.get("height")) and isinstance(size, (list, tuple)) and len(size) == 2:
+        try:
+            state["width"] = int(size[0])
+            state["height"] = int(size[1])
+        except (TypeError, ValueError):
+            pass
+
+    width = int(state.get("width") or 0)
+    height = int(state.get("height") or 0)
+
+    if not state.get("caption") and isinstance(state.get("summary"), dict):
+        summary_cap = str(state["summary"].get("caption") or "").strip()
+        if summary_cap:
+            state["caption"] = summary_cap
+
+    draft = state.get("draft")
+    regions = state.get("regions")
+    if (not isinstance(draft, dict) or not draft.get("items")) and isinstance(regions, list) and regions and width > 0 and height > 0:
+        summary_text = str(state.get("caption") or "").strip() or "A composed image."
+        raw_draft = {
+            "width": width,
+            "height": height,
+            "bbox_coord_space": "abs",
+            "bbox_format": "xyxy",
+            "summary": {"caption": summary_text, "canvas": "single"},
+            "items": regions,
+        }
+        try:
+            state["draft"] = parse_model_layout(json.dumps(raw_draft), width, height)
+        except ValueError:
+            pass
+    return state
+
+
+def _has_caption(state: dict[str, Any]) -> bool:
+    cap = state.get("caption_text") or state.get("caption")
+    if isinstance(cap, str) and cap.strip():
+        return True
+    draft = state.get("draft")
+    if isinstance(draft, dict) and isinstance(draft.get("summary"), dict):
+        return bool(str(draft["summary"].get("caption") or "").strip())
+    return False
+
+
+def _has_draft(state: dict[str, Any]) -> bool:
+    draft = state.get("draft")
+    return isinstance(draft, dict) and isinstance(draft.get("items"), list) and len(draft["items"]) > 0
+
+
+def normalize_modes(
+    mode: str,
+    modes: Sequence[str] | None = None,
+    *,
+    enable_caption: bool | None = None,
+    enable_layout: bool | None = None,
+    enable_danbooru: bool | None = None,
+    enable_hybrid: bool | None = None,
+) -> list[str]:
+    """Return a deduplicated list of 1-3 active modes in canonical order."""
+    if mode not in MODES:
+        raise ValueError(f"unknown mode: {mode}")
+    selected: list[str] = []
+    if modes is not None:
+        if not isinstance(modes, (list, tuple)) or not modes:
+            raise ValueError("modes must be a non-empty list")
+        for m in modes:
+            m_str = str(m or "").strip()
+            if m_str not in MODES:
+                raise ValueError(f"unknown mode: {m_str}")
+            if m_str not in selected:
+                selected.append(m_str)
+    elif any(v is not None for v in (enable_caption, enable_layout, enable_danbooru, enable_hybrid)):
+        if enable_caption:
+            selected.append("caption")
+        if enable_layout:
+            selected.append("layout")
+        if enable_danbooru:
+            selected.append("danbooru")
+        if enable_hybrid:
+            selected.append("hybrid" if "hybrid" not in selected else "danbooru")
+        if mode not in selected:
+            selected.append(mode)
+    else:
+        selected.append(mode)
+
+    if not selected:
+        selected.append(mode)
+    return selected
+
+
 def _generate_state(*, mode: str, raw: bytes, mime: str,
                     extra_instruction: str, model: str,
-                    call_model: Callable[..., str] | None) -> dict[str, Any]:
-    """Caption graph-owned image bytes once and build a serializable payload."""
+                    call_model: Callable[..., str] | None,
+                    modes: Sequence[str] | None = None,
+                    existing_state: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Caption graph-owned image bytes and build a serializable payload for 1-3 modes."""
+    active_modes = normalize_modes(mode, modes)
     src_w, src_h = image_dimensions(raw)
     width, height = match_canvas_size(src_w, src_h)
     settings = load_settings()
-    resolved_model = model.strip() or settings.model
+    extra_clean = clean_widget_str(extra_instruction)
+    model_clean = clean_widget_str(model)
+    resolved_model = model_clean or settings.model
     media = MediaStore(settings.media_dir, max_bytes=settings.max_image_bytes)
     part = to_api_part(media, media.put(raw, mime))
     if part.get("type") == "image_ref":
-        # MediaStore is used by the route to avoid duplicating bytes in memory;
-        # graph execution has the bytes already, so send a data URL directly.
         part = {"type": "image_url", "image_url": {
             "url": "data:%s;base64,%s" % (mime, base64.b64encode(raw).decode("ascii"))
         }}
-    instruction = (
-        SAFETY_PREFIX + _INSTRUCTIONS["prose"] if mode == "caption"
-        else SAFETY_PREFIX + layout_instruction(mode, width, height, extra_instruction)
-    )
-    if mode == "caption" and extra_instruction.strip():
-        instruction += "\n\nAdditional user requirement: " + extra_instruction.strip()
-    max_tokens = 500 if mode == "caption" else 3000
     if call_model is None:
         call_model = _default_model_call
-    try:
-        text = call_model(
-            instruction=instruction, image_part=part,
-            model=resolved_model, max_tokens=max_tokens,
-        )
-    except StudioError as exc:
-        # A gateway stall must not leak raw exception details or the API key.
-        raise ValueError(
-            "反推超时或上游暂时不可用：请检查 Magpie / Base URL / 模型名，"
-            "在侧边栏降低超时与重试后重试；也可以先点「反推」单独生成结果再排队。"
-        ) from exc
-    except (TimeoutError, OSError) as exc:
-        raise ValueError("反推网络超时；请检查 Magpie 是否可用后重试。") from exc
-    state: dict[str, Any] = {
+
+    state: dict[str, Any] = dict(existing_state or {})
+    state.update({
         "mode": mode,
+        "modes": active_modes,
         "width": width,
         "height": height,
         "source_width": src_w,
         "source_height": src_h,
-    }
-    if mode == "caption":
-        caption = _clean(str(text or ""), "prose")
+    })
+
+    def _invoke(instr: str, max_tok: int) -> str:
+        try:
+            return call_model(
+                instruction=instr, image_part=part,
+                model=resolved_model, max_tokens=max_tok,
+            )
+        except StudioError as exc:
+            raise ValueError(
+                "反推超时或上游暂时不可用：请检查 Magpie / Base URL / 模型名，"
+                "在节点「⚙ 设置」中调整模型或超时设置后重试；也可以先点「反推」单独生成结果再排队。"
+            ) from exc
+        except (TimeoutError, OSError) as exc:
+            raise ValueError("反推网络超时；请检查 Magpie 是否可用后重试。") from exc
+
+    need_caption_call = ("caption" in active_modes) and not (
+        isinstance(state.get("caption_text"), str) and state["caption_text"].strip()
+    )
+    need_layout_call = bool({"layout", "hybrid"} & set(active_modes)) and not _has_draft(state)
+    need_danbooru_call = ("danbooru" in active_modes) and not (
+        isinstance(state.get("danbooru_prompt"), str) and state["danbooru_prompt"].strip()
+    )
+
+    if need_caption_call:
+        base_fmt = "tags" if settings.rule_preset == "tags" else "prose"
+        cap_instr = SAFETY_PREFIX + _INSTRUCTIONS[base_fmt] + build_rule_suffix(settings, extra_clean)
+        raw_cap = _invoke(cap_instr, 500)
+        caption = _clean(str(raw_cap or ""), base_fmt)
         if not caption:
             raise ValueError("The model returned an empty caption.")
         state["caption"] = caption
-    else:
+        state["caption_text"] = caption
+
+    if need_layout_call:
+        layout_target_mode = "hybrid" if "hybrid" in active_modes else "layout"
+        lay_extra = build_rule_suffix(settings, extra_clean, for_json_layout=True).strip()
+        lay_instr = SAFETY_PREFIX + layout_instruction(
+            layout_target_mode, width, height, lay_extra, max_regions=settings.max_regions
+        )
+        raw_lay = _invoke(lay_instr, 3000)
         try:
-            draft = parse_model_layout(str(text or ""), width, height)
+            draft = parse_model_layout(
+                str(raw_lay or ""), width, height, max_items=settings.max_regions
+            )
         except ValueError as exc:
             raise ValueError(
                 f"布局反推失败（模型输出不是完整 JSON）：{exc}。请重试或换模型。"
             ) from exc
-        state["caption"] = str(draft["summary"]["caption"])
-        state["draft"] = draft
+
+        full_caption = str(state.get("caption_text") or draft["summary"]["caption"]).strip()
+        short_caption = (
+            str(draft["summary"]["caption"]).strip()
+            if layout_target_mode == "layout"
+            else _concise_summary(draft["summary"]["caption"])
+        )
+        layout_draft = copy.deepcopy(draft)
+        layout_draft["summary"]["caption"] = short_caption or full_caption
+        hybrid_draft = copy.deepcopy(draft)
+        hybrid_draft["summary"]["caption"] = full_caption or short_caption
+
+        state["layout_draft"] = layout_draft
+        state["hybrid_draft"] = hybrid_draft
+        state["draft"] = hybrid_draft if mode in ("hybrid", "danbooru") else (layout_draft if mode == "layout" else hybrid_draft)
+        if not state.get("caption"):
+            state["caption"] = str(state["draft"]["summary"]["caption"])
+
+    if need_danbooru_call:
+        dan_instr = SAFETY_PREFIX + _INSTRUCTIONS["danbooru"] + build_rule_suffix(settings, extra_clean)
+        raw_dan = _invoke(dan_instr, 600)
+        dan_text = _clean(str(raw_dan or ""), "danbooru")
+        state["danbooru_prompt"] = dan_text
+        state["danbooru_text"] = dan_text
+        state["tags"] = dan_text
+
     return state
 
 
+def build_prompt_outputs(
+    state: dict[str, Any],
+    *,
+    mode: str,
+    width: int,
+    height: int,
+    synthesize_missing_draft: bool = False,
+) -> tuple[str, str, str]:
+    """Return (caption_prompt, layout_prompt, hybrid_prompt) from normalized state."""
+    draft = state.get("draft")
+    has_draft = isinstance(draft, dict) and isinstance(draft.get("items"), list) and len(draft["items"]) > 0
+
+    caption_text = str(state.get("caption_text") or state.get("caption") or "").strip()
+    if not caption_text and has_draft:
+        caption_text = str(draft.get("summary", {}).get("caption") or "").strip()
+
+    if mode == "caption" and not caption_text:
+        raise ValueError("payload 里没有 caption 文本；请重新反推或在编辑弹窗里填写。")
+
+    if not has_draft:
+        if mode in ("layout", "hybrid") and not synthesize_missing_draft:
+            raise ValueError("payload 里没有布局草稿；请切到布局模式重新反推。")
+        fallback = _fallback_draft(caption_text or "A composed image.", width, height)
+        fallback_json = json.dumps(fallback, ensure_ascii=False, separators=(",", ":"))
+        return (caption_text or fallback["summary"]["caption"], fallback_json, fallback_json)
+
+    # Synchronize items and dimensions from the active draft so manual edits in
+    # the workbench/node always propagate to both layout_prompt and hybrid_prompt.
+    active_items = copy.deepcopy(draft["items"])
+    active_summary = str(draft.get("summary", {}).get("caption") or caption_text or "A composed image.").strip()
+    if not caption_text:
+        caption_text = active_summary
+
+    layout_draft = copy.deepcopy(state.get("layout_draft") if isinstance(state.get("layout_draft"), dict) else draft)
+    layout_draft["width"] = width
+    layout_draft["height"] = height
+    layout_draft["items"] = copy.deepcopy(active_items)
+    if not isinstance(layout_draft.get("summary"), dict):
+        layout_draft["summary"] = {"caption": _concise_summary(active_summary), "canvas": "single"}
+    elif mode == "layout":
+        layout_draft["summary"]["caption"] = active_summary
+
+    hybrid_draft = copy.deepcopy(state.get("hybrid_draft") if isinstance(state.get("hybrid_draft"), dict) else draft)
+    hybrid_draft["width"] = width
+    hybrid_draft["height"] = height
+    hybrid_draft["items"] = copy.deepcopy(active_items)
+    if not isinstance(hybrid_draft.get("summary"), dict):
+        hybrid_draft["summary"] = {"caption": caption_text, "canvas": "single"}
+    else:
+        hybrid_draft["summary"]["caption"] = (
+            active_summary if mode == "hybrid" else (caption_text or active_summary)
+        )
+
+    layout_prompt = json.dumps(layout_draft, ensure_ascii=False, separators=(",", ":"))
+    hybrid_prompt = json.dumps(hybrid_draft, ensure_ascii=False, separators=(",", ":"))
+    danbooru_prompt = str(
+        state.get("danbooru_prompt")
+        or state.get("danbooru_text")
+        or state.get("tags")
+        or ""
+    ).strip()
+    if not danbooru_prompt:
+        tags_list = []
+        if has_draft:
+            for item in draft.get("items", []):
+                cap = str(item.get("caption") or "").strip()
+                if cap:
+                    tags_list.extend([t.strip().lower() for t in re.split(r"[,;]+", cap) if t.strip()])
+        if not tags_list and caption_text:
+            clean_words = re.sub(r"[^\w\s]", " ", caption_text).lower().split()
+            tags_list = [w for w in clean_words if len(w) > 2][:16]
+        danbooru_prompt = ", ".join(tags_list) if tags_list else "masterpiece, solo, high quality"
+    return (caption_text, layout_prompt, danbooru_prompt)
+
+
 class AIPromptStudioCaptionNode:
-    """Image → prompt + MOSS canvas size, in three modes."""
+    """Image → 1-3 mode prompts (caption / layout / hybrid) + MOSS canvas size."""
 
     @classmethod
     def INPUT_TYPES(cls) -> dict[str, Any]:
@@ -246,12 +507,12 @@ class AIPromptStudioCaptionNode:
             "required": {
                 "mode": (
                     list(MODES),
-                    {"default": "caption", "tooltip": "出图方式：散文描述 / 分区域布局 / 完整描述+布局"},
+                    {"default": "caption", "tooltip": "主模式：散文描述 / 分区域布局 / 完整描述+布局"},
                 ),
                 "payload": (
                     "STRING",
                     {
-                        "multiline": True,
+                        "multiline": False,
                         "default": "{}",
                         "tooltip": "反推与编辑结果（JSON，随工作流保存）。留空 {} 时第一次排队会自动反推。",
                     },
@@ -276,85 +537,217 @@ class AIPromptStudioCaptionNode:
                     {"default": 0, "min": 0, "max": 0xFFFFFFFF,
                      "tooltip": "数值变化时强制重新执行（反推本身不受影响）"},
                 ),
+                "enable_caption": (
+                    "BOOLEAN",
+                    {"default": True, "tooltip": "勾选后生成并输出 caption_prompt（英文散文描述）"},
+                ),
+                "enable_layout": (
+                    "BOOLEAN",
+                    {"default": False, "tooltip": "勾选后同时生成并输出 layout_prompt（分区域布局草稿 JSON）"},
+                ),
+                "enable_danbooru": (
+                    "BOOLEAN",
+                    {"default": False, "tooltip": "勾选后同时生成并输出 danbooru_prompt（Danbooru 结构化逗号标签）"},
+                ),
+                "enable_hybrid": (
+                    "BOOLEAN",
+                    {"default": False, "tooltip": "兼容旧版：勾选后同时生成并输出 danbooru_prompt"},
+                ),
             },
         }
 
-    RETURN_TYPES = ("STRING", "INT", "INT")
-    RETURN_NAMES = ("prompt", "width", "height")
-    # Graph execution uses the 3 declared outputs.  The fourth value is only
-    # returned when ``caption`` is called directly (tests / embedders) so a
-    # freshly generated payload can be persisted; ComfyUI wraps this function
-    # through ``execute`` below.
+    RETURN_TYPES = ("STRING", "STRING", "STRING", "INT", "INT")
+    RETURN_NAMES = ("caption_prompt", "layout_prompt", "danbooru_prompt", "width", "height")
     FUNCTION = "execute"
     CATEGORY = "AI Prompt Studio"
     DESCRIPTION = (
-        "图片反推：caption（散文）/ layout（PromptBoard 布局 JSON）/ hybrid（完整描述+布局）。"
-        "三种模式都输出 width/height（MOSS 官方 16 倍数尺寸）。"
+        "图片反推：支持同时勾选 1~3 种模式（caption 散文 / layout 布局 JSON / hybrid 完整描述+布局 JSON），"
+        "提供 3 个对应 STRING 输出端口及 width/height（MOSS 官方 16 倍数尺寸）。"
         "点「反推」或第一次排队时调用模型，结果存进 payload；之后跑图只读缓存。"
     )
     OUTPUT_NODE = False
     NODE_NAME = "AI 图像反推提示词"
 
-    def caption(self, *, mode: str, payload: str, image: Any = None,
-                image_path: str = "", extra_instruction: str = "",
-                model: str = "", seed: int = 0,
-                call_model: Callable[..., str] | None = None):
-        """Return (prompt, width, height, updated_payload_or_None).
-
-        ``call_model`` is a test seam only; ComfyUI never supplies it.  Keeping
-        it out of ``INPUT_TYPES`` means ComfyUI will not serialize it.
-        """
+    def caption_all(
+        self,
+        *,
+        mode: str,
+        payload: str,
+        image: Any = None,
+        image_path: str = "",
+        extra_instruction: str = "",
+        model: str = "",
+        seed: int = 0,
+        enable_caption: bool | None = None,
+        enable_layout: bool | None = None,
+        enable_danbooru: bool | None = None,
+        enable_hybrid: bool | None = None,
+        call_model: Callable[..., str] | None = None,
+        synthesize_missing_draft: bool = False,
+    ) -> tuple[str, str, str, int, int, str | None]:
+        """Return (caption_prompt, layout_prompt, hybrid_prompt, width, height, updated_payload_or_None)."""
         if mode not in MODES:
             raise ValueError(f"unknown mode: {mode}")
         try:
-            state = json.loads(payload or "{}")
+            raw_state = json.loads(payload or "{}")
         except json.JSONDecodeError as exc:
             raise ValueError(f"payload is not valid JSON: {exc}") from exc
-        if not isinstance(state, dict):
+        if not isinstance(raw_state, dict):
             raise ValueError("payload must be a JSON object")
+
+        state = _normalize_state_payload(raw_state)
+        payload_modes = state.get("modes") if isinstance(state.get("modes"), list) else None
+        active_modes = normalize_modes(
+            mode,
+            payload_modes if (enable_caption is None and enable_layout is None and enable_danbooru is None and enable_hybrid is None) else None,
+            enable_caption=enable_caption,
+            enable_layout=enable_layout,
+            enable_danbooru=enable_danbooru,
+            enable_hybrid=enable_hybrid,
+        )
+        if mode not in active_modes:
+            active_modes.append(mode)
+
         width = int(state.get("width") or 0)
         height = int(state.get("height") or 0)
+        needs_size = width <= 0 or height <= 0
+        needs_caption = ("caption" in active_modes) and not _has_caption(state)
+        needs_layout = bool({"layout", "hybrid"} & set(active_modes)) and not _has_draft(state)
+
         new_payload: str | None = None
-        if width <= 0 or height <= 0:
+        has_image = _has_execution_image(image, image_path)
+
+        if needs_size or ((needs_caption or needs_layout) and has_image):
             raw, mime = _execution_image_bytes(image, image_path)
             state = _generate_state(
-                mode=mode, raw=raw, mime=mime,
+                mode=mode,
+                modes=active_modes,
+                raw=raw,
+                mime=mime,
                 extra_instruction=extra_instruction,
-                model=model, call_model=call_model,
+                model=model,
+                call_model=call_model,
+                existing_state=state if not needs_size else None,
             )
             width = int(state["width"])
             height = int(state["height"])
             new_payload = json.dumps(state, ensure_ascii=False)
-        draft = state.get("draft")
+
+        caption_prompt, layout_prompt, danbooru_prompt = build_prompt_outputs(
+            state,
+            mode=mode,
+            width=width,
+            height=height,
+            synthesize_missing_draft=synthesize_missing_draft,
+        )
+        return (caption_prompt, layout_prompt, danbooru_prompt, width, height, new_payload)
+
+    def caption(self, *, mode: str, payload: str, image: Any = None,
+                image_path: str = "", extra_instruction: str = "",
+                model: str = "", seed: int = 0,
+                enable_caption: bool | None = None,
+                enable_layout: bool | None = None,
+                enable_danbooru: bool | None = None,
+                enable_hybrid: bool | None = None,
+                call_model: Callable[..., str] | None = None):
+        """Return (prompt, width, height, updated_payload_or_None) for the primary ``mode``."""
+        caption_prompt, layout_prompt, danbooru_prompt, width, height, new_payload = self.caption_all(
+            mode=mode,
+            payload=payload,
+            image=image,
+            image_path=image_path,
+            extra_instruction=extra_instruction,
+            model=model,
+            seed=seed,
+            enable_caption=enable_caption,
+            enable_layout=enable_layout,
+            enable_danbooru=enable_danbooru,
+            enable_hybrid=enable_hybrid,
+            call_model=call_model,
+            synthesize_missing_draft=False,
+        )
         if mode == "caption":
-            text = state.get("caption")
-            if not isinstance(text, str) or not text.strip():
-                raise ValueError("payload 里没有 caption 文本；请重新反推或在编辑弹窗里填写。")
-            prompt = text.strip()
+            primary = caption_prompt
+        elif mode == "layout":
+            primary = layout_prompt
+        elif mode == "hybrid":
+            try:
+                st = json.loads(new_payload or payload or "{}")
+            except Exception:
+                st = {}
+            hybrid_draft = st.get("hybrid_draft") or st.get("draft")
+            primary = json.dumps(hybrid_draft, ensure_ascii=False, separators=(",", ":")) if hybrid_draft else layout_prompt
         else:
-            if not isinstance(draft, dict) or not draft.get("items"):
-                raise ValueError("payload 里没有布局草稿；请切到布局模式重新反推。")
-            prompt = json.dumps(draft, ensure_ascii=False, separators=(",", ":"))
-        return (prompt, width, height, new_payload)
+            primary = danbooru_prompt
+        return (primary, width, height, new_payload)
 
     def execute(self, **kwargs: Any):
-        """ComfyUI entry point: three outputs plus a UI payload when generated."""
-        prompt, width, height, new_payload = self.caption(**kwargs)
+        """ComfyUI entry point: 5 outputs (3 prompts + width + height) plus UI payload when updated."""
+        caption_prompt, layout_prompt, danbooru_prompt, width, height, new_payload = self.caption_all(
+            **kwargs,
+            synthesize_missing_draft=True,
+        )
+        if kwargs.get("mode") == "hybrid" or (kwargs.get("enable_hybrid") and not kwargs.get("enable_danbooru")):
+            try:
+                st = json.loads(new_payload or kwargs.get("payload") or "{}")
+            except Exception:
+                st = {}
+            hyb = st.get("hybrid_draft") or st.get("draft")
+            third = json.dumps(hyb, ensure_ascii=False, separators=(",", ":")) if hyb else danbooru_prompt
+        else:
+            third = danbooru_prompt
+        outputs = (caption_prompt, layout_prompt, third, width, height)
         if new_payload is None:
-            return (prompt, width, height)
-        # ComfyUI sends {"ui": ...} to the frontend's onExecuted handler.
-        return {"ui": {"aps_payload": [new_payload]}, "result": (prompt, width, height)}
+            return outputs
+        return {"ui": {"aps_payload": [new_payload]}, "result": outputs}
 
     @classmethod
-    def IS_CHANGED(cls, *, payload: str = "{}", **kwargs: Any):
-        """Cache a generated result, but always run once for an empty payload."""
+    def IS_CHANGED(
+        cls,
+        *,
+        mode: str = "caption",
+        payload: str = "{}",
+        enable_caption: bool | None = None,
+        enable_layout: bool | None = None,
+        enable_danbooru: bool | None = None,
+        enable_hybrid: bool | None = None,
+        **kwargs: Any,
+    ):
+        """Cache a generated result, but re-run when payload is empty or missing a newly requested mode."""
         try:
-            state = json.loads(payload or "{}")
+            raw_state = json.loads(payload or "{}")
         except json.JSONDecodeError:
-            state = {}
-        if not isinstance(state, dict) or int(state.get("width") or 0) <= 0:
+            raw_state = {}
+        if not isinstance(raw_state, dict):
             return float("nan")
-        return payload
+        state = _normalize_state_payload(raw_state)
+        if int(state.get("width") or 0) <= 0 or int(state.get("height") or 0) <= 0:
+            return float("nan")
+        try:
+            payload_modes = state.get("modes") if isinstance(state.get("modes"), list) else None
+            active_modes = normalize_modes(
+                mode if mode in MODES else "caption",
+                payload_modes if (enable_caption is None and enable_layout is None and enable_danbooru is None and enable_hybrid is None) else None,
+                enable_caption=enable_caption,
+                enable_layout=enable_layout,
+                enable_danbooru=enable_danbooru,
+                enable_hybrid=enable_hybrid,
+            )
+        except ValueError:
+            return float("nan")
+        if ("layout" in active_modes or "hybrid" in active_modes) and not _has_draft(state):
+            return float("nan")
+        if ("caption" in active_modes) and not _has_caption(state):
+            return float("nan")
+        return f"{mode}:{','.join(active_modes)}:{payload}"
+
+
+def _has_execution_image(image: Any, image_path: str) -> bool:
+    """Return True if a valid image tensor or non-empty image_path was supplied."""
+    shape = getattr(image, "shape", None)
+    if shape is not None and len(shape) == 4 and shape[-1] in (1, 3, 4):
+        return True
+    return bool(clean_widget_str(image_path, is_path=True))
 
 
 def _execution_image_bytes(image: Any, image_path: str) -> tuple[bytes, str]:
@@ -362,10 +755,10 @@ def _execution_image_bytes(image: Any, image_path: str) -> tuple[bytes, str]:
     png = _tensor_to_png(image)
     if png is not None:
         return png, "image/png"
-    source = str(image_path or "").strip()
+    source = clean_widget_str(image_path, is_path=True)
     if not source:
         raise ValueError(
-            "payload 为空：请连接 LoadImage 的 IMAGE 输出，或填写 image_path，"
+            "payload 为空或缺少当前模式所需数据：请连接 LoadImage 的 IMAGE 输出，或填写 image_path，"
             "也可以先点节点上的「反推」按钮；并确认模型 / Base URL / API Key 已配置。"
         )
     path = Path(source)
@@ -385,4 +778,11 @@ def register(mappings: dict, display_names: dict) -> None:
     display_names["AIPromptStudioCaption"] = "AI 图像反推提示词"
 
 
-__all__ = ["AIPromptStudioCaptionNode", "register", "image_dimensions", "MODES"]
+__all__ = [
+    "AIPromptStudioCaptionNode",
+    "register",
+    "image_dimensions",
+    "MODES",
+    "normalize_modes",
+    "build_prompt_outputs",
+]

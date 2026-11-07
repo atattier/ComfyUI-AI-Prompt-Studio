@@ -236,6 +236,16 @@ class MockHandler(BaseHTTPRequestHandler):
             system = _content_text(messages[0].get("content")) if messages else ""
             lowered = system.lower()
             if '"changes"' in system and "json object" in lowered:
+                if "<<<\n\n>>>" in text:
+                    return json.dumps(
+                        {
+                            "reply": "已为您根据描述生成初始提示词草稿。",
+                            "changes": [
+                                {"op": "append", "after": "A cinematic scene in soft studio lighting, 35mm lens, sharp focus"},
+                            ],
+                        },
+                        ensure_ascii=False,
+                    )
                 if "雨" in text or "rain" in text.lower():
                     return json.dumps(
                         {
@@ -259,6 +269,23 @@ class MockHandler(BaseHTTPRequestHandler):
                     {
                         "reply": "信息已经比较完整，建议只补充一点光线。",
                         "changes": [{"op": "append", "after": ", soft rim light"}],
+                    },
+                    ensure_ascii=False,
+                )
+            if "summary" in lowered and "at most 6 regions" in lowered:
+                left, right = decode_png_colors(images[0]) if images else ("red", "blue")
+                caption = (
+                    f"A high-contrast studio poster split into {left} and {right} halves with balanced composition and soft key light."
+                    if "complete natural-language" in lowered
+                    else f"A poster split into {left} and {right} halves."
+                )
+                return json.dumps(
+                    {
+                        "summary": {"caption": caption},
+                        "items": [
+                            {"label": "object", "caption": f"Bold {left} color block on the left side", "bbox": [0, 0, 500, 1000]},
+                            {"label": "character", "caption": f"Subject silhouetted against the {right} right half", "bbox": [500, 120, 960, 920]},
+                        ],
                     },
                     ensure_ascii=False,
                 )

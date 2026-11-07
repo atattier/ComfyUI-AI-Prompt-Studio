@@ -13,7 +13,7 @@ from typing import Any, Sequence
 
 from .client import ChatClient, ChatResult
 
-FORMATS = ("prose", "tags", "moss")
+FORMATS = ("prose", "tags", "moss", "danbooru")
 
 _INSTRUCTIONS = {
     "prose": (
@@ -29,11 +29,18 @@ _INSTRUCTIONS = {
         "Use underscores inside multi-word tags. No numbering, no explanations, no "
         "markdown, no quotes."
     ),
+    "danbooru": (
+        "Convert the image into Danbooru-style image-generation tags. Output ONE comma-separated line "
+        "of English tags, ordered from most to least important: core character and count (such as 1girl, solo), "
+        "hair and eye features, facial expression, clothing, pose and action, environment, lighting, camera angle, art style. "
+        "All lowercase, use underscores inside multi-word tags. Strictly forbid sentences, forbid (word:1.2) syntax, no numbering, no markdown quotes."
+    ),
     "moss": (
-        "Write a MOSS-Image style caption in English as one compact paragraph. Order: "
-        "quality/medium, main subject and appearance, action/pose, environment, camera "
-        "and composition, lighting, style. Use concrete visual nouns; avoid marketing "
-        "language and avoid mentioning the image itself. Output only the caption."
+        "Write an official MOSS-Image style prompt in English as cohesive natural prose. "
+        "Describe concrete visible choices: main subject and action, physical appearance, "
+        "spatial setting, camera framing, lighting, surface materials, and artistic medium. "
+        "Preserve all explicit user intent, avoid marketing buzzwords or (word:1.2) syntax, "
+        "and quote any visible signage or text verbatim inside quotation marks. Output only the caption."
     ),
 }
 
@@ -88,7 +95,7 @@ def _clean(text: str, fmt: str) -> str:
     out = text.strip()
     out = re.sub(r"^```[a-zA-Z]*\s*", "", out)
     out = re.sub(r"\s*```$", "", out)
-    if fmt == "tags":
+    if fmt in ("tags", "danbooru"):
         out = out.replace("\r", " ").replace("\n", ", ")
         out = re.sub(r"^\s*(tags?|prompt)\s*[:：]\s*", "", out, flags=re.IGNORECASE)
         out = out.strip().strip('"').strip("'")

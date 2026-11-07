@@ -66,6 +66,14 @@ export class StudioApi {
     return this.request("/status");
   }
 
+  saveConfig(body = {}) {
+    return this.request("/config", { method: "POST", body });
+  }
+
+  listModels() {
+    return this.request("/models");
+  }
+
   probe({ force = false } = {}) {
     return this.request("/probe", { method: "POST", body: { force } });
   }
@@ -74,16 +82,29 @@ export class StudioApi {
     return this.request("/capabilities");
   }
 
-  edit({ message, target, model, images } = {}) {
-    return this.request("/edit", { method: "POST", body: { message, target, model, images } });
+  edit({ message, target, model, images, session_id, create_session, allow_empty } = {}) {
+    return this.request("/edit", {
+      method: "POST",
+      body: { message, target, model, images, session_id, create_session, allow_empty },
+    });
   }
 
   apply({ text, ops }) {
     return this.request("/apply", { method: "POST", body: { text, ops } });
   }
 
-  caption({ image, format = "prose", instruction = "", model } = {}) {
-    return this.request("/caption", { method: "POST", body: { image, format, instruction, model } });
+  caption({ image, format = "prose", instruction = "", model, session_id, create_session } = {}) {
+    return this.request("/caption", {
+      method: "POST",
+      body: { image, format, instruction, model, session_id, create_session },
+    });
+  }
+
+  captionNode({ mode = "caption", modes, image, image_path = "", extra_instruction = "", model = "", session_id, create_session } = {}) {
+    const body = { mode, image_path, extra_instruction, model, session_id, create_session };
+    if (Array.isArray(modes) && modes.length > 0) body.modes = modes;
+    if (image) body.image = image;
+    return this.request("/caption_node", { method: "POST", body });
   }
 
   addVersion({ target, text, source = "apply", label = "", meta } = {}) {

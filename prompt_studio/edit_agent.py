@@ -30,7 +30,8 @@ Return ONLY a JSON object, no markdown, no prose outside it:
 
 Rules:
 - `before` MUST be copied character-for-character from the CURRENT PROMPT and MUST occur exactly once.
-- Use the smallest edit that satisfies the request. Never rewrite untouched parts.
+- When CURRENT PROMPT is empty, return a single `{"op": "append", "after": "new prompt text", "why": "initial draft"}` operation.
+- Use the smallest edit that satisfies the request. Never rewrite untouched parts unless the user asks for a full translation, expansion, or rewrite.
 - If the user asks a question or no edit is needed, return {"reply": "...", "changes": []}.
 - Allowed ops: replace, delete, insert_after, append.
 - Keep the prompt's language unless the user asks to translate.
@@ -68,7 +69,9 @@ class EditProposal:
         }
 
 
-def _current_prompt_block(text: str) -> str:
+def _current_prompt_block(text: str, *, allow_empty: bool = False) -> str:
+    if not text.strip() and allow_empty:
+        return "CURRENT PROMPT (empty — please draft a new prompt using op='append'):\n<<<\n\n>>>"
     return f"CURRENT PROMPT (verbatim):\n<<<\n{text}\n>>>"
 
 
@@ -78,19 +81,22 @@ def build_edit_messages(
     *,
     target_hint: str = "",
     images: Sequence[dict[str, Any]] | None = None,
+    history: Sequence[dict[str, Any]] | None = None,
+    allow_empty: bool = False,
 ) -> list[dict[str, Any]]:
     text = (
         (f"Target: {target_hint}\n" if target_hint else "")
-        + _current_prompt_block(current_text)
+        + _current_prompt_block(current_text, allow_empty=allow_empty)
         + f"\nUSER REQUEST:\n{instruction}"
     )
     content: Any = text
     if images:
         content = [{"type": "text", "text": text}, *images]
-    return [
-        {"role": "system", "content": EDIT_SYSTEM},
-        {"role": "user", "content": content},
-    ]
+    messages: list[dict[str, Any]] = [{"role": "system", "content": EDIT_SYSTEM}]
+    if history:
+        messages.extend(history)
+    messages.append({"role": "user", "content": content})
+    return messages
 
 
 def build_chat_messages(
@@ -148,7 +154,7 @@ def _extract_json(raw: str) -> str:
     raise EditValidationError("The model returned incomplete JSON.")
 
 
-def parse_proposal(raw: str, current_text: str) -> EditProposal:
+def parse_proposal(raw: str, current_text: str, *, allow_empty: bool = False) -> EditProposal:
     payload = _extract_json(raw)
     try:
         obj = json.loads(payload)
@@ -157,7 +163,20 @@ def parse_proposal(raw: str, current_text: str) -> EditProposal:
     if not isinstance(obj, dict):
         raise EditValidationError("The edit payload must be a JSON object.")
     reply = str(obj.get("reply") or "").strip()
-    ops = parse_ops(obj.get("changes"))
+    raw_changes = obj.get("changes")
+    if (not current_text.strip() or allow_empty) and not current_text.strip() and isinstance(raw_changes, list):
+        normalized = []
+        for item in raw_changes:
+            if isinstance(item, dict) and item.get("op") in ("replace", "insert_after") and not str(item.get("before") or "").strip():
+                normalized.append({
+                    "op": "append",
+                    "after": str(item.get("after") or ""),
+                    "why": str(item.get("why") or ""),
+                })
+            else:
+                normalized.append(item)
+        raw_changes = normalized
+    ops = parse_ops(raw_changes)
     if not ops:
         return EditProposal(reply=reply, changes=[], text=current_text, blocks=[], changed=False)
     preview = preview_ops(current_text, ops)
@@ -177,22 +196,29 @@ def request_edit(
     instruction: str,
     target_hint: str = "",
     images: Sequence[dict[str, Any]] | None = None,
+    history: Sequence[dict[str, Any]] | None = None,
     model: str | None = None,
     max_tokens: int = 1600,
+    allow_empty: bool = False,
 ) -> EditProposal:
     if not instruction.strip():
         raise EditValidationError("instruction must not be empty.")
-    if not current_text.strip():
+    if not current_text.strip() and not allow_empty:
         raise EditValidationError("There is no prompt to edit on the target node.")
     messages = build_edit_messages(
-        current_text, instruction, target_hint=target_hint, images=images
+        current_text,
+        instruction,
+        target_hint=target_hint,
+        images=images,
+        history=history,
+        allow_empty=allow_empty,
     )
     # Stream and aggregate: keeps /edit working on gateways whose
     # non-streaming path stalls (Magpie) while the JSON contract is unchanged.
     result: ChatResult = client.complete_via_stream(
         messages, model=model, temperature=0.2, max_tokens=max_tokens
     )
-    proposal = parse_proposal(result.text, current_text)
+    proposal = parse_proposal(result.text, current_text, allow_empty=allow_empty)
     proposal.usage = result.usage
     proposal.request_id = result.request_id
     proposal.latency_ms = result.latency_ms
