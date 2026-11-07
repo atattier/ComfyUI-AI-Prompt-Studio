@@ -200,6 +200,46 @@ export function renderSvgStage(svg, { width, height, draft, imageUrl, selected =
     if (dimImage) img.setAttribute("opacity", "0.52");
     img.style.pointerEvents = "none";
     svg.append(img);
+  } else {
+    // Beautiful empty state / dropzone prompt
+    const border = svgRect(NS, 28, 28, Math.max(10, width - 56), Math.max(10, height - 56), {
+      fill: "none",
+      stroke: "rgba(56, 189, 248, 0.4)",
+      "stroke-width": 3,
+      "stroke-dasharray": "12 8",
+      rx: 16,
+    });
+    border.style.pointerEvents = "none";
+    svg.append(border);
+
+    const midX = Math.round(width / 2);
+    const midY = Math.round(height / 2);
+    const mainFontSize = Math.max(22, Math.round(width / 28));
+    const subFontSize = Math.max(14, Math.round(width / 44));
+
+    const textMain = document.createElementNS(NS, "text");
+    textMain.setAttribute("x", String(midX));
+    textMain.setAttribute("y", String(midY - 12));
+    textMain.setAttribute("text-anchor", "middle");
+    textMain.setAttribute("fill", "#e2e8f0");
+    textMain.setAttribute("font-size", String(mainFontSize));
+    textMain.setAttribute("font-weight", "700");
+    textMain.setAttribute("font-family", '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Microsoft YaHei", sans-serif');
+    textMain.textContent = "📥 拖拽图片至此，或按 Ctrl+V 粘贴";
+    textMain.style.pointerEvents = "none";
+
+    const textSub = document.createElementNS(NS, "text");
+    textSub.setAttribute("x", String(midX));
+    textSub.setAttribute("y", String(midY + subFontSize + 14));
+    textSub.setAttribute("text-anchor", "middle");
+    textSub.setAttribute("fill", "#94a3b8");
+    textSub.setAttribute("font-size", String(subFontSize));
+    textSub.setAttribute("font-weight", "500");
+    textSub.setAttribute("font-family", '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Microsoft YaHei", sans-serif');
+    textSub.textContent = "也可点击工具栏「换图」或连接上游 LoadImage 节点";
+    textSub.style.pointerEvents = "none";
+
+    svg.append(textMain, textSub);
   }
 
   if (!showBoxes || !draft || !Array.isArray(draft.items)) return;
@@ -527,6 +567,39 @@ export function openLayoutEditor({
   stageToolbar.append(imgBadge, uploadBtn, drawBtn, dimBtn, uploadInput);
 
   const canvasWrap = el("div", "aps-layout-canvas-wrap");
+  canvasWrap.addEventListener("dragenter", (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    canvasWrap.classList.add("is-drag-over");
+  });
+  canvasWrap.addEventListener("dragover", (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    canvasWrap.classList.add("is-drag-over");
+  });
+  canvasWrap.addEventListener("dragleave", (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    canvasWrap.classList.remove("is-drag-over");
+  });
+  canvasWrap.addEventListener("drop", async (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    canvasWrap.classList.remove("is-drag-over");
+    const file = ev.dataTransfer?.files?.[0];
+    if (!file || !String(file.type || "").startsWith("image/")) return;
+    try {
+      const dataUrl = await fileToDataUrl(file);
+      currentImageUrl = dataUrl;
+      imgBadge.textContent = `🖼 ${file.name}`;
+      onImageChange?.(dataUrl);
+      updateStageVisibility();
+      renderBoxes();
+      setStatus(`已拖入并加载参考图：${file.name}`);
+    } catch (err) {
+      setStatus(String(err?.message || err), true);
+    }
+  });
   const svg = createSvg(width, height);
   canvasWrap.append(svg);
 

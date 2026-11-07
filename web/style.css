@@ -1540,6 +1540,16 @@
   padding: 4px;
 }
 
+
+.aps-node-stage.is-drag-over,
+.aps-layout-canvas-wrap.is-drag-over {
+  outline: 2.5px dashed var(--aps-accent, #38bdf8) !important;
+  outline-offset: -3px;
+  background: color-mix(in srgb, var(--aps-accent, #38bdf8) 16%, var(--aps-bg, #0f1318)) !important;
+  box-shadow: 0 0 24px rgba(56, 189, 248, 0.45) inset !important;
+  transition: all 0.15s ease-out;
+}
+
 .aps-node-stage:hover {
   border-color: color-mix(in srgb, var(--aps-accent) 60%, var(--aps-border));
 }

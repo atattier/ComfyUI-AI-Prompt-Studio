@@ -1151,6 +1151,37 @@ function mountRichCard(node, statusEl) {
   stageHeader.append(stageTitle, sizeBadge, stageTools);
 
   const stageWrap = el("div", "aps-node-stage");
+  stageWrap.addEventListener("dragenter", (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    stageWrap.classList.add("is-drag-over");
+  });
+  stageWrap.addEventListener("dragover", (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    stageWrap.classList.add("is-drag-over");
+  });
+  stageWrap.addEventListener("dragleave", (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    stageWrap.classList.remove("is-drag-over");
+  });
+  stageWrap.addEventListener("drop", async (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    stageWrap.classList.remove("is-drag-over");
+    const file = ev.dataTransfer?.files?.[0];
+    if (!file) return;
+    if (!String(file.type || "").startsWith("image/")) {
+      statusEl.textContent = "请拖入图片文件（JPG、PNG、WebP 等）。";
+      return;
+    }
+    try {
+      await handleNewReferenceImage(node, file, statusEl);
+    } catch (err) {
+      statusEl.textContent = String(err?.message || err);
+    }
+  });
   const svgNS = "http://www.w3.org/2000/svg";
   const stageSvg = document.createElementNS(svgNS, "svg");
   stageSvg.setAttribute("viewBox", "0 0 1024 1024");
@@ -1857,6 +1888,28 @@ function mountRichCard(node, statusEl) {
 
   mainCol.append(nodeDiffHost, promptBox, quickBar, chatRow, rulesPanel, statusLine);
   workspaceWrap.append(stagePanel, mainCol);
+  card.addEventListener("paste", async (ev) => {
+    // Ignore paste if user is typing in an input or textarea
+    if (ev.target && ["INPUT", "TEXTAREA"].includes(ev.target.tagName)) return;
+    const items = ev.clipboardData?.items;
+    if (!items || !items.length) return;
+    for (const it of items) {
+      if (it.type && it.type.startsWith("image/")) {
+        const file = it.getAsFile();
+        if (file) {
+          ev.preventDefault();
+          try {
+            await handleNewReferenceImage(node, file, statusEl);
+            statusEl.textContent = "已从剪贴板粘贴并加载参考图！";
+          } catch (err) {
+            statusEl.textContent = String(err?.message || err);
+          }
+          break;
+        }
+      }
+    }
+  });
+
   card.append(topBar, workspaceWrap);
 
   // Interactive resize handles on the Left/Main Card (.aps-node-card) itself so the user
