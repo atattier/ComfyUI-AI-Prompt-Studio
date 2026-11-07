@@ -1054,39 +1054,6 @@ function mountRichCard(node, statusEl) {
     }
   });
 
-  const zoomStageBtn = el("button", "aps-chip-btn", "⤢ 放大");
-  zoomStageBtn.type = "button";
-  zoomStageBtn.title = "点击循环放大画框，也可直接拖拽节点外框或画框四边/四角无级缩放";
-  zoomStageBtn.addEventListener("click", () => {
-    if (dockMode === "split" && hasNodeSize(node)) {
-      const [curW, curH] = getNodeSize(node);
-      if (curW < 920) {
-        setNodeSize(node, 960, Math.max(curH, 620));
-      } else if (curW < 1120) {
-        setNodeSize(node, 1160, Math.max(curH, 740));
-      } else {
-        setNodeSize(node, 740, 520);
-      }
-      applyStageGeometry();
-      const [nextW, nextH] = getNodeSize(node);
-      statusEl.textContent = `节点与内部双框已同步缩放至 ${Math.round(nextW)}×${Math.round(nextH)}。`;
-      return;
-    }
-    if (stageBox.width < 520) {
-      stageBox.width = 560;
-      stageBox.height = 580;
-      stageBox.customHeight = true;
-    } else if (stageBox.width < 680) {
-      stageBox.width = 720;
-      stageBox.height = 720;
-      stageBox.customHeight = true;
-    } else {
-      stageBox = { ...defaultStageBox };
-    }
-    saveStageBox();
-    applyStageGeometry();
-    statusEl.textContent = `布局画框大小已调至 ${stageBox.width}×${stageBox.height}（也可直接拖拽画框边缘/四角自由缩放）。`;
-  });
 
   const resetStageBtn = el("button", "aps-chip-btn", "↺");
   resetStageBtn.type = "button";
@@ -1098,7 +1065,7 @@ function mountRichCard(node, statusEl) {
     statusEl.textContent = "已复位布局画框默认大小与位置。";
   });
 
-  stageTools.append(addBoxBtn, stageUndoBtn, dimImgBtn, uploadMiniBtn, zoomStageBtn, resetStageBtn, fileInput);
+  stageTools.append(addBoxBtn, stageUndoBtn, dimImgBtn, uploadMiniBtn, resetStageBtn, fileInput);
   stageHeader.append(stageTitle, sizeBadge, stageTools);
 
   const stageWrap = el("div", "aps-node-stage");
