@@ -19,7 +19,7 @@ import { app } from "../../scripts/app.js";
 
 import { StudioApi } from "./lib/api.js";
 import { selectOps } from "./lib/diff.js";
-import { blobToDataUrl, fileToDataUrl } from "./lib/images.js";
+import { blobToDataUrl, fileToDataUrl, uploadImageFile, dataUrlToFile } from "./lib/images.js";
 import {
   OUTPUT_LANGUAGE_OPTIONS,
   PRESET_RULE_TEMPLATES,
@@ -498,6 +498,91 @@ function toggleModeSelection(node, targetMode) {
   syncModeWidgets(node, nextModes, nextPrimary);
 }
 
+
+/** Find upstream LoadImage node if connected to our IMAGE input. */
+function getUpstreamLoadImageNode(node) {
+  const link = node.inputs?.find((i) => i.name === "image" && i.link != null);
+  if (!link) return null;
+  const graph = node.graph;
+  const sourceLink = graph?.links?.get
+    ? graph.links.get(link.link)
+    : Array.isArray(graph?.links)
+      ? graph.links.find((l) => l && l.id === link.link)
+      : graph?.links?.[link.link];
+  if (!sourceLink) return null;
+  const sourceId = sourceLink.origin_id ?? sourceLink[1];
+  const source = graph?.getNodeById
+    ? graph.getNodeById(sourceId)
+    : (graph?._nodes || []).find((n) => String(n.id) === String(sourceId));
+  if (!source) return null;
+  if (source.type === "LoadImage" || source.widgets?.some((w) => w.name === "image")) {
+    return source;
+  }
+  return null;
+}
+
+/** Robust reference image switcher: uploads to ComfyUI, syncs upstream LoadImage, and persists to node state. */
+async function handleNewReferenceImage(node, fileOrDataUrl, statusEl = null) {
+  if (!fileOrDataUrl) return;
+
+  let dataUrl = "";
+  let fileObj = null;
+
+  if (typeof fileOrDataUrl === "string") {
+    dataUrl = fileOrDataUrl;
+    try {
+      fileObj = dataUrlToFile(dataUrl, `ref_${Date.now()}.png`);
+    } catch {
+      fileObj = null;
+    }
+  } else if (fileOrDataUrl instanceof File || fileOrDataUrl instanceof Blob) {
+    fileObj = fileOrDataUrl;
+    dataUrl = await fileToDataUrl(fileObj);
+  }
+
+  if (!dataUrl) return;
+
+  // 1. Immediately display on stage
+  node._apsImageDataUrl = dataUrl;
+  node._apsSyncCard?.();
+
+  // 2. Persistently upload image to ComfyUI /upload/image
+  let serverFilename = fileObj?.name || `ref_${Date.now()}.png`;
+  if (fileObj) {
+    try {
+      serverFilename = await uploadImageFile(fileObj);
+    } catch (err) {
+      console.warn("上传到 ComfyUI input 失败，继续使用本地数据:", err);
+    }
+  }
+
+  // 3. Bi-directionally sync upstream LoadImage node if connected
+  const upstream = getUpstreamLoadImageNode(node);
+  if (upstream) {
+    const imgWidget = upstream.widgets?.find((w) => w.name === "image");
+    if (imgWidget) {
+      imgWidget.value = serverFilename;
+      if (typeof imgWidget.callback === "function") {
+        imgWidget.callback(serverFilename);
+      }
+      upstream.setDirtyCanvas?.(true, true);
+    }
+  }
+
+  // 4. Save to persistent state so F5 refresh or restart won't reset to example.png
+  const state = readPayload(node);
+  state.last_image_file = serverFilename;
+  node._apsLastUpstreamFile = serverFilename;
+  writePayload(node, state);
+
+  if (statusEl) {
+    statusEl.textContent = upstream
+      ? `已加载参考图并同步上游节点：${serverFilename}`
+      : `已加载参考图：${serverFilename}`;
+  }
+  node._apsSyncCard?.();
+}
+
 /** Find the LoadImage node feeding our IMAGE input and read its filename widget. */
 function upstreamImageFile(node) {
   const link = node.inputs?.find((i) => i.name === "image" && i.link != null);
@@ -627,8 +712,7 @@ async function openEditor(node, statusEl) {
       node._apsSessionId = sid;
     },
     onImageChange: (dataUrl) => {
-      node._apsImageDataUrl = dataUrl;
-      node._apsSyncCard?.();
+      void handleNewReferenceImage(node, dataUrl, statusEl);
     },
     onApply: (next) => {
       const resolvedMode = next.mode || mode;
@@ -1046,9 +1130,7 @@ function mountRichCard(node, statusEl) {
     fileInput.value = "";
     if (!file) return;
     try {
-      node._apsImageDataUrl = await fileToDataUrl(file);
-      statusEl.textContent = `已加载参考图：${file.name}`;
-      syncCard();
+      await handleNewReferenceImage(node, file, statusEl);
     } catch (err) {
       statusEl.textContent = String(err?.message || err);
     }
@@ -2247,22 +2329,58 @@ function mountRichCard(node, statusEl) {
       regionInspector.textContent = "";
     }
 
-    // Refresh upstream image asynchronously if connected
+    // Image recovery and upstream synchronization
     const upFile = upstreamImageFile(node);
-    if (upFile && upFile !== node._apsLastUpstreamFile) {
-      void fetchImageDataUrl(node)
-        .then(() => {
-          renderSvgStage(stageSvg, {
-            width: w,
-            height: h,
-            draft: state.draft,
-            imageUrl: node._apsImageDataUrl,
-            selected: selectedRegion,
-            showBoxes,
-            dimImage: dimStageImage,
-          });
-        })
-        .catch(() => {});
+    const savedFile = state.last_image_file || null;
+
+    // 1. If memory dataUrl is absent (e.g. after refresh/restart), restore from savedFile or upFile
+    if (!node._apsImageDataUrl && (savedFile || upFile)) {
+      const restoreFile = savedFile || upFile;
+      void (async () => {
+        try {
+          const query = new URLSearchParams({ filename: restoreFile, type: "input" });
+          const resp = await fetch(`/view?${query.toString()}`, { credentials: "same-origin" });
+          if (resp.ok) {
+            const blob = await resp.blob();
+            node._apsImageDataUrl = await blobToDataUrl(blob);
+            node._apsLastUpstreamFile = restoreFile;
+            renderSvgStage(stageSvg, {
+              width: w,
+              height: h,
+              draft: state.draft,
+              imageUrl: node._apsImageDataUrl,
+              selected: selectedRegion,
+              showBoxes,
+              dimImage: dimStageImage,
+            });
+          }
+        } catch (e) {
+          console.warn("恢复画框图片失败:", e);
+        }
+      })();
+    } else if (upFile && upFile !== node._apsLastUpstreamFile) {
+      // 2. Upstream file changed on canvas (e.g. user selected another image in LoadImage)
+      // Guard: do not let default placeholder 'example.png' overwrite user's custom saved file
+      const isDefaultPlaceholder = (upFile === "example.png" || upFile.includes("example"));
+      if (!(isDefaultPlaceholder && savedFile && savedFile !== upFile)) {
+        void fetchImageDataUrl(node)
+          .then((newUrl) => {
+            if (newUrl) {
+              state.last_image_file = upFile;
+              writePayload(node, state);
+            }
+            renderSvgStage(stageSvg, {
+              width: w,
+              height: h,
+              draft: state.draft,
+              imageUrl: node._apsImageDataUrl,
+              selected: selectedRegion,
+              showBoxes,
+              dimImage: dimStageImage,
+            });
+          })
+          .catch(() => {});
+      }
     }
 
     renderSvgStage(stageSvg, {

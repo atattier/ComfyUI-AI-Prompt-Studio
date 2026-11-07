@@ -61,3 +61,39 @@ export async function sourceToDataUrl(source, options = {}) {
   }
   throw new Error("没有可用的图片。");
 }
+
+/** Convert a data URL string to a standard File object. */
+export function dataUrlToFile(dataUrl, filename = "uploaded_image.png") {
+  if (!dataUrl || typeof dataUrl !== "string") {
+    throw new Error("无效的图片 Data URL。");
+  }
+  const parts = dataUrl.split(",");
+  const mime = parts[0]?.match(/:(.*?);/)?.[1] || "image/png";
+  const bstr = atob(parts[1] || "");
+  let n = bstr.length;
+  const u8arr = new Uint8Array(n);
+  while (n--) {
+    u8arr[n] = bstr.charCodeAt(n);
+  }
+  return new File([u8arr], filename, { type: mime });
+}
+
+/** Upload an image file to ComfyUI's standard /upload/image endpoint and return the saved filename. */
+export async function uploadImageFile(file, { subfolder = "", overwrite = true } = {}) {
+  if (!file) throw new Error("没有可上传的图片文件。");
+  const formData = new FormData();
+  formData.append("image", file);
+  if (subfolder) formData.append("subfolder", subfolder);
+  if (overwrite) formData.append("overwrite", "true");
+
+  const response = await fetch("/upload/image", {
+    method: "POST",
+    body: formData,
+    credentials: "same-origin",
+  });
+  if (!response.ok) {
+    throw new Error(`上传图片至 ComfyUI 服务端失败（HTTP ${response.status}）。`);
+  }
+  const data = await response.json();
+  return data.name || data.filename || file.name;
+}
