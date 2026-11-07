@@ -160,11 +160,11 @@ class NodeExecutionTests(unittest.TestCase):
         self.assertIn("enable_hybrid", types["optional"])
         self.assertEqual(
             AIPromptStudioCaptionNode.RETURN_TYPES,
-            ("STRING", "STRING", "STRING", "INT", "INT"),
+            ("STRING", "STRING", "STRING", "INT", "INT", "STRING"),
         )
         self.assertEqual(
             AIPromptStudioCaptionNode.RETURN_NAMES,
-            ("caption_prompt", "layout_prompt", "danbooru_prompt", "width", "height"),
+            ("caption_prompt", "layout_prompt", "danbooru_prompt", "width", "height", "negative_prompt"),
         )
         self.assertEqual(AIPromptStudioCaptionNode.FUNCTION, "execute")
 
@@ -241,7 +241,7 @@ class ExecutionFallbackTests(unittest.TestCase):
         """Even if no image is connected and payload only has caption text, ComfyUI
         graph execution (execute()) synthesizes a valid fallback draft instead of crashing."""
         caption_only_payload = json.dumps(_payload("caption"))
-        cap_p, lay_p, hyb_p, w, h = self.node.execute(
+        cap_p, lay_p, hyb_p, w, h, neg_p = self.node.execute(
             mode="layout", payload=caption_only_payload
         )
         self.assertEqual(cap_p, "A red and blue poster.")
@@ -263,7 +263,8 @@ class ExecutionFallbackTests(unittest.TestCase):
             model="vision-pro",
             call_model=self._model_reply,
         )
-        cap_p, lay_p, hyb_p, w, h = result["result"]
+        cap_p, lay_p, hyb_p, w, h, neg_p = result["result"]
+        self.assertTrue(neg_p)
         self.assertEqual(cap_p, "A red and blue poster.")
         lay_draft = json.loads(lay_p)
         hyb_draft = json.loads(hyb_p)
@@ -299,7 +300,8 @@ class ExecutionFallbackTests(unittest.TestCase):
             mode="caption", payload="{}", image=self.image,
             model="vision-pro", call_model=self._model_reply,
         )
-        cap_p, lay_p, hyb_p, w, h = result["result"]
+        cap_p, lay_p, hyb_p, w, h, neg_p = result["result"]
+        self.assertTrue(neg_p)
         self.assertEqual(cap_p, "A red and blue poster.")
         self.assertEqual(json.loads(lay_p)["bbox_format"], "xyxy")
         self.assertEqual(json.loads(hyb_p)["bbox_format"], "xyxy")
@@ -309,7 +311,7 @@ class ExecutionFallbackTests(unittest.TestCase):
     def test_execute_cached_payload_has_no_ui_update(self):
         result = self.node.execute(mode="caption", payload=json.dumps(_payload("caption")))
         self.assertIsInstance(result, tuple)
-        self.assertEqual(len(result), 5)
+        self.assertEqual(len(result), 6)
 
     def test_empty_payload_without_image_reports_configuration_help(self):
         with self.assertRaisesRegex(ValueError, "反推|配置"):

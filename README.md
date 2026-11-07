@@ -71,8 +71,9 @@ git clone https://github.com/atattier/ComfyUI-AI-Prompt-Studio.git
 [LoadImage] ──(IMAGE)──→ [AI 图像反推提示词] ──┬─→ caption_prompt  (STRING) ──→ CLIP Text Encode
                            模式支持 1~3 全开:  ├─→ layout_prompt   (STRING) ──→ MOSSPromptBoard
                             ☑ 散文 (MOSS)       ├─→ danbooru_prompt (STRING) ──→ 标签负向/风格模型
-                            ☑ 布局 (Layout)     ├─→ width           (INT)
-                            ☑ Danbooru (Tags)   └─→ height          (INT)    ──→ 空白 Latent / 采样尺寸
+                            ☑ 布局 (Layout)     ├─→ width           (INT)    ──→ 空白 Latent / 采样尺寸
+                            ☑ Danbooru (Tags)   ├─→ height          (INT)    ──→ 空白 Latent / 采样尺寸
+                                                └─→ negative_prompt (STRING) ──→ 负向 CLIP Text Encode
 ```
 
 #### 端口与功能说明
@@ -82,16 +83,25 @@ git clone https://github.com/atattier/ComfyUI-AI-Prompt-Studio.git
 | `layout_prompt` | `STRING` | 空间区域排版 JSON（PromptBoard 兼容，包含 `summary` 与 `items[].bbox` 绝对像素坐标） |
 | `danbooru_prompt` | `STRING` | 结构化英文逗号标签（发型、神态、服饰、构图、光影按优先级清晰排列） |
 | `width` / `height` | `INT` | 依据图像比例自动匹配的 MOSS 标准输出分辨率（16 整数倍） |
+| `negative_prompt` | `STRING` | 自动匹配当前风格的通用高质量负向提示词（去畸变、防画崩），一键连入负向节点 |
 
 #### 节点常用操作
 - **3格式全开**：顶栏点按一键切换开启/关闭 3 格式并行输出；
 - **排版形态切换**：支持点按「左翼 / 右翼 / 内嵌」，画框既可折叠进节点，也可悬浮在节点两侧，不遮挡提示词；
+- **选中框局部精修（重点升级）**：
+  - 点击画框内任意区域框或标签胶囊，即弹出局部编辑抽屉；
+  - 支持直接修改区域标签（角色、物体、文字、背景、特效、服饰）与细节描述；
+  - 自带 **「改此区 ✦」**、**「✨ 扩写」**、**「🌐 译英」**，针对选定框进行精准局部 AI 润色；
+  - 支持键盘快捷键：选框后按 `Delete` / `Backspace` 删框，`Esc` 取消选中，`Ctrl+Z` 撤销；
 - **快捷改词条**：
   - `⚡ 反推`：重新读取图像并执行多模态反推；
   - `✨ 扩写`：丰富画面环境与氛围细节；
   - `🌐 译英`：一键翻译中文创意并符合模型生图逻辑；
   - `🎯 MOSS精炼`：自动剔除无意义虚词，强化构图与光影修饰；
+  - `📋 复制`：一键复制当前输入框提示词到系统剪贴板；
   - `↩ 撤销`：撤销当前输入框编辑；
+- **实时字数统计**：提示词输入框底部实时动态显示当前词数、标签数或空间区域数；
+- **中文友好报错**：网络中断、API Key 失效、模型未找到或限额超限时，醒目给出精准中文修复提示；
 - **对话改词**：在底部直接输入改词指令（如 `把白衬衫改成黑白赛车夹克`）并回车，模型将针对性调整；
 - **随工作流缓存**：反推结果自动随工作流 JSON 保存，再次排队执行时只读缓存，绝不重复烧额度。
 

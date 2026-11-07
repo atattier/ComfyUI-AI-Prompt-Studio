@@ -32,6 +32,17 @@ from .layout import layout_instruction, match_canvas_size, parse_model_layout
 from .sessions import MediaStore
 
 MODES = ("caption", "layout", "danbooru", "hybrid")
+
+DEFAULT_PROSE_NEGATIVE = (
+    "ugly, deformed, noisy, blurry, distorted, grainy, extra limbs, "
+    "poorly drawn hands, poorly drawn face, bad proportions, watermark, signature"
+)
+DEFAULT_DANBOORU_NEGATIVE = (
+    "lowres, bad anatomy, bad hands, text, error, missing fingers, extra digit, "
+    "fewer digits, cropped, worst quality, low quality, normal quality, jpeg artifacts, "
+    "signature, watermark, username, blurry, artist name"
+)
+
 _MAX_MEDIA_BYTES = 8 * 1024 * 1024
 _MIME_BY_EXT = {
     "jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png",
@@ -556,8 +567,8 @@ class AIPromptStudioCaptionNode:
             },
         }
 
-    RETURN_TYPES = ("STRING", "STRING", "STRING", "INT", "INT")
-    RETURN_NAMES = ("caption_prompt", "layout_prompt", "danbooru_prompt", "width", "height")
+    RETURN_TYPES = ("STRING", "STRING", "STRING", "INT", "INT", "STRING")
+    RETURN_NAMES = ("caption_prompt", "layout_prompt", "danbooru_prompt", "width", "height", "negative_prompt")
     FUNCTION = "execute"
     CATEGORY = "AI Prompt Studio"
     DESCRIPTION = (
@@ -640,7 +651,11 @@ class AIPromptStudioCaptionNode:
             height=height,
             synthesize_missing_draft=synthesize_missing_draft,
         )
-        return (caption_prompt, layout_prompt, danbooru_prompt, width, height, new_payload)
+        neg_prompt = str(state.get("negative_prompt") or "").strip()
+        if not neg_prompt:
+            canonical_mode = "danbooru" if mode == "danbooru" else "caption"
+            neg_prompt = DEFAULT_DANBOORU_NEGATIVE if canonical_mode == "danbooru" else DEFAULT_PROSE_NEGATIVE
+        return (caption_prompt, layout_prompt, danbooru_prompt, width, height, neg_prompt, new_payload)
 
     def caption(self, *, mode: str, payload: str, image: Any = None,
                 image_path: str = "", extra_instruction: str = "",
@@ -651,7 +666,7 @@ class AIPromptStudioCaptionNode:
                 enable_hybrid: bool | None = None,
                 call_model: Callable[..., str] | None = None):
         """Return (prompt, width, height, updated_payload_or_None) for the primary ``mode``."""
-        caption_prompt, layout_prompt, danbooru_prompt, width, height, new_payload = self.caption_all(
+        caption_prompt, layout_prompt, danbooru_prompt, width, height, neg_prompt, new_payload = self.caption_all(
             mode=mode,
             payload=payload,
             image=image,
@@ -683,7 +698,7 @@ class AIPromptStudioCaptionNode:
 
     def execute(self, **kwargs: Any):
         """ComfyUI entry point: 5 outputs (3 prompts + width + height) plus UI payload when updated."""
-        caption_prompt, layout_prompt, danbooru_prompt, width, height, new_payload = self.caption_all(
+        caption_prompt, layout_prompt, danbooru_prompt, width, height, neg_prompt, new_payload = self.caption_all(
             **kwargs,
             synthesize_missing_draft=True,
         )
@@ -696,7 +711,7 @@ class AIPromptStudioCaptionNode:
             third = json.dumps(hyb, ensure_ascii=False, separators=(",", ":")) if hyb else danbooru_prompt
         else:
             third = danbooru_prompt
-        outputs = (caption_prompt, layout_prompt, third, width, height)
+        outputs = (caption_prompt, layout_prompt, third, width, height, neg_prompt)
         if new_payload is None:
             return outputs
         return {"ui": {"aps_payload": [new_payload]}, "result": outputs}

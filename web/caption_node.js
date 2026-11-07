@@ -34,6 +34,28 @@ import { UndoStack } from "./lib/undo.js";
 
 const NODE_TYPE = "AIPromptStudioCaption";
 const ALL_MODES = ["caption", "layout", "danbooru"];
+
+function formatFriendlyErrorMessage(err, actionName = "操作") {
+  const msg = err?.message || String(err || "");
+  const status = err?.status;
+  if (status === 401 || msg.includes("401") || msg.includes("Unauthorized") || msg.includes("API key")) {
+    return "❌ 网关鉴权失败 (401)：API Key 无效或未设置，请点击顶栏「⚙ 设置」配置有效密钥。";
+  }
+  if (status === 404 || msg.includes("404") || msg.includes("model_not_found")) {
+    return "❌ 模型不存在 (404)：当前网关未提供该模型，请在顶栏「⚙ 设置」中重新探测可用模型。";
+  }
+  if (status === 429 || msg.includes("429") || msg.includes("quota") || msg.includes("rate_limit")) {
+    return "❌ 请求受限 (429)：网关并发超限或账户额度耗尽，请稍后重试或检查账户余额。";
+  }
+  if (status >= 500 || msg.includes("500") || msg.includes("502") || msg.includes("503")) {
+    return `❌ 网关服务异常 (${status || 500})：AI 上游网关暂时不可用，请稍后重试。`;
+  }
+  if (err?.code === "network_error" || msg.includes("Failed to fetch") || msg.includes("NetworkError") || msg.includes("无法连接")) {
+    return "❌ 网络连接失败：无法连接到 AI 服务网关，请确认网络连接或本地网关服务已开启。";
+  }
+  return `❌ ${actionName}失败：${msg}`;
+}
+
 const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
 const api = new StudioApi();
 const LEGACY_GARBAGE_VALUES = new Set([
@@ -564,7 +586,7 @@ async function runCaption(node, statusEl) {
     node._apsSyncCard?.();
     node.setDirtyCanvas?.(true, true);
   } catch (err) {
-    statusEl.textContent = `反推失败：${err?.message || err}`;
+    statusEl.textContent = formatFriendlyErrorMessage(err, "反推");
   } finally {
     node._apsSetBusy?.(false);
   }
@@ -1370,8 +1392,44 @@ function mountRichCard(node, statusEl) {
     }
   });
 
+  const promptStatsEl = el("div", "aps-node-prompt-stats");
+  function updatePromptStats() {
+    const text = promptBox.value || "";
+    const mode = currentMode(node);
+    if (mode === "danbooru") {
+      const tags = text.split(",").map((s) => s.trim()).filter(Boolean);
+      promptStatsEl.textContent = `📊 ${tags.length} 个标签 · ${text.length} 字符`;
+    } else if (mode === "layout") {
+      const state = readPayload(node);
+      const count = Array.isArray(state?.draft?.items) ? state.draft.items.length : 0;
+      promptStatsEl.textContent = `📊 ${count} 个空间区域 · ${text.length} 字符`;
+    } else {
+      const words = text.split(/\s+/).filter(Boolean);
+      promptStatsEl.textContent = `📊 ${words.length} 词 · ${text.length} 字符`;
+    }
+  }
+  promptBox.addEventListener("input", updatePromptStats);
+
   // Quick AI Actions + Inline Instruction Input
   const quickBar = el("div", "aps-node-quick-bar");
+  const btnCopy = el("button", "aps-chip-btn", "📋 复制");
+  btnCopy.type = "button";
+  btnCopy.title = "一键复制当前输入框提示词到系统剪贴板";
+  btnCopy.addEventListener("click", async () => {
+    const text = promptBox.value;
+    if (!text) {
+      statusEl.textContent = "提示词为空，无可复制内容。";
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(text);
+      statusEl.textContent = "✅ 已复制提示词到系统剪贴板！";
+    } catch {
+      promptBox.select();
+      document.execCommand("copy");
+      statusEl.textContent = "✅ 已复制提示词到系统剪贴板！";
+    }
+  });
   const btnReverse = el("button", "aps-btn aps-primary aps-btn-sm", "⚡ 反推");
   btnReverse.type = "button";
   btnReverse.addEventListener("click", () => runCaption(node, statusEl));
@@ -1432,7 +1490,7 @@ function mountRichCard(node, statusEl) {
   btnUndo.disabled = true;
   btnUndo.addEventListener("click", handleUndo);
 
-  quickBar.append(btnReverse, btnExpand, btnTrans, btnMoss, btnUndo);
+  quickBar.append(btnReverse, btnExpand, btnTrans, btnMoss, btnCopy, btnUndo);
 
   const chatRow = el("div", "aps-node-chat-row");
   const chatInput = el("input", "aps-input aps-node-chat-input");
@@ -1920,7 +1978,7 @@ function mountRichCard(node, statusEl) {
         statusEl.textContent = res.proposal?.reply || "无需改动。";
       }
     } catch (err) {
-      statusEl.textContent = `AI 改词失败：${err?.message || err}`;
+      statusEl.textContent = formatFriendlyErrorMessage(err, "AI 改词");
     } finally {
       node._apsSetBusy?.(false);
     }
@@ -2045,18 +2103,23 @@ function mountRichCard(node, statusEl) {
       regionsBar.hidden = true;
     }
 
-    // Inline region inspector for the selected bounding box
+    // Inline region inspector with Localized AI Modification & Fine-tuning
     if (selectedRegion >= 0 && items[selectedRegion]) {
       const item = items[selectedRegion];
       regionInspector.hidden = false;
       regionInspector.textContent = "";
 
+      // Row 1: Header (Index, Label, Coordinates, Delete)
+      const row1 = el("div", "aps-region-inspect-row aps-region-inspect-header");
       const badge = el("span", "aps-region-inspector-idx", `#${selectedRegion + 1}`);
       const labelSel = el("select", "aps-select aps-select-xs");
       for (const [val, textLabel] of [
-        ["object", "物体"],
         ["character", "角色"],
+        ["object", "物体"],
         ["text", "文字"],
+        ["background", "背景"],
+        ["effect", "特效"],
+        ["clothing", "服饰"],
       ]) {
         const opt = el("option", null, textLabel);
         opt.value = val;
@@ -2066,44 +2129,129 @@ function mountRichCard(node, statusEl) {
       labelSel.addEventListener("change", () => {
         item.label = labelSel.value;
         commitDraftToState(state, normalizeDraft(state.draft, w, h), w, h, true, `修改区域 #${selectedRegion + 1} 类型`);
-        statusEl.textContent = `已修改区域 #${selectedRegion + 1} 类型。`;
+        statusEl.textContent = `已修改区域 #${selectedRegion + 1} 类型为【${labelSel.options[labelSel.selectedIndex].text}】。`;
       });
 
-      const capInput = el("input", "aps-input aps-input-xs");
-      capInput.type = "text";
-      capInput.placeholder = "区域画面描述…";
-      capInput.value = item.caption || "";
-      capInput.addEventListener("change", () => {
-        item.caption = capInput.value;
-        commitDraftToState(state, normalizeDraft(state.draft, w, h), w, h, true, `修改区域 #${selectedRegion + 1} 描述`);
-        statusEl.textContent = `已修改区域 #${selectedRegion + 1} 描述。`;
-      });
+      const [bx1, by1, bx2, by2] = item.bbox || [0, 0, 0, 0];
+      const bw = Math.max(0, Math.round(bx2 - bx1));
+      const bh = Math.max(0, Math.round(by2 - by1));
+      const boundsBadge = el("span", "aps-region-bounds-badge", `${bw}×${bh} (${Math.round(bx1)},${Math.round(by1)})`);
+      boundsBadge.title = `区域范围: 左上角 (${Math.round(bx1)}, ${Math.round(by1)})，尺寸 ${bw}×${bh}`;
 
-      const delBtn = el("button", "aps-btn aps-btn-xs aps-danger-text", "🗑");
+      const delBtn = el("button", "aps-btn aps-btn-xs aps-danger-text", "🗑 删除框");
       delBtn.type = "button";
-      delBtn.title = "删除该区域框";
+      delBtn.title = "删除该区域框（或按键盘 Delete 键）";
       delBtn.addEventListener("click", () => {
         state.draft.items.splice(selectedRegion, 1);
         selectedRegion = Math.min(selectedRegion, state.draft.items.length - 1);
         commitDraftToState(state, normalizeDraft(state.draft, w, h), w, h, true, `删除区域框`);
         statusEl.textContent = "已删除区域框。";
       });
+      row1.append(badge, labelSel, boundsBadge, delBtn);
 
-      regionInspector.append(badge, labelSel, capInput);
+      // Row 2: Detailed Caption & Text input
+      const row2 = el("div", "aps-region-inspect-row");
+      const capInput = el("input", "aps-input aps-input-sm aps-region-cap-input");
+      capInput.type = "text";
+      capInput.placeholder = "此区域的画面细节描述（回车即时更新）…";
+      capInput.value = item.caption || "";
+      capInput.addEventListener("change", () => {
+        item.caption = capInput.value;
+        commitDraftToState(state, normalizeDraft(state.draft, w, h), w, h, true, `修改区域 #${selectedRegion + 1} 描述`);
+        statusEl.textContent = `已修改区域 #${selectedRegion + 1} 描述。`;
+      });
+      row2.append(capInput);
+
       if (item.label === "text") {
-        const txtInput = el("input", "aps-input aps-input-xs");
+        const txtInput = el("input", "aps-input aps-input-sm aps-region-txt-input");
         txtInput.type = "text";
-        txtInput.placeholder = "文字内容…";
+        txtInput.placeholder = "画面可见文字…";
         txtInput.value = item.text || "";
-        txtInput.style.maxWidth = "90px";
+        txtInput.title = "画面中必须出现的精确可见文字";
         txtInput.addEventListener("change", () => {
           item.text = txtInput.value;
           commitDraftToState(state, normalizeDraft(state.draft, w, h), w, h, true, `修改区域 #${selectedRegion + 1} 文字`);
           statusEl.textContent = `已修改区域 #${selectedRegion + 1} 文字。`;
         });
-        regionInspector.append(txtInput);
+        row2.append(txtInput);
       }
-      regionInspector.append(delBtn);
+
+      // Row 3: AI Localized Modification & Refinement
+      const row3 = el("div", "aps-region-inspect-row aps-region-ai-row");
+      const regAiInput = el("input", "aps-input aps-input-xs aps-region-ai-input");
+      regAiInput.type = "text";
+      regAiInput.placeholder = "局部改词，如: 改成赛博霓虹机甲、长发飘逸…";
+
+      const regAiBtn = el("button", "aps-btn aps-accent aps-btn-xs", "改此区 ✦");
+      regAiBtn.type = "button";
+
+      const regExpandBtn = el("button", "aps-btn aps-btn-xs", "✨ 扩写");
+      regExpandBtn.type = "button";
+      regExpandBtn.title = "AI 扩写并丰富此区域的材质、光影与细节";
+
+      const regTransBtn = el("button", "aps-btn aps-btn-xs", "🌐 译英");
+      regTransBtn.type = "button";
+      regTransBtn.title = "将此区域描述翻译为精准生图英文";
+
+      async function doRegionAi(instruction, actionTip) {
+        const curItem = state.draft?.items?.[selectedRegion];
+        if (!curItem) return;
+        statusEl.textContent = `正在局部改词：${actionTip}…`;
+        node._apsSetBusy?.(true);
+        try {
+          const res = await api.edit({
+            message: `针对画面中【${curItem.label}】区域进行局部精准修改：${instruction}。必须只输出修改后的该区域精简视觉描述，不要引号，不要解释。`,
+            target: {
+              node_id: node.id,
+              widget: `region_${selectedRegion}`,
+              title: `区域 #${selectedRegion + 1} (${curItem.label})`,
+              text: curItem.caption || "",
+            },
+            model: cleanWidgetStr(widget(node, "model")?.value) || undefined,
+            allow_empty: true,
+          });
+          const nextText = res.proposal?.text?.trim() || curItem.caption;
+          if (nextText && nextText !== curItem.caption) {
+            curItem.caption = nextText;
+            commitDraftToState(state, normalizeDraft(state.draft, w, h), w, h, true, `局部改词 #${selectedRegion + 1}`);
+            statusEl.textContent = `✅ 区域 #${selectedRegion + 1} 已局部更新：${nextText.slice(0, 30)}...`;
+            syncCard();
+          } else {
+            statusEl.textContent = res.proposal?.reply || "无需改动。";
+          }
+        } catch (err) {
+          statusEl.textContent = formatFriendlyErrorMessage(err, "局部改词");
+        } finally {
+          node._apsSetBusy?.(false);
+        }
+      }
+
+      regAiInput.addEventListener("keydown", (ev) => {
+        if (ev.key === "Enter") {
+          ev.preventDefault();
+          const val = regAiInput.value.trim();
+          if (val) {
+            regAiInput.value = "";
+            void doRegionAi(val, val);
+          }
+        }
+      });
+      regAiBtn.addEventListener("click", () => {
+        const val = regAiInput.value.trim();
+        if (val) {
+          regAiInput.value = "";
+          void doRegionAi(val, val);
+        }
+      });
+      regExpandBtn.addEventListener("click", () => {
+        void doRegionAi("丰富该区域的物理材质、光影质感、色彩与细微纹理", "扩写此区域");
+      });
+      regTransBtn.addEventListener("click", () => {
+        void doRegionAi("Translate the description into accurate, descriptive English suitable for image generation prompts.", "译英此区域");
+      });
+
+      row3.append(regAiInput, regAiBtn, regExpandBtn, regTransBtn);
+      regionInspector.append(row1, row2, row3);
     } else {
       regionInspector.hidden = true;
       regionInspector.textContent = "";
@@ -2137,6 +2285,7 @@ function mountRichCard(node, statusEl) {
       dimImage: dimStageImage,
     });
     fillRulesConfig(node._apsActiveConfig);
+    if (typeof updatePromptStats === "function") updatePromptStats();
   }
 
   node._apsSyncCard = syncCard;

@@ -126,6 +126,12 @@
           "type": "INT",
           "links": null,
           "slot_index": 4
+        },
+        {
+          "name": "negative_prompt",
+          "type": "STRING",
+          "links": null,
+          "slot_index": 5
         }
       ],
       "properties": {
