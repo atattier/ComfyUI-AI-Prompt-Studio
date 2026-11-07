@@ -27,7 +27,24 @@ const LABEL_NAMES = {
   character: "character (人物/主体)",
   text: "text (画面文字)",
 };
-const BOX_COLORS = ["#6ea8fe", "#3fb950", "#d29922", "#e879f9", "#f85149", "#22d3ee"];
+export const BOX_COLORS = [
+  "#2563eb", // 1 蓝 (如 咖啡厅内景)
+  "#f59e0b", // 2 暖橙/金黄 (如 玻璃门)
+  "#10b981", // 3 翠绿 (如 门上宣传海报)
+  "#ec4899", // 4 品红 (如 海报标题)
+  "#8b5cf6", // 5 紫 (如 光环)
+  "#06b6d4", // 6 天青 (如 光之碎片翼)
+  "#3b82f6", // 7 亮蓝 (如 红发少女)
+  "#d97706", // 8 琥珀橙 (如 桌上宣传单)
+  "#059669", // 9 墨绿 (如 宣传单文字)
+  "#f43f5e", // 10 玫瑰红 (如 左下宣传单)
+  "#a855f7", // 11 浅紫
+  "#14b8a6", // 12 薄荷青
+  "#e11d48", // 13 猩红
+  "#eab308", // 14 明黄
+  "#6366f1", // 15 靛蓝
+  "#84cc16", // 16 嫩绿
+];
 
 const QUICK_ACTIONS = [
   {
@@ -88,6 +105,8 @@ function cloneDraft(state, width, height) {
       bbox_format: "xyxy",
       summary: { caption: String(draft.summary?.caption || state?.caption || ""), canvas: "single" },
       items: draft.items.map((it) => ({
+        name: String(it.name || ""),
+        parent: String(it.parent || ""),
         label: LABELS.includes(it.label) ? it.label : "object",
         caption: String(it.caption || ""),
         text: String(it.text || ""),
@@ -215,25 +234,33 @@ export function renderSvgStage(svg, { width, height, draft, imageUrl, selected =
     });
     group.append(rect);
 
-    const fontSize = Math.max(20, Math.round(width / 36));
-    const badgeText = `#${index + 1} · ${item.label}`;
-    const badgeW = Math.min(bw, Math.max(fontSize * 5.6, badgeText.length * fontSize * 0.64));
-    const badgeH = Math.round(fontSize * 1.52);
+    const fontSize = Math.max(18, Math.round(width / 38));
+    const semanticName = item.name || (item.label === "character" ? "人物主体" : (item.label === "text" ? (item.text ? `文字「${item.text.slice(0, 8)}」` : "文字") : "物体"));
+    const badgeText = `${index + 1} ${semanticName}`;
+
+    let textUnits = 0;
+    for (const ch of badgeText) {
+      textUnits += ch.charCodeAt(0) > 255 ? 1.05 : 0.62;
+    }
+    const badgeW = Math.min(bw, Math.max(fontSize * 3.2, Math.round(textUnits * fontSize + fontSize * 0.9)));
+    const badgeH = Math.round(fontSize * 1.55);
+
     const badgeBg = svgRect(NS, x1, y1, badgeW, badgeH, {
-      fill: "rgba(13, 17, 23, 0.92)",
-      stroke: color,
-      "stroke-width": Math.max(2, Math.round(strokeW * 0.55)),
-      rx: 6,
+      fill: color,
+      stroke: "rgba(15, 23, 42, 0.9)",
+      "stroke-width": 1.5,
+      rx: 4,
     });
     badgeBg.style.pointerEvents = "none";
     group.append(badgeBg);
 
     const label = document.createElementNS(NS, "text");
-    label.setAttribute("x", x1 + 10);
-    label.setAttribute("y", y1 + Math.round(fontSize * 1.1));
+    label.setAttribute("x", x1 + Math.round(fontSize * 0.45));
+    label.setAttribute("y", y1 + Math.round(fontSize * 1.15));
     label.setAttribute("fill", "#ffffff");
     label.setAttribute("font-size", fontSize);
-    label.setAttribute("font-weight", "700");
+    label.setAttribute("font-weight", "800");
+    label.setAttribute("font-family", '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Microsoft YaHei", sans-serif');
     label.textContent = badgeText;
     label.style.pointerEvents = "none";
     group.append(label);
@@ -890,6 +917,19 @@ export function openLayoutEditor({
         updateJsonPreview();
       });
       row.append(labelSel);
+
+      const nameInput = el("input", "aps-input aps-layout-name-input");
+      nameInput.type = "text";
+      nameInput.placeholder = "实体名称（如：光环）";
+      nameInput.value = item.name || "";
+      nameInput.style.maxWidth = "110px";
+      nameInput.title = "实体名称（显示在画框与标签上）";
+      nameInput.addEventListener("input", () => {
+        item.name = nameInput.value.trim();
+        renderBoxes();
+        updateJsonPreview();
+      });
+      row.append(nameInput);
 
       const captionInput = el("textarea", "aps-modal-textarea aps-layout-caption");
       captionInput.value = item.caption;
@@ -1756,12 +1796,12 @@ export function openSettingsModal({
   langWrap.append(langSelect);
 
   const maxRegWrap = el("div", "");
-  maxRegWrap.append(el("label", "aps-field-label", "布局最大区域数（1~8）"));
+  maxRegWrap.append(el("label", "aps-field-label", "布局最大区域数（1~16）"));
   const maxRegInput = el("input", "aps-input");
   maxRegInput.type = "number";
   maxRegInput.min = "1";
-  maxRegInput.max = "8";
-  maxRegInput.value = "6";
+  maxRegInput.max = "16";
+  maxRegInput.value = "10";
   maxRegWrap.append(maxRegInput);
   langAndRegionsRow.append(langWrap, maxRegWrap);
 
@@ -2038,7 +2078,7 @@ export function openSettingsModal({
         output_language: langSelect.value || "en",
         prompt_rules: customRulesArea.value.trim(),
         user_custom_rules: userCustomArea.value.trim(),
-        max_regions: clamp(Number(maxRegInput.value) || 6, 1, 8),
+        max_regions: clamp(Number(maxRegInput.value) || 10, 1, 16),
       };
       const saved = await api.saveConfig(payload);
       const nodeResult = nodeOverrides

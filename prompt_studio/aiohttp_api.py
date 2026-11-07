@@ -374,7 +374,7 @@ class StudioBackend:
         max_regions = self.settings.max_regions
         if body.get("max_regions") not in (None, ""):
             try:
-                max_regions = max(1, min(8, int(body["max_regions"])))
+                max_regions = max(1, min(16, int(body["max_regions"])))
             except (TypeError, ValueError):
                 pass
 
@@ -682,9 +682,9 @@ def install_routes(routes: Any, backend: StudioBackend | None) -> None:
         try:
             max_regions = int(max_regions_raw) if max_regions_raw not in (None, "") else service.settings.max_regions
         except (TypeError, ValueError) as exc:
-            raise InvalidRequestError("max_regions must be an integer between 1 and 8.") from exc
-        if not 1 <= max_regions <= 8:
-            raise InvalidRequestError("max_regions must be between 1 and 8.")
+            raise InvalidRequestError("max_regions must be an integer between 1 and 16.") from exc
+        if not 1 <= max_regions <= 16:
+            raise InvalidRequestError("max_regions must be between 1 and 16.")
 
         supplied_key = body.get("api_key")
         if supplied_key is not None and not isinstance(supplied_key, str):

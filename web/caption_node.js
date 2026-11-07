@@ -29,6 +29,7 @@ import {
   openLayoutEditor,
   openSettingsModal,
   renderSvgStage,
+  BOX_COLORS,
 } from "./lib/layout_editor.js";
 import { UndoStack } from "./lib/undo.js";
 
@@ -2088,11 +2089,16 @@ function mountRichCard(node, statusEl) {
     if (items.length > 0) {
       regionsBar.hidden = false;
       items.forEach((it, idx) => {
+        const displayName = it.name || (it.label === "character" ? "角色" : (it.label === "text" ? "文字" : "物体"));
+        const descPreview = String(it.text || it.caption || "").slice(0, 16);
+        const pillText = `#${idx + 1} ${displayName}${descPreview ? ": " + descPreview : ""}`;
+        const color = BOX_COLORS[idx % BOX_COLORS.length];
         const pill = el(
           "button",
           `aps-region-pill${idx === selectedRegion ? " is-selected" : ""}`,
-          `#${idx + 1} ${it.label}: ${String(it.caption || it.text || "").slice(0, 14)}`,
+          pillText,
         );
+        pill.style.borderLeft = `3.5px solid ${color}`;
         pill.type = "button";
         pill.title = `#${idx + 1} [${it.label}] ${it.caption || ""}\n单击选中并在下方微调；双击打开全屏双栏工作台`;
         pill.addEventListener("click", () => {
@@ -2138,6 +2144,20 @@ function mountRichCard(node, statusEl) {
       const [bx1, by1, bx2, by2] = item.bbox || [0, 0, 0, 0];
       const bw = Math.max(0, Math.round(bx2 - bx1));
       const bh = Math.max(0, Math.round(by2 - by1));
+      
+      const nameInput = el("input", "aps-input aps-input-xs aps-region-name-input");
+      nameInput.type = "text";
+      nameInput.placeholder = "实体名称（如：光环、宣传单）";
+      nameInput.value = item.name || "";
+      nameInput.style.maxWidth = "115px";
+      nameInput.title = "区域实体名称（显示在画框与标签上）";
+      nameInput.addEventListener("change", () => {
+        item.name = nameInput.value.trim();
+        commitDraftToState(state, normalizeDraft(state.draft, w, h), w, h, true, `修改区域 #${selectedRegion + 1} 名称`);
+        statusEl.textContent = `已修改区域 #${selectedRegion + 1} 名称为【${item.name}】。`;
+        syncCard();
+      });
+
       const boundsBadge = el("span", "aps-region-bounds-badge", `${bw}×${bh} (${Math.round(bx1)},${Math.round(by1)})`);
       boundsBadge.title = `区域范围: 左上角 (${Math.round(bx1)}, ${Math.round(by1)})，尺寸 ${bw}×${bh}`;
 
@@ -2150,7 +2170,7 @@ function mountRichCard(node, statusEl) {
         commitDraftToState(state, normalizeDraft(state.draft, w, h), w, h, true, `删除区域框`);
         statusEl.textContent = "已删除区域框。";
       });
-      row1.append(badge, labelSel, boundsBadge, delBtn);
+      row1.append(badge, labelSel, nameInput, boundsBadge, delBtn);
 
       // Row 2: Detailed Caption & Text input
       const row2 = el("div", "aps-region-inspect-row");

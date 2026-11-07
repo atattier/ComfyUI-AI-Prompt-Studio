@@ -17,28 +17,37 @@ FORMATS = ("prose", "tags", "moss", "danbooru")
 
 _INSTRUCTIONS = {
     "prose": (
-        "Describe the image for use as an image-generation prompt. Write 2-4 sentences "
-        "of natural English covering: subject, action, setting, camera angle and "
-        "composition, lighting, colour and style. Do not mention that this is an image "
-        "or address the reader. Output only the description."
+        "Describe the image for use as an image-generation prompt. Write 2-4 sentences of cohesive "
+        "natural English. Explicitly cover: primary subject, distinctive features & accessories "
+        "(e.g. floating halos, wings/light shards, headwear), foreground/background spatial depth, "
+        "materials, lighting atmosphere (rim light, specular reflections, bokeh), camera framing, and art style. "
+        "Quote any visible signage or text verbatim inside quotation marks. "
+        "Do not mention that this is an image or address the reader. Output only the description."
     ),
     "tags": (
         "Convert the image into image-generation tags. Output ONE comma-separated line "
         "of English tags, ordered from most to least important: quality, subject, "
-        "appearance, clothing, pose/action, environment, camera, lighting, style. "
+        "distinctive features (halos, wings, accessories), appearance, clothing, pose/action, "
+        "environment, camera, lighting, style. "
         "Use underscores inside multi-word tags. No numbering, no explanations, no "
         "markdown, no quotes."
     ),
     "danbooru": (
-        "Convert the image into Danbooru-style image-generation tags. Output ONE comma-separated line "
-        "of English tags, ordered from most to least important: core character and count (such as 1girl, solo), "
-        "hair and eye features, facial expression, clothing, pose and action, environment, lighting, camera angle, art style. "
-        "All lowercase, use underscores inside multi-word tags. Strictly forbid sentences, forbid (word:1.2) syntax, no numbering, no markdown quotes."
+        "Convert the image into authentic Danbooru-style anime image-generation tags. "
+        "Output ONE comma-separated line of English tags, ordered strictly from most to least important: "
+        "character count and meta (e.g. 1girl, solo), core distinctive fantasy/costume features "
+        "(e.g. halo, glowing_halo, energy_wings, light_wings, horns), hair style and color, eye color, "
+        "facial expression, specific apparel and gear, pose and action, environment and props "
+        "(e.g. cafe, glass_door, poster, flyer), lighting and camera angle (e.g. rim_lighting, backlighting, depth_of_field), "
+        "art medium. All lowercase, use underscores inside multi-word tags. "
+        "Strictly forbid sentences, forbid (word:1.2) syntax, no numbering, no markdown quotes."
     ),
     "moss": (
         "Write an official MOSS-Image style prompt in English as cohesive natural prose. "
-        "Describe concrete visible choices: main subject and action, physical appearance, "
-        "spatial setting, camera framing, lighting, surface materials, and artistic medium. "
+        "Describe concrete visible choices in detail: main subject and action, distinctive features & accessories "
+        "(e.g. halos, crystalline/light wings, jewelry, tactical gear), spatial layering (foreground, midground, "
+        "background environment), camera angle, lighting interactions (translucency, reflections, ambient glow), "
+        "surface textures, and artistic medium. "
         "Preserve all explicit user intent, avoid marketing buzzwords or (word:1.2) syntax, "
         "and quote any visible signage or text verbatim inside quotation marks. Output only the caption."
     ),

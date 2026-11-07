@@ -147,7 +147,7 @@ class Settings:
     output_language: str = "en"
     prompt_rules: str = ""
     user_custom_rules: str = ""
-    max_regions: int = 6
+    max_regions: int = 10
 
     def __post_init__(self) -> None:
         self.base_url = normalize_base_url(self.base_url)
@@ -175,9 +175,9 @@ class Settings:
         self.prompt_rules = str(self.prompt_rules or "").strip()
         self.user_custom_rules = str(self.user_custom_rules or "").strip()
         try:
-            self.max_regions = max(1, min(8, int(self.max_regions or 6)))
+            self.max_regions = max(1, min(16, int(self.max_regions or 10)))
         except (TypeError, ValueError):
-            self.max_regions = 6
+            self.max_regions = 10
 
     # -- endpoints ---------------------------------------------------------
     def api_url(self, path: str) -> str:
@@ -315,7 +315,7 @@ def load_settings(
         output_language=str(prefs.get("output_language") or "en"),
         prompt_rules=str(prefs.get("prompt_rules") or ""),
         user_custom_rules=str(prefs.get("user_custom_rules") or ""),
-        max_regions=_as_int(prefs.get("max_regions"), "max_regions", 6),
+        max_regions=_as_int(prefs.get("max_regions"), "max_regions", 10),
     )
     settings.ensure_local_bind()
     return settings
