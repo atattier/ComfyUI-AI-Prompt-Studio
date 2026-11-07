@@ -38,6 +38,9 @@ const ALL_MODES = ["caption", "layout", "danbooru"];
 function formatFriendlyErrorMessage(err, actionName = "操作") {
   const msg = err?.message || String(err || "");
   const status = err?.status;
+  if (msg.includes("mode must be one of caption, layout, hybrid") || msg.includes("danbooru")) {
+    return "⚠️ 检测到 ComfyUI 正在运行旧版内核内存：请在秋叶启动器中点击一次【一键启动 / 重启内核】，重新加载 Danbooru 模式与新端口即可！";
+  }
   if (status === 401 || msg.includes("401") || msg.includes("Unauthorized") || msg.includes("API key")) {
     return "❌ 网关鉴权失败 (401)：API Key 无效或未设置，请点击顶栏「⚙ 设置」配置有效密钥。";
   }
