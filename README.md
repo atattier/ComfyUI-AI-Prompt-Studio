@@ -43,7 +43,7 @@
 在你的 ComfyUI 根目录下的 `custom_nodes` 文件夹中执行：
 ```bash
 cd custom_nodes
-git clone https://github.com/your-username/ComfyUI-AI-Prompt-Studio.git
+git clone https://github.com/atattier/ComfyUI-AI-Prompt-Studio.git
 ```
 依赖极度轻量（仅依赖 ComfyUI 本身自带的 `aiohttp` 和 Python 标准库），无需安装复杂的外部编译包。
 
