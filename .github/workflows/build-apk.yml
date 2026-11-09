@@ -71,16 +71,16 @@ jobs:
             dist-apk/ComfyUI-PromptStudio-${{ steps.release_info.outputs.tag }}.apk
             dist-apk/ComfyUI-PromptStudio-latest.apk
           body: |
-            ### 📱 ComfyUI AI Prompt Studio 移动端 Android 安装包 (${{ steps.release_info.outputs.tag }})
+            ### 📱 MOSS Prompt & Image Studio 移动端 Android 安装包 (${{ steps.release_info.outputs.tag }})
 
-            欢迎下载使用 **ComfyUI AI Prompt Studio** 移动端 App！
+            欢迎下载使用 **MOSS AI Prompt Studio** 移动端 App！
 
-            #### ✨ 本次更新重点 (v1.0.1)
-            - 🚀 **全面支持离线独立与大众云端模式**：解决手机打开报 `10.0.2.2 ERR_CONNECTION_TIMED_OUT` 超时问题，手机端无需运行或依赖电脑 ComfyUI，开箱即用！
-            - ✍️ **离线提示词工坊与 AI 扩写**：集成丰富风格、视角、光影、画质分类词库，离线可快速组装，配置 API Key 后可进行自然语言智能扩写与润色。
-            - 📷 **手机拍照 / 相册选图反推**：支持调用手机相机或从相册选择图片，通过多模态视觉模型一键反推详尽英文描述词、Danbooru 动漫标签或空间元素分解。
-            - ☁️ **手机直接云端生图**：支持通过 SiliconFlow (免费/极速 FLUX.1)、OpenAI DALL-E、Kolors 等直接在手机上出图，支持多种画幅比例与画廊历史记录。
-            - 🖥️ **贴心远程 ComfyUI 局域网连接模式**：支持一键连接同局域网的电脑 ComfyUI，连接异常自动降级回独立工作台，杜绝白屏与报错。
+            #### ✨ 本次更新重点 (v1.0.2)
+            - 🌟 **MOSS 官方生图 API 直连**：直连 MOSS (MOSI) 官方出图接口 (`https://api.mosi.cn/v1/images/generations`)，支持输入 `moss_api_key` 直接在手机端出图，无需依赖本地电脑或 ComfyUI！
+            - 🎯 **MOSS-Image 全模型与分辨率矩阵**：完整支持 `moss-image-sft-1.0` (推荐)、`moss-image-base-1.0` 以及 1:1、2:3、3:2、9:16、16:9、1:2 (1024x2048) 等全套官方推荐宽高比白名单。
+            - 🛡️ **CDN 防盗链直链优化**：彻底解决 MOSI 官方 CDN Referer ACL 阻断导致的图片裂图问题，支持一键无损保存原图到手机系统相册！
+            - ✍️ **MOSS 散文提示词工坊**：针对 Qwen3.5 文本编码器与 DiT 特性量身定制，涵盖写实摄影、二次元日漫、跨次元 2D-in-3D 等核心画风与构图光影词库，支持离线快速直拼与 AI 散文扩写。
+            - 📷 **多模态识图反推**：手机拍照或相册选图后，一键反推高拟合度 MOSS 散文描述词或 Danbooru 动漫标签，并可一键转入出图。
 
             #### 📥 下载安装方法
             1. 点击下方 Assets 区域的 **`ComfyUI-PromptStudio-${{ steps.release_info.outputs.tag }}.apk`** 或 **`ComfyUI-PromptStudio-latest.apk`** 下载。

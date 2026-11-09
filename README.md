@@ -18,8 +18,8 @@
     <img src="https://img.shields.io/badge/🧩%20下载-ComfyUI%20插件压缩包%20(.zip)-0969da?style=for-the-badge" alt="下载插件 zip">
   </a>
   &nbsp;&nbsp;
-  <a href="https://github.com/atattier/ComfyUI-AI-Prompt-Studio/releases/download/v1.0.1/ComfyUI-PromptStudio-v1.0.1.apk">
-    <img src="https://img.shields.io/badge/📲%20下载-Android%20APK%20最新安装包%20(v1.0.1)-2ea44f?style=for-the-badge" alt="下载 APK">
+  <a href="https://github.com/atattier/ComfyUI-AI-Prompt-Studio/releases/download/v1.0.2/ComfyUI-PromptStudio-v1.0.2.apk">
+    <img src="https://img.shields.io/badge/📲%20下载-Android%20APK%20最新安装包%20(v1.0.2)-2ea44f?style=for-the-badge" alt="下载 APK">
   </a>
 </p>
 
@@ -187,12 +187,13 @@ Content-Type: application/json
 
 本项目自带原生 Android 独立移动端应用，专为大众创作者和移动办公设计：
 
-- ☁️ **云端独立模式 (默认开箱即用)**：无需在手机或电脑运行 ComfyUI！支持直接配置 SiliconFlow (硅基流动)、DeepSeek、OpenAI、阿里云百炼等 API 密钥，在手机上直接实现**灵感提示词扩写**、**拍照/选图多模态反推**与**云端 FLUX.1 / SD3.5 高速出图**。
-- 🖥️ **局域网远程 ComfyUI 联动**：在设置中输入电脑的局域网 IP（例如 `http://192.168.1.100:8188`），即可无缝操控电脑端的 ComfyUI 工作流。
-- 🛡️ **异常自动容灾**：当远程 ComfyUI 无法连通时，自动回退到本地独立工作台，彻底避免 `net::ERR_CONNECTION_TIMED_OUT` 等网络白屏错误。
+- ☁️ **MOSS 官方生图 API 直连 (开箱即用)**：无需在手机或电脑运行 ComfyUI！支持直接配置 MOSS (MOSI) 官方出图 Key (`moss_api_key`)，直接调用 `https://api.mosi.cn/v1/images/generations` 云端生成高质量图像，并自动无损存入手机相册。
+- 🎯 **MOSS-Image 全模型与尺寸矩阵**：支持 `moss-image-sft-1.0` 与 1:1、2:3、3:2、9:16、16:9、1:2 (1024x2048) 等全套官方推荐宽高比白名单。
+- ✍️ **MOSS 散文提示词工坊**：集成针对 Qwen3.5 文本编码器量身打造的画风、构图、光影词库，支持离线直拼与 AI 散文扩写。
+- 📷 **多模态识图反推**：手机拍照或相册选图后，一键反推高拟合度 MOSS 散文描述词或 Danbooru 动漫标签。
 
 ### 📥 快速下载
-- **GitHub Release 最新版**：[下载 ComfyUI-PromptStudio-v1.0.1.apk](https://github.com/atattier/ComfyUI-AI-Prompt-Studio/releases/download/v1.0.1/ComfyUI-PromptStudio-v1.0.1.apk)
+- **GitHub Release 最新版**：[下载 ComfyUI-PromptStudio-v1.0.2.apk](https://github.com/atattier/ComfyUI-AI-Prompt-Studio/releases/download/v1.0.2/ComfyUI-PromptStudio-v1.0.2.apk)
 
 ### 本地构建方式
 - **Android Studio**：直接打开项目根目录下的 `android/` 目录，点按 Run 或 Build APK；

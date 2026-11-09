@@ -1,59 +1,54 @@
-// AI Prompt Studio - Standalone Mobile Application Logic
+// MOSS Prompt & Image Studio - Mobile Application Logic
 (function () {
   'use strict';
 
-  // --- Configuration & State ---
-  const PRESETS = {
-    siliconflow: {
-      name: '硅基流动 (SiliconFlow)',
-      baseUrl: 'https://api.siliconflow.cn/v1',
-      chatModel: 'Qwen/Qwen2.5-7B-Instruct',
-      visionModel: 'Qwen/Qwen2-VL-7B-Instruct',
-      genModel: 'black-forest-labs/FLUX.1-schnell'
-    },
-    deepseek: {
-      name: 'DeepSeek',
-      baseUrl: 'https://api.deepseek.com/v1',
-      chatModel: 'deepseek-chat',
-      visionModel: '',
-      genModel: ''
-    },
-    dashscope: {
-      name: '阿里云百炼 (DashScope)',
-      baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
-      chatModel: 'qwen-plus',
-      visionModel: 'qwen-vl-plus',
-      genModel: 'wanx-v1'
-    },
-    openai: {
-      name: 'OpenAI 官方',
-      baseUrl: 'https://api.openai.com/v1',
-      chatModel: 'gpt-4o-mini',
-      visionModel: 'gpt-4o-mini',
-      genModel: 'dall-e-3'
-    },
-    custom: {
-      name: '自定义 / 局域网服务',
-      baseUrl: '',
-      chatModel: '',
-      visionModel: '',
-      genModel: ''
-    }
-  };
+  // --- MOSS Official Constants ---
+  const MOSI_GEN_URL = 'https://api.mosi.cn/v1/images/generations';
+
+  const MOSI_SIZES = [
+    { value: '1024x1024', label: '1024×1024 (1:1 方图 · 1.0M 经典头像/插画)' },
+    { value: '768x1152',  label: '768×1152 (2:3 竖图 · 0.9M 手机壁纸推荐)' },
+    { value: '832x1216',  label: '832×1216 (2:3 竖图 · 1.0M 高清立绘)' },
+    { value: '1024x1536', label: '1024×1536 (2:3 竖图 · 1.5M 超清海报)' },
+    { value: '768x1344',  label: '768×1344 (9:16 竖屏 · 1.0M 手机全屏)' },
+    { value: '864x1536',  label: '864×1536 (9:16 竖屏 · 1.3M 超清全屏)' },
+    { value: '1024x2048', label: '1024×2048 (1:2 长竖屏 · 2.0M 角色全身)' },
+    { value: '1152x768',  label: '1152×768 (3:2 横图 · 0.9M 风景摄影)' },
+    { value: '1216x832',  label: '1216×832 (3:2 横图 · 1.0M 高清宽画幅)' },
+    { value: '1536x1024', label: '1536×1024 (3:2 横图 · 1.5M 超清横幅)' },
+    { value: '1344x768',  label: '1344×768 (16:9 横屏 · 1.0M 影视壁纸)' },
+    { value: '1536x864',  label: '1536×864 (16:9 横屏 · 1.3M 超宽横屏)' },
+    { value: '2048x1024', label: '2048×1024 (2:1 横屏 · 2.0M 全景概念图)' }
+  ];
+
+  const MOSI_MODELS = [
+    { value: 'moss-image-sft-1.0', label: 'moss-image-sft-1.0 (推荐 · 官方微调版)' },
+    { value: 'moss-image-sft-1.0-2026-10-09', label: 'moss-image-sft-1.0-2026-10-09 (最新优化版)' },
+    { value: 'moss-image-base-1.0', label: 'moss-image-base-1.0 (基础底模)' },
+    { value: 'moss-image-base-1.0-2026-10-09', label: 'moss-image-base-1.0-2026-10-09' }
+  ];
 
   const DEFAULT_CONFIG = {
-    provider: 'siliconflow',
-    baseUrl: 'https://api.siliconflow.cn/v1',
-    apiKey: '',
-    chatModel: 'Qwen/Qwen2.5-7B-Instruct',
-    visionModel: 'Qwen/Qwen2-VL-7B-Instruct',
-    genModel: 'black-forest-labs/FLUX.1-schnell',
-    comfyUrl: 'http://192.168.1.100:8188'
+    // MOSS Official Image Gen
+    moss_api_key: '',
+    moss_model: 'moss-image-sft-1.0',
+    moss_size: '1024x1024',
+    moss_steps: 50,
+    moss_cfg: 7.0,
+    moss_watermark: false,
+    moss_negative: 'worst quality, bad anatomy, watermark, jpeg artifact',
+
+    // Optional LLM for Prompt Expansion & Vision
+    llm_provider: 'siliconflow',
+    llm_base_url: 'https://api.siliconflow.cn/v1',
+    llm_api_key: '',
+    llm_chat_model: 'Qwen/Qwen2.5-7B-Instruct',
+    llm_vision_model: 'Qwen/Qwen2-VL-7B-Instruct'
   };
 
   let config = Object.assign({}, DEFAULT_CONFIG);
   try {
-    const saved = localStorage.getItem('prompt_studio_config');
+    const saved = localStorage.getItem('moss_studio_config');
     if (saved) {
       config = Object.assign(config, JSON.parse(saved));
     }
@@ -63,46 +58,42 @@
 
   function saveConfig() {
     try {
-      localStorage.setItem('prompt_studio_config', JSON.stringify(config));
+      localStorage.setItem('moss_studio_config', JSON.stringify(config));
     } catch (e) {
       console.warn('Storage save error:', e);
     }
   }
 
-  // --- Tag Vocabulary ---
-  const TAG_LIBRARIES = {
-    style: [
-      { id: 'film', label: '🎞️ 真实胶片', prompt: 'cinematic 35mm film photography, Kodak Portra 400, fine grain, authentic colors' },
-      { id: 'anime', label: '🌸 二次元日漫', prompt: 'anime aesthetic, vibrant color palette, Makoto Shinkai style, clean line art' },
-      { id: 'cyberpunk', label: '⚡ 赛博朋克', prompt: 'cyberpunk 2077 aesthetic, futuristic neon city, holographic glow, chromatic aberration' },
-      { id: '3d_pixar', label: '🧸 3D精美渲染', prompt: '3D Pixar render, Unreal Engine 5, Octane render, smooth subsurface scattering' },
-      { id: 'ink', label: '🖌️ 水墨国风', prompt: 'Chinese traditional ink wash painting, poetic atmosphere, elegant brush strokes' },
-      { id: 'concept', label: '🎨 概念艺术', prompt: 'digital concept art, Artstation trending, intricate details, epic composition' },
-      { id: 'dark_fantasy', label: '⚔️ 暗黑奇幻', prompt: 'dark fantasy, Elden Ring aesthetic, gritty, chiaroscuro lighting, gothic mood' }
+  // --- MOSS-Image Tag Vocabulary ---
+  const MOSS_TAG_LIBRARIES = {
+    dimension: [
+      { id: 'realistic', label: '📷 写实摄影 (Photorealistic)', prompt: 'cinematic 35mm photograph, hyperrealistic textures, authentic natural lighting, sharp focus' },
+      { id: 'anime', label: '🌸 二次元日漫 (Anime Style)', prompt: 'high quality anime illustration, clean line art, vibrant cel shading, expressive anime aesthetic' },
+      { id: 'hybrid', label: '🔮 跨次元 (2D in 3D)', prompt: '2.5D anime figure style, stylized 3D rendering with hand-painted anime textures, Octane render' }
     ],
     shot: [
-      { id: 'closeup', label: '🔍 特写头像', prompt: 'close-up portrait shot, highly detailed facial features and expressive eyes' },
-      { id: 'fullbody', label: '🧍 全身立绘', prompt: 'full body shot, perfect dynamic posture, full silhouette' },
-      { id: 'wide', label: '🏞️ 电影宽幅', prompt: 'wide-angle cinematic view, sweeping panorama, atmospheric depth' },
-      { id: 'bokeh', label: '✨ 浅景深虚化', prompt: 'shallow depth of field, creamy background bokeh, sharp subject focus' },
-      { id: 'dutch', label: '📐 倾斜构图', prompt: 'dutch angle shot, dynamic tension, dramatic perspective' }
+      { id: 'closeup', label: '🔍 特写头像', prompt: 'close-up shot focusing on detailed facial expression and eyes' },
+      { id: 'upper', label: '👤 半身肖像', prompt: 'medium shot, upper body portrait with clear attire details' },
+      { id: 'fullbody', label: '🧍 全身立绘', prompt: 'full length view, full body silhouette from head to toe' },
+      { id: 'wide', label: '🏞️ 广角全景', prompt: 'wide-angle scenic view with deep environmental perspective' },
+      { id: 'dutch', label: '📐 动态俯仰', prompt: 'dynamic low angle dramatic shot' }
     ],
     light: [
-      { id: 'tyndall', label: '☀️ 丁达尔光', prompt: 'volumetric Tyndall rays, visible light shafts piercing through atmosphere' },
-      { id: 'neon', label: '🌃 霓虹夜雨', prompt: 'rainy night reflections, glowing neon sign ambient light' },
-      { id: 'golden', label: '🌅 黄金时刻', prompt: 'golden hour sunset light, warm orange rim light, soft shadows' },
-      { id: 'dramatic', label: '🎭 戏剧明暗', prompt: 'dramatic chiaroscuro lighting, high contrast, strong key light and deep shadows' }
+      { id: 'tyndall', label: '☀️ 丁达尔光束', prompt: 'volumetric atmospheric lighting, visible Tyndall light rays' },
+      { id: 'golden', label: '🌅 黄金黄昏', prompt: 'warm golden hour sunlight, soft radiant rim lighting' },
+      { id: 'neon', label: '🌃 赛博霓虹', prompt: 'rainy reflections, glowing futuristic neon illumination' },
+      { id: 'chiaroscuro', label: '🎭 明暗对比', prompt: 'dramatic chiaroscuro lighting, deep shadows and strong key light' }
     ],
-    quality: [
-      { id: 'masterpiece', label: '💎 顶级画质', prompt: 'masterpiece, best quality, ultra-detailed 8k, photorealistic precision' },
-      { id: 'sharp', label: '🎯 锐利对焦', prompt: 'razor-sharp focus, rich intricate textures, wallpaper quality' }
+    details: [
+      { id: 'masterpiece', label: '💎 顶级杰作', prompt: 'masterpiece, best quality, ultra-detailed, 8k resolution' },
+      { id: 'wallpaper', label: '🖼️ 壁纸级精细', prompt: 'extremely detailed background, intricate textures, pristine clarity' }
     ]
   };
 
-  let activeTags = new Set(['masterpiece']);
+  let activeTags = new Set(['realistic', 'masterpiece']);
   let uploadedImageBase64 = null;
 
-  // --- UI Elements ---
+  // --- UI References ---
   const tabButtons = document.querySelectorAll('.nav-item');
   const tabPanels = document.querySelectorAll('.tab-panel');
   const statusDot = document.getElementById('statusDot');
@@ -110,14 +101,12 @@
 
   // Helper: Toast
   function toast(message, duration) {
-    duration = duration || 2200;
+    duration = duration || 2400;
     if (window.PromptStudioBridge && typeof window.PromptStudioBridge.showToast === 'function') {
       try {
         window.PromptStudioBridge.showToast(message);
         return;
-      } catch (e) {
-        console.warn('Native toast failed, falling back:', e);
-      }
+      } catch (e) {}
     }
     const container = document.getElementById('toastContainer');
     if (!container) return;
@@ -165,12 +154,12 @@
       document.execCommand('copy');
       toast('已复制到剪贴板');
     } catch (err) {
-      toast('复制失败，请手动长按复制');
+      toast('复制失败，请手动选择复制');
     }
     document.body.removeChild(ta);
   }
 
-  // --- Navigation & Tabs ---
+  // --- Tabs Navigation ---
   function switchTab(tabId) {
     tabButtons.forEach(btn => {
       btn.classList.toggle('active', btn.dataset.tab === tabId);
@@ -185,21 +174,21 @@
     btn.addEventListener('click', () => switchTab(btn.dataset.tab));
   });
 
-  // --- Status update ---
+  // --- Status Update ---
   function updateStatus() {
     if (!statusDot || !statusText) return;
-    if (config.apiKey && config.apiKey.trim().length > 0) {
+    if (config.moss_api_key && config.moss_api_key.trim().length > 0) {
       statusDot.className = 'status-dot';
-      statusText.textContent = '云端已就绪';
+      statusText.textContent = 'MOSS 官方已就绪';
     } else {
       statusDot.className = 'status-dot warn';
-      statusText.textContent = '离线模式 (未设Key)';
+      statusText.textContent = '请先配置 MOSS Key';
     }
   }
 
   // --- Render Tag Chips ---
   function renderChips() {
-    for (const [category, tags] of Object.entries(TAG_LIBRARIES)) {
+    for (const [category, tags] of Object.entries(MOSS_TAG_LIBRARIES)) {
       const container = document.getElementById(`chips_${category}`);
       if (!container) continue;
       container.innerHTML = '';
@@ -211,100 +200,293 @@
           if (activeTags.has(item.id)) {
             activeTags.delete(item.id);
           } else {
+            // Dimension is single-select
+            if (category === 'dimension') {
+              tags.forEach(t => activeTags.delete(t.id));
+            }
             activeTags.add(item.id);
           }
-          chip.classList.toggle('active', activeTags.has(item.id));
+          renderChips();
         });
         container.appendChild(chip);
       });
     }
   }
 
-  // --- Offline Prompt Assembly ---
-  function buildOfflinePrompt(userConcept, targetModel) {
-    const parts = [];
-    if (userConcept && userConcept.trim()) {
-      parts.push(userConcept.trim());
-    }
-    for (const [category, tags] of Object.entries(TAG_LIBRARIES)) {
-      tags.forEach(item => {
-        if (activeTags.has(item.id)) {
-          parts.push(item.prompt);
-        }
+  // --- Tab 1: MOSS Official Image Generation ---
+  const mosiPrompt = document.getElementById('mosiPrompt');
+  const mosiNegPrompt = document.getElementById('mosiNegPrompt');
+  const mosiModelSelect = document.getElementById('mosiModelSelect');
+  const mosiSizeSelect = document.getElementById('mosiSizeSelect');
+  const mosiStepsRange = document.getElementById('mosiStepsRange');
+  const mosiStepsVal = document.getElementById('mosiStepsVal');
+  const mosiCfgRange = document.getElementById('mosiCfgRange');
+  const mosiCfgVal = document.getElementById('mosiCfgVal');
+  const mosiSeedInput = document.getElementById('mosiSeedInput');
+  const mosiWatermark = document.getElementById('mosiWatermark');
+  const btnStartMosiGen = document.getElementById('btnStartMosiGen');
+  const mosiResultCard = document.getElementById('mosiResultCard');
+  const mosiResultImg = document.getElementById('mosiResultImg');
+  const mosiHistoryGrid = document.getElementById('mosiHistoryGrid');
+  const btnSaveMosiImage = document.getElementById('btnSaveMosiImage');
+
+  function initMosiSelects() {
+    if (mosiModelSelect) {
+      mosiModelSelect.innerHTML = '';
+      MOSI_MODELS.forEach(m => {
+        const opt = document.createElement('option');
+        opt.value = m.value;
+        opt.textContent = m.label;
+        if (m.value === config.moss_model) opt.selected = true;
+        mosiModelSelect.appendChild(opt);
       });
     }
-    const positive = parts.join(', ');
-    let negative = '';
-    if (targetModel === 'sdxl' || targetModel === 'sd15') {
-      negative = 'ugly, deformed, disfigured, poor details, bad anatomy, blurry, watermark, extra limbs, low quality';
-    } else if (targetModel === 'flux') {
-      negative = 'low quality, blurry';
+    if (mosiSizeSelect) {
+      mosiSizeSelect.innerHTML = '';
+      MOSI_SIZES.forEach(s => {
+        const opt = document.createElement('option');
+        opt.value = s.value;
+        opt.textContent = s.label;
+        if (s.value === config.moss_size) opt.selected = true;
+        mosiSizeSelect.appendChild(opt);
+      });
     }
-    return { positive, negative };
+    if (mosiStepsRange && mosiStepsVal) {
+      mosiStepsRange.value = config.moss_steps || 50;
+      mosiStepsVal.textContent = (config.moss_steps || 50) + ' 步';
+      mosiStepsRange.addEventListener('input', () => {
+        mosiStepsVal.textContent = mosiStepsRange.value + ' 步';
+      });
+    }
+    if (mosiCfgRange && mosiCfgVal) {
+      mosiCfgRange.value = config.moss_cfg || 7.0;
+      mosiCfgVal.textContent = parseFloat(config.moss_cfg || 7.0).toFixed(1);
+      mosiCfgRange.addEventListener('input', () => {
+        mosiCfgVal.textContent = parseFloat(mosiCfgRange.value).toFixed(1);
+      });
+    }
+    if (mosiNegPrompt) {
+      mosiNegPrompt.value = config.moss_negative || 'worst quality, bad anatomy, watermark, jpeg artifact';
+    }
   }
 
-  // --- Tab 1: Prompt Studio ---
+  // Load History
+  function loadHistory() {
+    if (!mosiHistoryGrid) return;
+    mosiHistoryGrid.innerHTML = '';
+    let list = [];
+    try {
+      list = JSON.parse(localStorage.getItem('moss_gen_history') || '[]');
+    } catch (e) {}
+
+    list.slice(0, 9).forEach(item => {
+      const div = document.createElement('div');
+      div.className = 'history-item';
+      const img = document.createElement('img');
+      img.src = item.url;
+      img.setAttribute('referrerpolicy', 'no-referrer');
+      div.appendChild(img);
+      div.addEventListener('click', () => {
+        mosiResultImg.src = item.url;
+        mosiPrompt.value = item.prompt || '';
+        mosiResultCard.style.display = 'block';
+        window.scrollTo({ top: 320, behavior: 'smooth' });
+      });
+      mosiHistoryGrid.appendChild(div);
+    });
+  }
+
+  function addHistory(url, prompt) {
+    try {
+      let list = JSON.parse(localStorage.getItem('moss_gen_history') || '[]');
+      list.unshift({ url, prompt, time: Date.now() });
+      if (list.length > 30) list = list.slice(0, 30);
+      localStorage.setItem('moss_gen_history', JSON.stringify(list));
+      loadHistory();
+    } catch (e) {}
+  }
+
+  // Start MOSS Official Generation
+  if (btnStartMosiGen) {
+    btnStartMosiGen.addEventListener('click', async () => {
+      const key = (config.moss_api_key || '').trim();
+      if (!key) {
+        toast('请先在「设置」中填写 MOSS 出图 Key');
+        switchTab('settings');
+        return;
+      }
+
+      const prompt = mosiPrompt.value.trim();
+      if (!prompt) {
+        toast('请输入生图提示词');
+        return;
+      }
+
+      btnStartMosiGen.disabled = true;
+      btnStartMosiGen.innerHTML = '<span class="spinner"></span> MOSS 官方渲染中...';
+
+      const model = mosiModelSelect.value;
+      const size = mosiSizeSelect.value;
+      const steps = parseInt(mosiStepsRange.value, 10) || 50;
+      const cfg = parseFloat(mosiCfgRange.value) || 7.0;
+      const neg = mosiNegPrompt.value.trim();
+      const seedVal = mosiSeedInput.value.trim();
+      const watermark = mosiWatermark ? mosiWatermark.checked : false;
+
+      const payload = {
+        model: model,
+        prompt: prompt,
+        size: size,
+        n: 1,
+        response_format: 'url',
+        output_watermark: { enabled: watermark },
+        num_inference_steps: steps,
+        guidance_scale: cfg
+      };
+      if (neg) payload.negative_prompt = neg;
+      if (seedVal && !isNaN(parseInt(seedVal, 10))) {
+        payload.seed = parseInt(seedVal, 10);
+      }
+
+      const startTime = Date.now();
+      try {
+        const resp = await fetch(MOSI_GEN_URL, {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${key}`,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify(payload)
+        });
+
+        if (!resp.ok) {
+          const errData = await resp.json().catch(() => ({}));
+          const errMsg = errData.error?.message || errData.detail || `HTTP ${resp.status}`;
+          throw new Error(errMsg);
+        }
+
+        const data = await resp.json();
+        const imgUrl = data.data?.[0]?.url;
+        if (!imgUrl) {
+          throw new Error('未获取到图片 URL');
+        }
+
+        const elapsedSec = ((Date.now() - startTime) / 1000).toFixed(1);
+        mosiResultImg.src = imgUrl;
+        mosiResultImg.setAttribute('referrerpolicy', 'no-referrer');
+        mosiResultCard.style.display = 'block';
+        addHistory(imgUrl, prompt);
+        toast(`🎉 MOSS 出图成功！耗时 ${elapsedSec}s`);
+      } catch (err) {
+        console.error('MOSS Gen error:', err);
+        toast('出图失败: ' + err.message);
+      } finally {
+        btnStartMosiGen.disabled = false;
+        btnStartMosiGen.innerHTML = '<span>🚀</span> 立即调用 MOSS 官方生图';
+      }
+    });
+  }
+
+  // Save / Download Image
+  if (btnSaveMosiImage) {
+    btnSaveMosiImage.addEventListener('click', () => {
+      const src = mosiResultImg.src;
+      if (!src) return;
+      const filename = `MOSS_${Date.now()}.png`;
+
+      if (window.PromptStudioBridge && typeof window.PromptStudioBridge.saveImageFromUrl === 'function') {
+        window.PromptStudioBridge.saveImageFromUrl(src, filename);
+        toast('正在保存到系统相册...');
+        return;
+      }
+
+      // Web fallback
+      const a = document.createElement('a');
+      a.href = src;
+      a.download = filename;
+      a.target = '_blank';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      toast('已发起图片下载');
+    });
+  }
+
+  // --- Tab 2: MOSS Prompt Studio (Workshop) ---
   const userConceptInput = document.getElementById('userConcept');
-  const targetModelSelect = document.getElementById('targetModel');
   const posResultEl = document.getElementById('posResult');
   const negResultEl = document.getElementById('negResult');
   const btnFastCombine = document.getElementById('btnFastCombine');
   const btnMagicExpand = document.getElementById('btnMagicExpand');
+  const btnSendToMosi = document.getElementById('btnSendToMosi');
+
+  function buildOfflineMossPrompt(concept) {
+    const parts = [];
+    if (concept && concept.trim()) {
+      parts.push(concept.trim());
+    }
+    for (const [category, tags] of Object.entries(MOSS_TAG_LIBRARIES)) {
+      tags.forEach(item => {
+        if (activeTags.has(item.id)) parts.push(item.prompt);
+      });
+    }
+    const positive = parts.join(', ');
+    const negative = config.moss_negative || 'worst quality, bad anatomy, watermark, jpeg artifact';
+    return { positive, negative };
+  }
 
   if (btnFastCombine) {
     btnFastCombine.addEventListener('click', () => {
       const concept = userConceptInput.value;
-      const model = targetModelSelect.value;
-      const { positive, negative } = buildOfflinePrompt(concept, model);
+      const { positive, negative } = buildOfflineMossPrompt(concept);
       posResultEl.textContent = positive || '(请先输入描述或选中上方标签)';
       negResultEl.textContent = negative;
-      toast('提示词已快速组装');
+      toast('提示词已快速直拼');
     });
   }
 
   if (btnMagicExpand) {
     btnMagicExpand.addEventListener('click', async () => {
       const concept = userConceptInput.value.trim();
-      const model = targetModelSelect.value;
-      const { positive: basePrompt, negative: defaultNeg } = buildOfflinePrompt(concept, model);
+      const { positive: basePrompt, negative: defaultNeg } = buildOfflineMossPrompt(concept);
 
-      if (!config.apiKey || !config.apiKey.trim()) {
-        toast('未配置 API Key，已切换为本地快速组装');
+      const llmKey = (config.llm_api_key || '').trim();
+      if (!llmKey) {
+        toast('未配置 LLM Key，已使用本地 MOSS 规则快速直拼');
         posResultEl.textContent = basePrompt || '(请先输入描述或选中上方标签)';
         negResultEl.textContent = defaultNeg;
         return;
       }
 
       btnMagicExpand.disabled = true;
-      btnMagicExpand.innerHTML = '<span class="spinner"></span> AI扩写润色中...';
+      btnMagicExpand.innerHTML = '<span class="spinner"></span> AI 散文扩写中...';
 
       try {
-        const systemPrompt = `You are an elite text-to-image prompt engineer for FLUX, SDXL, and Midjourney.
-Expand the user's idea and tags into a vivid, visually compelling English prompt.
-Follow these rules:
-1. Describe the subject's appearance, posture, attire, expressions, environment lighting, camera perspective, and artistic atmosphere in natural, expressive English.
-2. If target model is FLUX, use natural descriptive sentences and paragraphs.
-3. Return STRICT JSON only, matching format:
+        const systemPrompt = `You are an elite prompt engineer specialized for MOSS-Image (Qwen3.5-9B text encoder + DiT).
+Convert user concepts into high-coherence, descriptive English prose prompts.
+Rules:
+1. Depict the focal character/subject, pose, attire, materials, lighting atmosphere, camera framing, and background depth in fluent, natural English prose.
+2. Return STRICT JSON:
 {
   "prompt": "...",
   "negative_prompt": "..."
 }`;
 
         const activeTagPrompts = [];
-        for (const [cat, tags] of Object.entries(TAG_LIBRARIES)) {
+        for (const [cat, tags] of Object.entries(MOSS_TAG_LIBRARIES)) {
           tags.forEach(t => { if (activeTags.has(t.id)) activeTagPrompts.push(t.prompt); });
         }
 
-        const userMsg = `Idea/Concept: ${concept || 'Beautiful artistic scene'}\nStyle Tags: ${activeTagPrompts.join(', ')}\nTarget Model: ${model}`;
+        const userMsg = `Concept: ${concept || 'Captivating cinematic scene'}\nStyle Tags: ${activeTagPrompts.join(', ')}`;
 
-        const resp = await fetch(`${config.baseUrl.replace(/\/+$/, '')}/chat/completions`, {
+        const resp = await fetch(`${config.llm_base_url.replace(/\/+$/, '')}/chat/completions`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            'Authorization': `Bearer ${config.apiKey.trim()}`
+            'Authorization': `Bearer ${llmKey}`
           },
           body: JSON.stringify({
-            model: config.chatModel || 'Qwen/Qwen2.5-7B-Instruct',
+            model: config.llm_chat_model || 'Qwen/Qwen2.5-7B-Instruct',
             messages: [
               { role: 'system', content: systemPrompt },
               { role: 'user', content: userMsg }
@@ -321,13 +503,10 @@ Follow these rules:
         const data = await resp.json();
         const content = data.choices?.[0]?.message?.content || '';
 
-        // Extract JSON
         let parsed = null;
         try {
-          const jsonMatch = content.match(/\{[\s\S]*\}/);
-          if (jsonMatch) {
-            parsed = JSON.parse(jsonMatch[0]);
-          }
+          const match = content.match(/\{[\s\S]*\}/);
+          if (match) parsed = JSON.parse(match[0]);
         } catch (e) {}
 
         if (parsed && parsed.prompt) {
@@ -337,7 +516,7 @@ Follow these rules:
           posResultEl.textContent = content.trim();
           negResultEl.textContent = defaultNeg;
         }
-        toast('✨ AI 扩写完成！');
+        toast('✨ MOSS 提示词扩写完成！');
       } catch (err) {
         console.error('Magic expand failed:', err);
         toast('扩写失败: ' + err.message);
@@ -350,46 +529,39 @@ Follow these rules:
     });
   }
 
-  // Copy Buttons
-  document.getElementById('btnCopyPos')?.addEventListener('click', () => {
-    copyText(posResultEl.textContent);
-  });
-  document.getElementById('btnCopyNeg')?.addEventListener('click', () => {
-    copyText(negResultEl.textContent);
-  });
+  // Send to MOSS Gen
+  if (btnSendToMosi) {
+    btnSendToMosi.addEventListener('click', () => {
+      const p = posResultEl.textContent.trim();
+      const n = negResultEl.textContent.trim();
+      if (!p || p.startsWith('(')) {
+        toast('请先生成或直拼提示词');
+        return;
+      }
+      if (mosiPrompt) mosiPrompt.value = p;
+      if (mosiNegPrompt && n) mosiNegPrompt.value = n;
+      switchTab('gen');
+      toast('已带入 MOSS 生图');
+    });
+  }
 
-  // Send to Cloud Gen Button
-  document.getElementById('btnSendToGen')?.addEventListener('click', () => {
-    const prompt = posResultEl.textContent.trim();
-    const neg = negResultEl.textContent.trim();
-    if (!prompt || prompt.startsWith('(')) {
-      toast('请先生成或输入提示词');
-      return;
-    }
-    const genPromptInput = document.getElementById('genPrompt');
-    const genNegInput = document.getElementById('genNegPrompt');
-    if (genPromptInput) genPromptInput.value = prompt;
-    if (genNegInput) genNegInput.value = neg;
-    switchTab('cloud');
-    toast('已带入生图工作台');
-  });
+  document.getElementById('btnCopyPos')?.addEventListener('click', () => copyText(posResultEl.textContent));
+  document.getElementById('btnCopyNeg')?.addEventListener('click', () => copyText(negResultEl.textContent));
 
-  // Random Inspiration Button
   document.getElementById('btnRandomIdea')?.addEventListener('click', () => {
     const ideas = [
-      '赛博朋克雨夜中的白发机甲少女手握发光武士刀',
-      '悬浮在云海之上的天空岛古代机械废墟遗迹',
-      '夏日向日葵花田里戴草帽的少女微笑着回眸',
-      '神秘发光深海巨鲸穿梭于水下古城废墟之中',
-      '猫咪宇航员在霓虹宇宙星云中喝着热咖啡',
-      '古风雪夜，红衣剑客立于结冰的断桥之上独饮'
+      '赛博雨夜霓虹街道中，机械义肢白发少女手握发光武士刀，全身特写',
+      '悬浮在云海之上的远古机械天空岛遗迹，丁达尔阳光倾泻而下',
+      '夏日向日葵花田里戴着草帽的清纯少女，微笑着回头看向镜头',
+      '深海古遗迹中穿梭的发光机械座头鲸，电影级写实摄影',
+      '水墨山水画风中的白衣剑客立于孤舟，云雾缭绕，诗意朦胧',
+      '高精写实科幻机甲战士在火星废墟中巡航，夕阳金属反光'
     ];
-    const picked = ideas[Math.floor(Math.random() * ideas.length)];
-    userConceptInput.value = picked;
-    toast('已随机填入灵感');
+    userConceptInput.value = ideas[Math.floor(Math.random() * ideas.length)];
+    toast('已填入随机灵感');
   });
 
-  // --- Tab 2: Vision Image Caption ---
+  // --- Tab 3: Vision Caption ---
   const imageFileInput = document.getElementById('imageFileInput');
   const uploadDropzone = document.getElementById('uploadDropzone');
   const previewContainer = document.getElementById('previewContainer');
@@ -413,7 +585,6 @@ Follow these rules:
     reader.onload = function (evt) {
       const img = new Image();
       img.onload = function () {
-        // Compress / resize to max 1024px to ensure quick upload
         const maxDim = 1024;
         let w = img.width;
         let h = img.height;
@@ -434,7 +605,7 @@ Follow these rules:
         uploadedImageBase64 = canvas.toDataURL('image/jpeg', 0.85);
 
         previewImg.src = uploadedImageBase64;
-        imgInfoText.textContent = `${img.width}×${img.height} (已适配 ${w}×${h})`;
+        imgInfoText.textContent = `${img.width}×${img.height} (适配为 ${w}×${h})`;
         uploadDropzone.style.display = 'none';
         previewContainer.style.display = 'block';
         toast('图片加载成功');
@@ -459,34 +630,35 @@ Follow these rules:
         toast('请先点击上方选择或拍摄一张图片');
         return;
       }
-      if (!config.apiKey || !config.apiKey.trim()) {
-        toast('反推需要配置云端 API Key，请前往「设置」配置');
+      const llmKey = (config.llm_api_key || '').trim();
+      if (!llmKey) {
+        toast('反推需要配置视觉大模型 Key，请前往「设置」配置');
         switchTab('settings');
         return;
       }
 
       btnStartVision.disabled = true;
-      btnStartVision.innerHTML = '<span class="spinner"></span> 多模态反推中...';
+      btnStartVision.innerHTML = '<span class="spinner"></span> MOSS 视觉反推中...';
 
       const mode = visionModeSelect.value;
       let promptText = '';
       if (mode === 'anime') {
-        promptText = 'Output comma-separated Danbooru tags describing this anime image (characters, hair color, eye color, clothes, pose, background, style tags). Output ONLY tags, separated by commas.';
+        promptText = 'Output comma-separated Danbooru tags describing this anime image (characters, hair, eyes, clothing, pose, setting, style).';
       } else if (mode === 'layout') {
-        promptText = 'Deconstruct this image into structured spatial layout components: 1) Main Character/Subject, 2) Key Objects, 3) Background/Environment, 4) Lighting and Colors, 5) Recommended full generation prompt.';
+        promptText = 'Deconstruct this image into structured spatial layout components for MOSS-Image: 1) Focal Subject, 2) Objects, 3) Background environment, 4) Lighting and colors.';
       } else {
-        promptText = 'Describe this image in comprehensive detail as a high-quality text-to-image generation prompt. Detail the subject, clothing, textures, expression, camera angle, lighting, colors, and overall artistic mood.';
+        promptText = 'Describe this image in rich descriptive English prose tailored for text-to-image models like MOSS-Image. Detail the character/subject, posture, clothing textures, expressions, lighting, colors, and camera angle.';
       }
 
       try {
-        const resp = await fetch(`${config.baseUrl.replace(/\/+$/, '')}/chat/completions`, {
+        const resp = await fetch(`${config.llm_base_url.replace(/\/+$/, '')}/chat/completions`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            'Authorization': `Bearer ${config.apiKey.trim()}`
+            'Authorization': `Bearer ${llmKey}`
           },
           body: JSON.stringify({
-            model: config.visionModel || 'Qwen/Qwen2-VL-7B-Instruct',
+            model: config.llm_vision_model || 'Qwen/Qwen2-VL-7B-Instruct',
             messages: [
               {
                 role: 'user',
@@ -506,7 +678,7 @@ Follow these rules:
         }
 
         const data = await resp.json();
-        const output = data.choices?.[0]?.message?.content || '未获取到反推内容';
+        const output = data.choices?.[0]?.message?.content || '未获取到反推结果';
         visionResultEl.textContent = output.trim();
         toast('🎉 反推成功！');
       } catch (err) {
@@ -519,9 +691,7 @@ Follow these rules:
     });
   }
 
-  document.getElementById('btnCopyVision')?.addEventListener('click', () => {
-    copyText(visionResultEl.textContent);
-  });
+  document.getElementById('btnCopyVision')?.addEventListener('click', () => copyText(visionResultEl.textContent));
 
   document.getElementById('btnSendVisionToStudio')?.addEventListener('click', () => {
     const text = visionResultEl.textContent.trim();
@@ -531,286 +701,136 @@ Follow these rules:
     }
     userConceptInput.value = text;
     switchTab('studio');
-    toast('已导入提示词工坊');
+    toast('已导入工坊');
   });
 
-  document.getElementById('btnSendVisionToGen')?.addEventListener('click', () => {
+  document.getElementById('btnSendVisionToMosi')?.addEventListener('click', () => {
     const text = visionResultEl.textContent.trim();
     if (!text || text.startsWith('(')) {
       toast('暂无反推结果');
       return;
     }
-    const genPromptInput = document.getElementById('genPrompt');
-    if (genPromptInput) genPromptInput.value = text;
-    switchTab('cloud');
-    toast('已带入生图工作台');
+    mosiPrompt.value = text;
+    switchTab('gen');
+    toast('已填入 MOSS 生图');
   });
 
-  // --- Tab 3: Cloud Image Generation ---
-  const genPrompt = document.getElementById('genPrompt');
-  const genModel = document.getElementById('genModel');
-  const genSize = document.getElementById('genSize');
-  const btnStartGen = document.getElementById('btnStartGen');
-  const genResultContainer = document.getElementById('genResultContainer');
-  const genResultImg = document.getElementById('genResultImg');
-  const historyGrid = document.getElementById('historyGrid');
+  // --- Tab 4: Settings ---
+  const mossApiKeyInput = document.getElementById('mossApiKeyInput');
+  const btnTestMosiKey = document.getElementById('btnTestMosiKey');
+  const btnSaveSettings = document.getElementById('btnSaveSettings');
+  const llmProviderSelect = document.getElementById('llmProviderSelect');
+  const llmBaseUrlInput = document.getElementById('llmBaseUrlInput');
+  const llmApiKeyInput = document.getElementById('llmApiKeyInput');
+  const llmChatModelInput = document.getElementById('llmChatModelInput');
+  const llmVisionModelInput = document.getElementById('llmVisionModelInput');
 
-  // Load history from localStorage
-  function loadHistory() {
-    if (!historyGrid) return;
-    historyGrid.innerHTML = '';
-    let list = [];
-    try {
-      list = JSON.parse(localStorage.getItem('gen_history') || '[]');
-    } catch (e) {}
+  const LLM_PRESETS = {
+    siliconflow: {
+      baseUrl: 'https://api.siliconflow.cn/v1',
+      chatModel: 'Qwen/Qwen2.5-7B-Instruct',
+      visionModel: 'Qwen/Qwen2-VL-7B-Instruct'
+    },
+    deepseek: {
+      baseUrl: 'https://api.deepseek.com/v1',
+      chatModel: 'deepseek-chat',
+      visionModel: ''
+    },
+    openai: {
+      baseUrl: 'https://api.openai.com/v1',
+      chatModel: 'gpt-4o-mini',
+      visionModel: 'gpt-4o-mini'
+    },
+    custom: {
+      baseUrl: '',
+      chatModel: '',
+      visionModel: ''
+    }
+  };
 
-    list.slice(0, 9).forEach(item => {
-      const div = document.createElement('div');
-      div.className = 'history-item';
-      const img = document.createElement('img');
-      img.src = item.url;
-      div.appendChild(img);
-      div.addEventListener('click', () => {
-        genResultImg.src = item.url;
-        genPrompt.value = item.prompt || '';
-        genResultContainer.style.display = 'block';
-        window.scrollTo({ top: 300, behavior: 'smooth' });
-      });
-      historyGrid.appendChild(div);
+  function populateSettings() {
+    if (mossApiKeyInput) mossApiKeyInput.value = config.moss_api_key || '';
+    if (llmProviderSelect) llmProviderSelect.value = config.llm_provider || 'siliconflow';
+    if (llmBaseUrlInput) llmBaseUrlInput.value = config.llm_base_url || 'https://api.siliconflow.cn/v1';
+    if (llmApiKeyInput) llmApiKeyInput.value = config.llm_api_key || '';
+    if (llmChatModelInput) llmChatModelInput.value = config.llm_chat_model || 'Qwen/Qwen2.5-7B-Instruct';
+    if (llmVisionModelInput) llmVisionModelInput.value = config.llm_vision_model || 'Qwen/Qwen2-VL-7B-Instruct';
+  }
+
+  if (llmProviderSelect) {
+    llmProviderSelect.addEventListener('change', () => {
+      const p = LLM_PRESETS[llmProviderSelect.value];
+      if (p) {
+        llmBaseUrlInput.value = p.baseUrl;
+        llmChatModelInput.value = p.chatModel;
+        llmVisionModelInput.value = p.visionModel;
+      }
     });
   }
 
-  function addHistory(url, prompt) {
-    try {
-      let list = JSON.parse(localStorage.getItem('gen_history') || '[]');
-      list.unshift({ url, prompt, time: Date.now() });
-      if (list.length > 20) list = list.slice(0, 20);
-      localStorage.setItem('gen_history', JSON.stringify(list));
-      loadHistory();
-    } catch (e) {}
-  }
-
-  if (btnStartGen) {
-    btnStartGen.addEventListener('click', async () => {
-      const prompt = genPrompt.value.trim();
-      if (!prompt) {
-        toast('请输入生图提示词');
+  if (btnTestMosiKey) {
+    btnTestMosiKey.addEventListener('click', async () => {
+      const key = mossApiKeyInput.value.trim();
+      if (!key) {
+        toast('请先输入 MOSS 出图 Key');
         return;
       }
-      if (!config.apiKey || !config.apiKey.trim()) {
-        toast('请先在「设置」中配置 API Key');
-        switchTab('settings');
-        return;
-      }
+      btnTestMosiKey.disabled = true;
+      btnTestMosiKey.innerHTML = '<span class="spinner"></span> 验证中...';
 
-      btnStartGen.disabled = true;
-      btnStartGen.innerHTML = '<span class="spinner"></span> 正在云端渲染...';
-
-      const model = genModel.value;
-      const size = genSize.value;
-
+      const t0 = Date.now();
       try {
-        const payload = {
-          model: model,
-          prompt: prompt,
-          image_size: size,
-          size: size,
-          batch_size: 1
-        };
-
-        const resp = await fetch(`${config.baseUrl.replace(/\/+$/, '')}/images/generations`, {
+        const resp = await fetch(MOSI_GEN_URL, {
           method: 'POST',
           headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${config.apiKey.trim()}`
+            'Authorization': `Bearer ${key}`,
+            'Content-Type': 'application/json'
           },
-          body: JSON.stringify(payload)
+          body: JSON.stringify({
+            model: config.moss_model || 'moss-image-sft-1.0',
+            prompt: 'a red apple',
+            size: '256x256',
+            n: 1
+          })
         });
 
-        if (!resp.ok) {
+        const latency = Date.now() - t0;
+        if (resp.ok) {
+          toast(`✅ MOSS Key 验证成功！延迟 ${latency}ms`);
+        } else {
           const errData = await resp.json().catch(() => ({}));
-          throw new Error(errData.error?.message || `HTTP ${resp.status}`);
+          toast(`❌ 校验失败 HTTP ${resp.status}: ${errData.error?.message || errData.detail || '未知错误'}`);
         }
-
-        const data = await resp.json();
-        const imgItem = data.data?.[0];
-        let imageUrl = '';
-        if (imgItem) {
-          imageUrl = imgItem.url || (imgItem.b64_json ? `data:image/png;base64,${imgItem.b64_json}` : '');
-        }
-
-        if (!imageUrl) {
-          throw new Error('未获取到返回的图片 URL');
-        }
-
-        genResultImg.src = imageUrl;
-        genResultContainer.style.display = 'block';
-        addHistory(imageUrl, prompt);
-        toast('🎨 图像生成成功！');
-      } catch (err) {
-        console.error('Generation error:', err);
-        toast('生图失败: ' + err.message);
+      } catch (e) {
+        toast('❌ 连接异常: ' + e.message);
       } finally {
-        btnStartGen.disabled = false;
-        btnStartGen.innerHTML = '<span>🚀</span> 立即开始云端生图';
-      }
-    });
-  }
-
-  document.getElementById('btnSaveImage')?.addEventListener('click', () => {
-    const src = genResultImg.src;
-    if (!src) return;
-    const a = document.createElement('a');
-    a.href = src;
-    a.download = `PromptStudio_${Date.now()}.png`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    toast('已发起保存 / 下载');
-  });
-
-  // --- Tab 4: Settings & ComfyUI ---
-  const providerSelect = document.getElementById('providerSelect');
-  const baseUrlInput = document.getElementById('baseUrlInput');
-  const apiKeyInput = document.getElementById('apiKeyInput');
-  const chatModelInput = document.getElementById('chatModelInput');
-  const visionModelInput = document.getElementById('visionModelInput');
-  const genModelInput = document.getElementById('genModelInput');
-  const comfyUrlInput = document.getElementById('comfyUrlInput');
-  const btnSaveSettings = document.getElementById('btnSaveSettings');
-  const btnTestApi = document.getElementById('btnTestApi');
-  const btnTestComfy = document.getElementById('btnTestComfy');
-  const btnLaunchComfy = document.getElementById('btnLaunchComfy');
-
-  function populateSettingsForm() {
-    if (providerSelect) providerSelect.value = config.provider || 'siliconflow';
-    if (baseUrlInput) baseUrlInput.value = config.baseUrl || '';
-    if (apiKeyInput) apiKeyInput.value = config.apiKey || '';
-    if (chatModelInput) chatModelInput.value = config.chatModel || '';
-    if (visionModelInput) visionModelInput.value = config.visionModel || '';
-    if (genModelInput) genModelInput.value = config.genModel || '';
-    if (comfyUrlInput) comfyUrlInput.value = config.comfyUrl || 'http://192.168.1.100:8188';
-  }
-
-  if (providerSelect) {
-    providerSelect.addEventListener('change', () => {
-      const p = PRESETS[providerSelect.value];
-      if (p) {
-        baseUrlInput.value = p.baseUrl;
-        chatModelInput.value = p.chatModel;
-        visionModelInput.value = p.visionModel;
-        genModelInput.value = p.genModel;
+        btnTestMosiKey.disabled = false;
+        btnTestMosiKey.innerHTML = '<span>⚡</span> 测试 MOSS Key 连通性';
       }
     });
   }
 
   if (btnSaveSettings) {
     btnSaveSettings.addEventListener('click', () => {
-      config.provider = providerSelect.value;
-      config.baseUrl = baseUrlInput.value.trim();
-      config.apiKey = apiKeyInput.value.trim();
-      config.chatModel = chatModelInput.value.trim();
-      config.visionModel = visionModelInput.value.trim();
-      config.genModel = genModelInput.value.trim();
-      config.comfyUrl = comfyUrlInput.value.trim();
+      config.moss_api_key = mossApiKeyInput.value.trim();
+      config.llm_provider = llmProviderSelect.value;
+      config.llm_base_url = llmBaseUrlInput.value.trim();
+      config.llm_api_key = llmApiKeyInput.value.trim();
+      config.llm_chat_model = llmChatModelInput.value.trim();
+      config.llm_vision_model = llmVisionModelInput.value.trim();
       saveConfig();
       updateStatus();
       toast('设置已保存');
     });
   }
 
-  if (btnTestApi) {
-    btnTestApi.addEventListener('click', async () => {
-      const key = apiKeyInput.value.trim();
-      const url = baseUrlInput.value.trim();
-      if (!key) {
-        toast('请先填写 API Key');
-        return;
-      }
-      btnTestApi.disabled = true;
-      btnTestApi.innerHTML = '<span class="spinner"></span> 测试中...';
-      try {
-        const resp = await fetch(`${url.replace(/\/+$/, '')}/models`, {
-          headers: { 'Authorization': `Bearer ${key}` }
-        });
-        if (resp.ok) {
-          toast('✅ API 连接成功！');
-        } else {
-          toast(`❌ 连接异常: HTTP ${resp.status}`);
-        }
-      } catch (e) {
-        toast('❌ 连接失败: ' + e.message);
-      } finally {
-        btnTestApi.disabled = false;
-        btnTestApi.innerHTML = '<span>⚡</span> 测试云端 API 连接';
-      }
-    });
-  }
-
-  if (btnTestComfy) {
-    btnTestComfy.addEventListener('click', async () => {
-      const url = comfyUrlInput.value.trim();
-      if (!url) {
-        toast('请输入 ComfyUI 局域网地址');
-        return;
-      }
-      btnTestComfy.disabled = true;
-      btnTestComfy.innerHTML = '<span class="spinner"></span> 检测中...';
-      try {
-        const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), 4000);
-        const resp = await fetch(`${url.replace(/\/+$/, '')}/system_stats`, { signal: controller.signal });
-        clearTimeout(timer);
-        if (resp.ok) {
-          toast('🎉 ComfyUI 连接成功！');
-        } else {
-          toast(`连通但状态码为: ${resp.status}`);
-        }
-      } catch (e) {
-        toast('❌ 无法连接到 ComfyUI，请检查 Wi-Fi 与电脑启动参数');
-      } finally {
-        btnTestComfy.disabled = false;
-        btnTestComfy.innerHTML = '<span>🔍</span> 测试 ComfyUI 连通性';
-      }
-    });
-  }
-
-  if (btnLaunchComfy) {
-    btnLaunchComfy.addEventListener('click', () => {
-      const url = comfyUrlInput.value.trim();
-      if (!url) {
-        toast('请输入 ComfyUI 地址');
-        return;
-      }
-      config.comfyUrl = url;
-      saveConfig();
-      if (window.PromptStudioBridge && typeof window.PromptStudioBridge.loadComfy === 'function') {
-        window.PromptStudioBridge.loadComfy(url);
-      } else {
-        window.location.href = url;
-      }
-    });
-  }
-
-  // Check URL parameters for fallbacks or notifications
-  function checkUrlParams() {
-    const params = new URLSearchParams(window.location.search);
-    if (params.get('error') === 'comfy_unreachable') {
-      const alertBanner = document.getElementById('globalAlertBanner');
-      if (alertBanner) {
-        alertBanner.style.display = 'block';
-        alertBanner.innerHTML = '⚠️ <strong>提示</strong>：无法连接到远程电脑 ComfyUI。已自动切换回本地独立工作台。如需连接，请确认手机与电脑在同一 Wi-Fi，且电脑端启动命令带有 <code>--listen 0.0.0.0</code>。';
-      }
-    }
-  }
-
-  // --- Initialization ---
+  // --- Initialize ---
   function init() {
+    initMosiSelects();
     renderChips();
-    populateSettingsForm();
+    populateSettings();
     updateStatus();
     loadHistory();
-    checkUrlParams();
   }
 
   document.addEventListener('DOMContentLoaded', init);
