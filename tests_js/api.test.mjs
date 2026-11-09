@@ -103,3 +103,21 @@ test("chat surfaces pre-stream JSON validation errors", async () => {
     (error) => error instanceof ApiError && error.status === 400 && error.code === "invalid_request",
   );
 });
+
+test("cloudGenerate calls POST /cloud_generate with parameters", async () => {
+  let calledUrl = null;
+  let calledBody = null;
+  const api = new StudioApi({
+    fetchImpl: async (url, init) => {
+      calledUrl = url;
+      calledBody = JSON.parse(init.body);
+      return jsonResponse({ payload: { caption: "A test prompt" }, width: 1024, height: 1024 });
+    },
+  });
+  const res = await api.cloudGenerate({ prompt: "A test prompt", width: 1024, height: 1024, mode: "caption" });
+  assert.equal(calledUrl, "/ai_prompt_studio/cloud_generate");
+  assert.equal(calledBody.prompt, "A test prompt");
+  assert.equal(calledBody.mode, "caption");
+  assert.equal(res.payload.caption, "A test prompt");
+});
+

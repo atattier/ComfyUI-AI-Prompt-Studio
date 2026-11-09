@@ -19,8 +19,11 @@ _INSTRUCTIONS = {
     "prose": (
         "Describe the image for use as an image-generation prompt. Write 2-4 sentences of cohesive "
         "natural English. Explicitly cover: primary subject, distinctive features & accessories "
-        "(e.g. floating halos, wings/light shards, headwear), foreground/background spatial depth, "
-        "materials, lighting atmosphere (rim light, specular reflections, bokeh), camera framing, and art style. "
+        "(e.g. floating halos, wings/light shards, headwear), viewer-relative spatial placement "
+        "(CRITICAL: explicitly specify whether offset subjects, gestures/hands, or props are on the viewer's left "
+        "or right side of the frame to prevent downstream image generation models from mirroring the composition), "
+        "foreground/background spatial depth, materials, lighting atmosphere (rim light, specular reflections, bokeh), "
+        "camera framing, and art style. "
         "Quote any visible signage or text verbatim inside quotation marks. "
         "Do not mention that this is an image or address the reader. Output only the description."
     ),
@@ -43,13 +46,12 @@ _INSTRUCTIONS = {
         "Strictly forbid sentences, forbid (word:1.2) syntax, no numbering, no markdown quotes."
     ),
     "moss": (
-        "Write an official MOSS-Image style prompt in English as cohesive natural prose. "
-        "Describe concrete visible choices in detail: main subject and action, distinctive features & accessories "
-        "(e.g. halos, crystalline/light wings, jewelry, tactical gear), spatial layering (foreground, midground, "
-        "background environment), camera angle, lighting interactions (translucency, reflections, ambient glow), "
-        "surface textures, and artistic medium. "
-        "Preserve all explicit user intent, avoid marketing buzzwords or (word:1.2) syntax, "
-        "and quote any visible signage or text verbatim inside quotation marks. Output only the caption."
+        "Write an official MOSS-Image style prompt in English following Qwen3.5-9B TE + DiT causal attention standards: "
+        "1. Casual Attention Order: begin with medium, lighting atmosphere, and color temperature BEFORE subject/garments so surfaces inherit proper key light and tint. "
+        "2. Viewer Perspective: CRITICAL - explicitly anchor asymmetrical subjects, gestures, hands, and props to the viewer's left or viewer's right side to lock composition against flipping. "
+        "3. Static Anatomy & Garments: describe garment adjustments (shirt lift, skirt pull) as completed static states (e.g. 'shirt already pushed up') rather than active pulling verbs to prevent extra arms/hands. "
+        "4. Multi-subject Causal Blocking: if multiple characters appear, put primary character first, and start secondary character with contrast blocking ('In sharp contrast, the person on the right...') to prevent facial or costume bleeding. "
+        "5. Concrete Visible Optics: specify concrete optical traits (sharp direct flash, deep depth of field, micro-pores, natural skin specular sheen, film grain) instead of empty brand names, avoid buzzwords like masterpiece/8k or (word:1.2) syntax, and quote visible text verbatim in quotation marks. Output only the caption."
     ),
 }
 

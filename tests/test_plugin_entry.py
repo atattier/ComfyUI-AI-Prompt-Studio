@@ -56,11 +56,14 @@ class PluginRegistrationTests(unittest.TestCase):
         # Exactly one node: the caption node. The workbench itself stays a
         # sidebar extension and never injects nodes into existing workflows.
         self.assertEqual(
-            set(module.NODE_CLASS_MAPPINGS), {"AIPromptStudioCaption"}
+            set(module.NODE_CLASS_MAPPINGS), {"AIPromptStudioCaption", "AIPromptStudioImagine"}
         )
         self.assertEqual(
             module.NODE_DISPLAY_NAME_MAPPINGS,
-            {"AIPromptStudioCaption": "AI 图像反推提示词"},
+            {
+                "AIPromptStudioCaption": "AI 提示词工作台 (反推与自动灵感)",
+                "AIPromptStudioImagine": "AI 灵感画面提示词 (已合并至主节点)",
+            },
         )
         paths = [route.path for route in self.routes]
         self.assertIn("/ai_prompt_studio/health", paths)

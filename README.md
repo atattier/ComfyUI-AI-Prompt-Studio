@@ -141,7 +141,54 @@ git clone https://github.com/atattier/ComfyUI-AI-Prompt-Studio.git
 | `POST` | `/ai_prompt_studio/edit` | 生成结构化编辑提案与校验 |
 | `POST` | `/ai_prompt_studio/caption` | 多格式图像反推接口 |
 | `POST` | `/ai_prompt_studio/caption_node` | 画布节点富交互反推后端（含 MOSS 尺寸算子与排版草稿） |
+| `POST` | `/ai_prompt_studio/cloud_generate`| 云端生图/提示词扩展接口，返回完整节点载荷与推荐分辨率 |
 | `GET/POST`| `/ai_prompt_studio/versions` | 提示词版本历史存取与回退 |
+
+---
+
+## ☁️ 云端生图与提示词扩展
+
+无需在本地画布中拼接复杂节点链路，即可在侧边栏一键调用远程大模型扩写生图：
+
+### 接口请求示例
+```http
+POST /ai_prompt_studio/cloud_generate
+Content-Type: application/json
+
+{
+  "prompt": "赛博朋克雨夜街道中的机械少女",
+  "width": 1024,
+  "height": 1024,
+  "mode": "caption"
+}
+```
+
+- **参数说明**：
+  - `prompt` (必填): 画面核心创意或描述；
+  - `width` / `height` (可选，默认 1024): 期望尺寸，后端将自动规整为匹配模型的 16 整数倍；
+  - `mode` (可选，默认 `"caption"`): 支持 `caption` (自然语言)、`layout` (排版分块) 与 `danbooru` (二次元标签)；
+  - `model` (可选): 单次覆盖全局配置模型。
+- **返回结果**：返回结构兼容的 `payload`，侧边栏点击可一键同步写入当前画布选中的文本节点并记录历史版本。
+
+---
+
+## 📱 移动端与 Android APK 支持
+
+本项目自带原生 Android WebView 模板与一键打包脚本，方便将提示词工作台打包为 APK 在手机或平板上直接使用：
+
+### 一键打包脚本
+在 Windows PowerShell 中运行：
+```powershell
+.\build_apk.ps1 -ComfyPort 8188
+```
+
+- **自定义服务地址**：若使用局域网连接真机或云端实例：
+  ```powershell
+  .\build_apk.ps1 -ServerUrl "http://192.168.1.100:8188/"
+  ```
+- **构建方式**：
+  1. **Android Studio 一键打开**：直接打开项目根目录下的 `android/` 目录，点按 Run 或 Build APK；
+  2. **命令行构建**：已安装 Android SDK 环境下直接运行 `gradle assembleDebug`，生成 `app-debug.apk`。
 
 ---
 

@@ -46,6 +46,13 @@ class CaptionTests(unittest.TestCase):
         result = caption_image(client, self.image, fmt="prose", extra_instruction="keep it short")
         self.assertTrue(result.text)
 
+    def test_instructions_contain_spatial_anchoring(self):
+        from prompt_studio.caption import _INSTRUCTIONS
+        for key in ("prose", "moss"):
+            instr = _INSTRUCTIONS[key].lower()
+            self.assertIn("viewer's left", instr)
+            self.assertTrue("mirror" in instr or "flip" in instr)
+
 
 if __name__ == "__main__":
     unittest.main()

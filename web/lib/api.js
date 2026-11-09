@@ -107,6 +107,13 @@ export class StudioApi {
     return this.request("/caption_node", { method: "POST", body });
   }
 
+  cloudGenerate({ prompt, width = 1024, height = 1024, mode = "caption", model } = {}) {
+    return this.request("/cloud_generate", {
+      method: "POST",
+      body: { prompt, width, height, mode, model },
+    });
+  }
+
   addVersion({ target, text, source = "apply", label = "", meta } = {}) {
     return this.request("/versions", { method: "POST", body: { target, text, source, label, meta } });
   }

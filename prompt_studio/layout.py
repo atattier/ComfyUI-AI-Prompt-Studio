@@ -64,26 +64,49 @@ def _infer_name(item: dict[str, Any], label: str, index: int) -> str:
 
     cap = str(item.get("caption") or "").lower()
     text = str(item.get("text") or "").strip()
+    parent = str(item.get("parent") or "").lower()
 
     if label == "text" or text:
         if text:
+            if "poster" in parent or "海报" in parent or "title" in cap:
+                return f"海报标题「{text[:8]}」"
+            if "flyer" in parent or "传单" in parent or "brochure" in parent:
+                return f"宣传单文字「{text[:8]}」"
             return f"文字「{text[:10]}」"
+        if "poster" in parent or "海报" in parent:
+            return "海报标题"
+        if "flyer" in parent or "传单" in parent:
+            return "宣传单文字"
         return "画面文字"
 
-    # Specific feature keywords
-    if any(k in cap for k in ("halo", "光环")):
+    # Specific feature keywords inspired by KohakuGBC scene-graph hierarchy
+    if any(k in cap for k in ("halo", "glowing ring", "光环")):
         return "光环"
-    if any(k in cap for k in ("wing", "wings", "shard", "翅膀", "羽翼")):
-        return "光之碎片翼" if "shard" in cap else "羽翼"
+    if any(k in cap for k in ("shard", "light wing", "energy wing", "碎片翼", "光之碎片翼")):
+        return "光之碎片翼"
+    if any(k in cap for k in ("wing", "wings", "翅膀", "羽翼")):
+        return "羽翼"
+    if any(k in cap for k in ("horn", "horns", "角")):
+        return "角/饰角"
     if any(k in cap for k in ("poster", "海报")):
+        if any(k in cap for k in ("door poster", "门上海报", "门上宣传海报")):
+            return "门上宣传海报"
         return "宣传海报"
     if any(k in cap for k in ("flyer", "leaflet", "brochure", "传单")):
+        if any(k in cap for k in ("table", "desk", "counter", "桌")):
+            return "桌上宣传单"
+        if any(k in cap for k in ("bottom", "left", "corner", "左下")):
+            return "左下宣传单"
         return "宣传单"
     if any(k in cap for k in ("door", "glass door", "玻璃门", "门")):
         return "玻璃门"
-    if any(k in cap for k in ("cafe", "interior", "room", "background", "内景", "背景")):
-        return "场景内景"
+    if any(k in cap for k in ("window", "windows", "落地窗", "窗")):
+        return "观景窗"
+    if any(k in cap for k in ("cafe", "coffee", "restaurant", "interior", "room", "background", "内景", "背景")):
+        return "咖啡厅内景" if any(k in cap for k in ("cafe", "coffee", "咖啡")) else "场景内景"
     if any(k in cap for k in ("girl", "woman", "nurse", "anime girl", "少女", "女性")):
+        if any(k in cap for k in ("red hair", "red-hair", "crimson hair", "红发")):
+            return "红发少女"
         return "主要人物"
 
     if label == "character":
@@ -248,35 +271,34 @@ def layout_instruction(
     max_regions: int = 6,
 ) -> str:
     """Build the model instruction for hierarchical graph-based layout detection."""
-    region_limit = max(1, min(16, int(max_regions or 6)))
-    region_clause = (
-        "AT MOST 6 regions"
-        if region_limit == 6
-        else f"AT MOST {region_limit} regions (up to at most 6 regions by default)"
-    )
+    region_limit = max(1, min(16, int(max_regions or 10)))
+    count_clause = f"AT MOST {region_limit} regions"
+    if region_limit != 6:
+        count_clause += f" (up to at most 6 regions by default, typically 8 to {region_limit} for rich scenes)"
     strict = (
-        "You are an expert Vision-Language Scene Graph parser (KohakuGBC / MOSS-Image layout analyzer). "
-        "Analyze the image and decompose it into a hierarchical visual scene graph of distinct, well-bounded regions.\n\n"
-        "### CORE HIERARCHICAL PARSING RULES:\n"
-        "1. VISUAL SCENE GRAPH DECOMPOSITION:\n"
-        "   - Root / Environmental Space: Overall background setting (e.g. '咖啡厅内景' / 'Cafe Interior', 'Streetscape').\n"
-        "   - Structural Architecture: Physical dividers and fixtures (e.g. '玻璃门' / 'Glass Door', 'Windows', 'Counter').\n"
-        "   - Main Character Subjects: The primary character(s) body and pose (e.g. '红发少女' / 'Red-haired Girl').\n"
-        "   - DECOUPLE DISTINCTIVE FEATURES (CRITICAL): NEVER lump prominent fantasy or decorative accessories into the body! "
-        "Create separate, tightly-bounded regions for: floating halos (光环), energy/light shard wings (光之碎片翼), mechanical parts, horns/ears, weapons, or special floating artifacts.\n"
-        "   - Props & Media: Significant standalone items (e.g. '门上宣传海报' / 'Door Poster', '桌上宣传单' / 'Table Flyer').\n"
-        "   - Nested Text & Signage: Titles, signs, or logos inside posters/flyers/storefronts (e.g. '海报标题' / 'Poster Title', '宣传单文字'). "
-        "Must transcribe the exact visible text verbatim into the 'text' field.\n"
-        "2. REGION LIMIT & GRANULARITY:\n"
-        f"   - Produce {region_clause}: distinct, well-bounded regions (typically 8 to {region_limit} for detailed scenes).\n"
-        "   - Bounding boxes [x1, y1, x2, y2] are integers in 0-1000 normalized coordinate space (top-left 0,0 to bottom-right 1000,1000), NOT pixels. Use the full extent of the image.\n"
-        "3. NAMING & METADATA:\n"
-        "   - 'name': Concise, descriptive entity name in Chinese or English (e.g., '咖啡厅内景', '玻璃门', '门上宣传海报', '海报标题', '光环', '光之碎片翼', '红发少女', '桌上宣传单').\n"
-        "   - 'label': Exactly one of 'character', 'object', or 'text'. (Use 'character' for person and character-attached features like halos/wings; 'text' for visible words; 'object' for props/background).\n"
-        "   - 'parent': Optional parent region name (e.g. '海报标题' has parent '门上宣传海报'; '光环' has parent '红发少女').\n"
-        "   - 'caption': Precise, vivid English visual description of appearance, materials, lighting, and colors.\n\n"
-        "### OUTPUT SCHEMA (STRICT JSON ONLY, NO MARKDOWN, NO EXPLANATIONS):\n"
-        '{"summary":{"caption":"..."},"items":[{"name":"...","label":"object|character|text","parent":"...","bbox":[x1,y1,x2,y2],"caption":"...","text":"..."}]}\n'
+        "You are an expert Vision-Language Scene Graph parser and visual layout analyzer "
+        "(inspired by KohakuGBC graph-based scene decomposition).\n"
+        f"Your task is to decompose the entire image into a hierarchical, layered visual scene graph with "
+        f"{count_clause}: distinct, precise, tightly bounded regions.\n\n"
+        "### STRICT 6-LEVEL HIERARCHICAL DECOMPOSITION RULES:\n"
+        "1. Level 0 - Global Environment Space: The overall background/setting (e.g. '咖啡厅内景' / 'Cafe Interior', 'Streetscape').\n"
+        "2. Level 1 - Architectural / Structural Dividers: Physical structures framing the scene (e.g. '玻璃门' / 'Glass Door', 'Window', 'Counter').\n"
+        "3. Level 2 - Main Character Subject: The primary character(s) body & pose (e.g. '红发少女' / 'Red-haired Girl').\n"
+        "4. Level 3 - DECOUPLE DISTINCTIVE FEATURES & Fantasy Elements (CRITICAL):\n"
+        "   NEVER merge standalone or fantasy features into the character body! Detect them as separate, tight boxes:\n"
+        "   - Floating halos ('光环')\n"
+        "   - Energy/light shard wings ('光之碎片翼')\n"
+        "   - Horns, tails, weapons, or floating artifacts\n"
+        "5. Level 4 - Standalone Props & Media: Significant objects (e.g. '门上宣传海报' / 'Door Poster', '桌上宣传单' / 'Table Flyer', '左下宣传单').\n"
+        "6. Level 5 - Nested Text & Typography (Fine-Grained Children):\n"
+        "   - Text/title inside posters/flyers (e.g. '海报标题' / 'Poster Title', '宣传单文字').\n"
+        "   - Set 'parent' to the enclosing prop (e.g. '海报标题' parent is '门上宣传海报').\n"
+        "   - Verbatim transcribe visible words into the 'text' field.\n\n"
+        "### Bounding Box Coordinates:\n"
+        "- [x1, y1, x2, y2] must be integers in 0-1000 normalized space (0,0 is top-left, 1000,1000 is bottom-right).\n"
+        "- Ensure boxes are tightly wrapped around each object without sloppy margins.\n\n"
+        "### JSON Output Format (STRICT JSON ONLY, NO MARKDOWN FENCE, NO EXPLANATIONS):\n"
+        '{"summary":{"caption":"Overall cohesive image prompt"},"items":[{"name":"中文实体名 (如 光环 / 红发少女 / 门上宣传海报)","label":"object|character|text","parent":"父级实体名或空","bbox":[x1,y1,x2,y2],"caption":"Vivid English visual description for generation","text":"Visible text if text label"}]}\n'
     )
     if mode == "hybrid":
         strict += (

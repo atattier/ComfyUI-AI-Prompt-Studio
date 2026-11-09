@@ -1,0 +1,6 @@
+<resources>
+    <style name="Theme.PromptStudio" parent="Theme.MaterialComponents.DayNight.NoActionBar">
+        <item name="android:statusBarColor">#1e1e24</item>
+        <item name="android:navigationBarColor">#1e1e24</item>
+    </style>
+</resources>

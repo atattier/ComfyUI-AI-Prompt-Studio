@@ -30,12 +30,21 @@ from .errors import StudioError
 from .images import to_api_part
 from .layout import layout_instruction, match_canvas_size, parse_model_layout
 from .sessions import MediaStore
+from .imagine import auto_imagine_pipeline, STYLES, ASPECTS, THEMES
 
 MODES = ("caption", "layout", "danbooru", "hybrid")
 
 DEFAULT_PROSE_NEGATIVE = (
-    "ugly, deformed, noisy, blurry, distorted, grainy, extra limbs, "
-    "poorly drawn hands, poorly drawn face, bad proportions, watermark, signature"
+    "child, toddler, preteen, loli, babyface, flat chest, mature female, adult woman, milf, old, "
+    "high cheekbones, hollow cheeks, deep-set eyes, pointy chin, V-shaped face, heavy eyeliner, "
+    "spiky fake eyelashes, mascara, heavy makeup, fat, chubby, plump, wide adult hips, "
+    "red face, burning red cheeks, sunburn, rosacea, tomato face, "
+    "cosplay, cosplayer, wig, synthetic hair, cosplay wig, stiff hair, thick blunt bangs, colored contact lenses, "
+    "blurry, out of focus, soft focus, lowres, censored, mosaic censoring, bar censor, "
+    "anime, illustration, 2d, 3d render, cgi, doll, plastic skin, "
+    "ugly face, distorted face, squished cheek, grimace, creepy eyes, worst quality, bad anatomy, "
+    "fused bodies, fused legs, extra limbs, extra arms, extra legs, extra hands, three hands, "
+    "extra fingers, mutated hands, fused fingers, six fingers, watermark, signature, text"
 )
 DEFAULT_DANBOORU_NEGATIVE = (
     "lowres, bad anatomy, bad hands, text, error, missing fingers, extra digit, "
@@ -175,6 +184,24 @@ def _image_source_part(media: MediaStore, image: Any, image_path: str) -> tuple[
     if mime is None:
         raise ValueError(f"unsupported image type: .{ext}")
     return media.put(data, mime), data
+
+
+def _default_text_model_call(resolved_model: str):
+    """Text-only model caller for autonomous ideation and prompt expansion."""
+    import comfyui_plugin
+
+    backend = comfyui_plugin.get_backend()
+    if backend is None:
+        raise ValueError("模型后端未配置。请在顶栏「⚙ 设置」中配置 Base URL 与 API Key。")
+
+    def call(instruction: str, max_tokens: int, temperature: float) -> str:
+        messages = [{"role": "user", "content": [{"type": "text", "text": instruction}]}]
+        result = backend.client.complete_via_stream(
+            messages, model=resolved_model, temperature=temperature, max_tokens=max_tokens
+        )
+        return result.text
+
+    return call
 
 
 def _default_model_call(*, instruction: str, image_part: dict[str, Any],
@@ -572,9 +599,9 @@ class AIPromptStudioCaptionNode:
     FUNCTION = "execute"
     CATEGORY = "AI Prompt Studio"
     DESCRIPTION = (
-        "图片反推：支持同时勾选 1~3 种模式（caption 散文 / layout 布局 JSON / hybrid 完整描述+布局 JSON），"
-        "提供 3 个对应 STRING 输出端口及 width/height（MOSS 官方 16 倍数尺寸）。"
-        "点「反推」或第一次排队时调用模型，结果存进 payload；之后跑图只读缓存。"
+        "AI 提示词工作台（图生图反推 + 文生图自主灵感二合一）："
+        "1. 连接图片时：精准反推镜头、光影、微观肌理与 BBox 布局画框；"
+        "2. 未连接图片或开启自动构思时：连接 seed 到随机种子节点，每次点击「运行」模型都会如开盲盒般全自动自主构思新画面，并生成整套提示词与画框直通下游采样器！"
     )
     OUTPUT_NODE = False
     NODE_NAME = "AI 图像反推提示词"
@@ -586,6 +613,11 @@ class AIPromptStudioCaptionNode:
         payload: str,
         image: Any = None,
         image_path: str = "",
+        idea: str = "",
+        theme: str = "random",
+        style: str = "auto",
+        aspect: str = "auto",
+        auto_brainstorm: bool = False,
         extra_instruction: str = "",
         model: str = "",
         seed: int = 0,
@@ -595,7 +627,7 @@ class AIPromptStudioCaptionNode:
         enable_hybrid: bool | None = None,
         call_model: Callable[..., str] | None = None,
         synthesize_missing_draft: bool = False,
-    ) -> tuple[str, str, str, int, int, str | None]:
+    ) -> tuple[str, str, str, int, int, str, str | None]:
         """Return (caption_prompt, layout_prompt, hybrid_prompt, width, height, updated_payload_or_None)."""
         if mode not in MODES:
             raise ValueError(f"unknown mode: {mode}")
@@ -627,8 +659,46 @@ class AIPromptStudioCaptionNode:
 
         new_payload: str | None = None
         has_image = _has_execution_image(image, image_path)
+        clean_idea = clean_widget_str(idea)
+        auto_imagine_enabled = bool(state.get("auto_imagine") or auto_brainstorm)
+        # 合并核心：若无参考图输入，且（开启了自动盲盒 或 传入了想法 或 mode为imagine），走自主灵感画面生成链路
+        is_imagine_route = (not has_image) and (clean_idea or auto_imagine_enabled or mode == "imagine")
 
-        if needs_size or ((needs_caption or needs_layout) and has_image):
+        if is_imagine_route and (not has_image or auto_imagine_enabled):
+            cached_seed = state.get("seed")
+            need_imagine = (
+                needs_size
+                or needs_caption
+                or (bool({"layout", "hybrid"} & set(active_modes)) and not _has_draft(state))
+                or (seed != 0 and cached_seed != seed)
+                or (auto_imagine_enabled and seed != 0)
+                or clean_idea
+            )
+            if need_imagine:
+                settings = load_settings()
+                resolved_model = clean_widget_str(model) or settings.model
+                text_caller = _default_text_model_call(resolved_model)
+                extra_clean = clean_widget_str(extra_instruction)
+                # 若未提供 explicit idea，优先使用 extra_instruction 作为构想指导；若均为空则完全自主想点子
+                effective_idea = clean_idea or (extra_clean if not has_image else "")
+                state = auto_imagine_pipeline(
+                    text_caller,
+                    effective_idea,
+                    modes=active_modes,
+                    theme=clean_widget_str(theme) or state.get("theme") or "random",
+                    style=clean_widget_str(style) or state.get("style") or "auto",
+                    aspect=clean_widget_str(aspect) or state.get("aspect") or "auto",
+                    max_regions=settings.max_regions,
+                    rule_suffix=build_rule_suffix(settings, extra_clean),
+                    layout_rule_suffix=build_rule_suffix(settings, extra_clean, for_json_layout=True),
+                )
+                state["seed"] = seed
+                if auto_imagine_enabled:
+                    state["auto_imagine"] = True
+                width = int(state["width"])
+                height = int(state["height"])
+                new_payload = json.dumps(state, ensure_ascii=False)
+        elif needs_size or ((needs_caption or needs_layout) and has_image):
             raw, mime = _execution_image_bytes(image, image_path)
             state = _generate_state(
                 mode=mode,
@@ -750,10 +820,20 @@ class AIPromptStudioCaptionNode:
             )
         except ValueError:
             return float("nan")
+        # 若开启了自动灵感盲盒模式或未连接图片：种子发生变化时强制重新触发
+        has_img = _has_execution_image(kwargs.get("image"), kwargs.get("image_path", ""))
+        seed = int(kwargs.get("seed") or 0)
+        if (state.get("auto_imagine") or not has_img) and seed != 0:
+            if seed != state.get("seed"):
+                return float("nan")
+            return f"imagine:{seed}:{mode}:{payload}"
+
         if ("layout" in active_modes or "hybrid" in active_modes) and not _has_draft(state):
             return float("nan")
         if ("caption" in active_modes) and not _has_caption(state):
             return float("nan")
+        if seed != 0:
+            return f"{mode}:{','.join(active_modes)}:{seed}:{payload}"
         return f"{mode}:{','.join(active_modes)}:{payload}"
 
 
@@ -788,9 +868,98 @@ def _execution_image_bytes(image: Any, image_path: str) -> tuple[bytes, str]:
     return data, mime
 
 
+
+
+class AIPromptStudioImagineNode:
+    """Idea / Autonomous AI Brainstorm → 1-3 mode prompts + MOSS canvas size."""
+
+    @classmethod
+    def INPUT_TYPES(cls) -> dict[str, Any]:
+        return {
+            "required": {
+                "theme": (
+                    list(THEMES.keys()),
+                    {"default": "random", "tooltip": "题材方向（模型自己想点子时遵循）"},
+                ),
+                "style": (
+                    list(STYLES.keys()),
+                    {"default": "auto", "tooltip": "画面视觉风格：自动 / 动漫 / 写实 / 电影感 / 插画 / 3D"},
+                ),
+                "aspect": (
+                    list(ASPECTS.keys()) + ["auto"],
+                    {"default": "auto", "tooltip": "画幅比例：自动 / 竖版 / 横版 / 方形"},
+                ),
+                "seed": (
+                    "INT",
+                    {"default": 0, "min": 0, "max": 0xFFFFFFFF, "tooltip": "随机种子；改变种子自动重新想点子与生成"},
+                ),
+            },
+            "optional": {
+                "idea": (
+                    "STRING",
+                    {
+                        "multiline": True,
+                        "default": "",
+                        "tooltip": "核心想法（留空时模型会自动放飞想象、自己想点子！）",
+                    },
+                ),
+                "extra_instruction": (
+                    "STRING",
+                    {"default": "", "tooltip": "补充要求或排除项"},
+                ),
+                "model": (
+                    "STRING",
+                    {"default": "", "tooltip": "留空使用工作台配置的模型"},
+                ),
+                "enable_caption": (
+                    "BOOLEAN",
+                    {"default": True, "tooltip": "输出自然语言英文长描述 (给 Krea2 / FLUX / SD)"},
+                ),
+                "enable_layout": (
+                    "BOOLEAN",
+                    {"default": False, "tooltip": "输出分区域 BBox 画框布局 JSON (给 MOSS-Image)"},
+                ),
+                "enable_danbooru": (
+                    "BOOLEAN",
+                    {"default": False, "tooltip": "输出 Danbooru 风格逗号分隔标签 (给动漫模型/LoRA)"},
+                ),
+                "payload": (
+                    "STRING",
+                    {"default": "{}", "tooltip": "自动缓存上次生成结果，随工作流保存"},
+                ),
+            },
+        }
+
+    RETURN_TYPES = ("STRING", "STRING", "STRING", "INT", "INT", "STRING")
+    RETURN_NAMES = ("caption_prompt", "layout_prompt", "danbooru_prompt", "width", "height", "negative_prompt")
+    FUNCTION = "execute"
+    CATEGORY = "AI Prompt Studio"
+    DESCRIPTION = (
+        "AI 灵感画面生成（全自动链路）：输入一句话想法，或完全留空让模型自己想点子！"
+        "自动规划画面构图、左右方位、BBox 空间画框与 Danbooru 标签，直连下游模型出图。"
+    )
+    NODE_NAME = "AI 灵感画面提示词"
+
+    def execute(self, **kwargs: Any):
+        node = AIPromptStudioCaptionNode()
+        kwargs_copy = dict(kwargs)
+        kwargs_copy["mode"] = "caption"
+        kwargs_copy["auto_brainstorm"] = True
+        return node.execute(**kwargs_copy)
+
+    @classmethod
+    def IS_CHANGED(cls, **kwargs: Any):
+        seed = kwargs.get("seed", 0)
+        idea = kwargs.get("idea", "")
+        payload = kwargs.get("payload", "{}")
+        return f"{seed}:{idea}:{payload}"
+
 def register(mappings: dict, display_names: dict) -> None:
     mappings["AIPromptStudioCaption"] = AIPromptStudioCaptionNode
-    display_names["AIPromptStudioCaption"] = "AI 图像反推提示词"
+    display_names["AIPromptStudioCaption"] = "AI 提示词工作台 (反推与自动灵感)"
+    # 保留别名兼容历史工作流，指向合并后的全能主节点
+    mappings["AIPromptStudioImagine"] = AIPromptStudioCaptionNode
+    display_names["AIPromptStudioImagine"] = "AI 灵感画面提示词 (已合并至主节点)"
 
 
 __all__ = [

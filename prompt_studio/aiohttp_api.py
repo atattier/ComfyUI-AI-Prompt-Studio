@@ -300,6 +300,78 @@ class StudioBackend:
             out["session_id"] = session_id
         return out
 
+    # --------------------------------------------------------------- imagine
+    def _text_call(self, model: str | None):
+        def call(instruction: str, max_tokens: int, temperature: float) -> str:
+            messages = [{"role": "user", "content": [{"type": "text", "text": instruction}]}]
+            result = self.client.complete_via_stream(
+                messages, model=model, temperature=temperature, max_tokens=max_tokens
+            )
+            return result.text
+        return call
+
+    def brainstorm(self, body: dict[str, Any]) -> dict[str, Any]:
+        """Model invents creative concept ideas on its own. Body: {theme?, style?, count?, model?}."""
+        from .caption_node import clean_widget_str
+        from .imagine import brainstorm_ideas
+
+        model = clean_widget_str(body.get("model")) or None
+        extra = clean_widget_str(body.get("extra_instruction"))
+        try:
+            ideas = brainstorm_ideas(
+                self._text_call(model),
+                theme=str(body.get("theme") or "random"),
+                style=str(body.get("style") or "auto"),
+                count=int(body.get("count") or 3),
+                rule_suffix=build_rule_suffix(self.settings, extra),
+            )
+        except (TypeError, ValueError) as exc:
+            raise InvalidRequestError(str(exc)) from exc
+        return {"ideas": ideas}
+
+    def imagine(self, body: dict[str, Any]) -> dict[str, Any]:
+        """Idea → N imagined prompt candidates. Body: {idea, count?, style?, aspect?, model?}."""
+        from .caption_node import clean_widget_str
+        from .imagine import imagine_candidates
+
+        model = clean_widget_str(body.get("model")) or None
+        extra = clean_widget_str(body.get("extra_instruction"))
+        try:
+            candidates = imagine_candidates(
+                self._text_call(model),
+                str(body.get("idea") or ""),
+                count=int(body.get("count") or 3),
+                style=str(body.get("style") or "auto"),
+                aspect=str(body.get("aspect") or "auto"),
+                rule_suffix=build_rule_suffix(self.settings, extra),
+            )
+        except (TypeError, ValueError) as exc:
+            raise InvalidRequestError(str(exc)) from exc
+        return {"candidates": candidates}
+
+    def imagine_expand(self, body: dict[str, Any]) -> dict[str, Any]:
+        """Adopted prompt → node payload for every active mode. Body: {prompt, modes, width, height, model?}."""
+        from .caption_node import clean_widget_str
+        from .imagine import expand_candidate
+
+        model = clean_widget_str(body.get("model")) or None
+        extra = clean_widget_str(body.get("extra_instruction"))
+        modes = body.get("modes") if isinstance(body.get("modes"), list) else ["caption"]
+        try:
+            payload = expand_candidate(
+                self._text_call(model),
+                str(body.get("prompt") or ""),
+                modes=[str(m) for m in modes],
+                width=int(body.get("width") or 1024),
+                height=int(body.get("height") or 1024),
+                max_regions=int(self.settings.max_regions or 8),
+                rule_suffix=build_rule_suffix(self.settings, extra),
+                layout_rule_suffix=build_rule_suffix(self.settings, extra, for_json_layout=True),
+            )
+        except (TypeError, ValueError) as exc:
+            raise InvalidRequestError(str(exc)) from exc
+        return {"payload": payload, "width": payload["width"], "height": payload["height"], "modes": payload["modes"]}
+
     def caption_node(self, body: dict[str, Any]) -> dict[str, Any]:
         """One model call for the graph node: image bytes → prompt+canvas+draft.
 
@@ -799,6 +871,58 @@ def install_routes(routes: Any, backend: StudioBackend | None) -> None:
         body = await _json_body(request)
         result = await asyncio.to_thread(require().caption_node, body)
         return web.json_response(result)
+
+    @routes.post("/ai_prompt_studio/brainstorm")
+    @guarded
+    async def brainstorm(request: web.Request) -> web.Response:
+        body = await _json_body(request)
+        result = await asyncio.to_thread(require().brainstorm, body)
+        return web.json_response(result)
+
+    @routes.post("/ai_prompt_studio/imagine")
+    @guarded
+    async def imagine(request: web.Request) -> web.Response:
+        body = await _json_body(request)
+        result = await asyncio.to_thread(require().imagine, body)
+        return web.json_response(result)
+
+    @routes.post("/ai_prompt_studio/imagine_expand")
+    @guarded
+    async def imagine_expand(request: web.Request) -> web.Response:
+        body = await _json_body(request)
+        result = await asyncio.to_thread(require().imagine_expand, body)
+        return web.json_response(result)
+
+    @routes.post("/ai_prompt_studio/cloud_generate")
+    @guarded
+    async def cloud_generate(request: web.Request) -> web.Response:
+        """Generate prompt/node payload via remote API/imagine_expand."""
+        body = await _json_body(request)
+        prompt = str(body.get("prompt") or "").strip()
+        if not prompt:
+            raise InvalidRequestError("prompt is required.")
+        width = int(body.get("width") or 0)
+        height = int(body.get("height") or 0)
+        mode = str(body.get("mode") or "caption").strip()
+        model = str(body.get("model") or "").strip() or None
+
+        service = require()
+        expand_body: dict[str, Any] = {
+            "prompt": prompt,
+            "modes": [mode] if mode else ["caption"],
+            "width": width or 1024,
+            "height": height or 1024,
+            "model": model,
+        }
+        payload_res = await asyncio.to_thread(service.imagine_expand, expand_body)
+        return web.json_response({
+            "payload": payload_res["payload"],
+            "width": payload_res["width"],
+            "height": payload_res["height"],
+            "modes": payload_res["modes"],
+            "generated_image": None,
+        })
+
 
     @routes.post("/ai_prompt_studio/apply")
     @guarded

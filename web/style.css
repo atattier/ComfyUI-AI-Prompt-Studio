@@ -2246,3 +2246,77 @@
   flex: 1;
   font-size: 11px !important;
 }
+
+/* ==========================================================================
+   💡 Imagine panel (.aps-imagine-panel)
+   ========================================================================== */
+.aps-imagine-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
+  border-radius: 9px;
+  border: 1px solid color-mix(in srgb, var(--aps-accent) 45%, var(--aps-border));
+  background: color-mix(in srgb, var(--aps-accent) 7%, var(--aps-surface));
+  box-sizing: border-box;
+}
+.aps-imagine-panel[hidden] { display: none !important; }
+.aps-imagine-head { display: flex; align-items: baseline; gap: 6px; }
+.aps-imagine-title { font-size: 11.5px; font-weight: 700; color: var(--aps-fg); }
+.aps-imagine-hint { font-size: 10.5px; color: var(--aps-muted); flex: 1; }
+.aps-imagine-row { display: flex; align-items: center; gap: 6px; }
+.aps-imagine-input { flex: 1; min-width: 0; }
+.aps-imagine-opts { flex-wrap: wrap; }
+.aps-imagine-modes { font-size: 10.5px; color: var(--aps-muted); margin-left: auto; }
+.aps-imagine-results { display: flex; flex-direction: column; gap: 5px; max-height: 260px; overflow-y: auto; }
+.aps-imagine-results:empty { display: none; }
+.aps-imagine-card {
+  border: 1px solid var(--aps-border);
+  border-radius: 8px;
+  padding: 6px 8px;
+  background: var(--aps-panel);
+}
+.aps-imagine-card:hover { border-color: color-mix(in srgb, var(--aps-accent) 60%, var(--aps-border)); }
+.aps-imagine-card-top { display: flex; align-items: center; gap: 6px; margin-bottom: 3px; }
+.aps-imagine-card-title { font-size: 11.5px; font-weight: 700; color: var(--aps-fg); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.aps-imagine-badge { font-size: 10px; color: var(--aps-muted); border: 1px solid var(--aps-border); border-radius: 999px; padding: 0 6px; white-space: nowrap; }
+.aps-imagine-card-text {
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--aps-fg);
+  opacity: 0.88;
+  cursor: pointer;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.aps-imagine-card-text.is-open { display: block; -webkit-line-clamp: unset; }
+
+.aps-imagine-themes {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex-wrap: wrap;
+  padding: 2px 0;
+}
+.aps-theme-pill {
+  font-size: 10.5px !important;
+  padding: 2px 7px !important;
+  border-radius: 999px !important;
+  background: var(--aps-panel) !important;
+  color: var(--aps-fg) !important;
+  border: 1px solid var(--aps-border) !important;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.aps-theme-pill:hover {
+  border-color: var(--aps-accent) !important;
+  color: var(--aps-accent) !important;
+  transform: translateY(-1px);
+}
+.aps-theme-pill.is-accent {
+  background: color-mix(in srgb, var(--aps-accent) 22%, var(--aps-panel)) !important;
+  border-color: var(--aps-accent) !important;
+  font-weight: 600 !important;
+}

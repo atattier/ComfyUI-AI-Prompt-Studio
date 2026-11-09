@@ -197,13 +197,23 @@ function buildPanel(root) {
     },
     "🖥 双栏工作台",
   );
+  ui.cloudGenerateBtn = el(
+    "button",
+    {
+      class: "aps-btn aps-btn-sm",
+      type: "button",
+      title: "从描述云端扩展生成提示词/布局并应用到节点",
+      onclick: () => toggleCloudGenerate(),
+    },
+    "☁️ 云端生图",
+  );
   const header = el("header", { class: "aps-header" }, [
     el("div", { class: "aps-brand-row" }, [
       el("div", { class: "aps-brand" }, [
         el("span", { class: "aps-logo" }, "✳"),
         el("span", { class: "aps-title" }, "AI 提示词工作台"),
       ]),
-      ui.openWorkbenchBtn,
+      el("div", { style: "display: flex; gap: 4px;" }, [ui.cloudGenerateBtn, ui.openWorkbenchBtn]),
     ]),
     el("div", { class: "aps-badges" }, [ui.capText, ui.capVision, ui.capStream, ui.capProbe]),
   ]);
@@ -495,8 +505,9 @@ function buildPanel(root) {
   ]);
 
   ui.setup = el("div", { class: "aps-setup", hidden: true });
+  ui.cloudPanel = el("div", { class: "aps-setup aps-cloud-panel", hidden: true });
 
-  panel.append(header, ui.setup, targetSection, tabs, chatPanel, captionPanel, historyPanel, footer);
+  panel.append(header, ui.setup, ui.cloudPanel, targetSection, tabs, chatPanel, captionPanel, historyPanel, footer);
   root.append(panel);
 
   ui.panel = panel;
@@ -506,6 +517,124 @@ function buildPanel(root) {
     history: historyPanel,
   };
   return panel;
+}
+
+// -------------------------------------------------- cloud generate
+function toggleCloudGenerate() {
+  if (!ui.cloudPanel.hidden) {
+    ui.cloudPanel.hidden = true;
+    return;
+  }
+  ui.cloudPanel.hidden = false;
+  ui.cloudPanel.textContent = "";
+
+  const currentPrompt = activeTarget()?.text || ui.prompt?.value || "";
+  const title = el("div", { class: "aps-setup-title" }, "☁️ 云端生图与提示词扩展");
+  const promptInput = el("textarea", {
+    class: "aps-input",
+    rows: 3,
+    placeholder: "输入画面描述或创意，例如：赛博朋克雨夜街道中的机械少女",
+  });
+  promptInput.value = currentPrompt;
+
+  const modeSelect = el("select", { class: "aps-input" }, [
+    el("option", { value: "caption" }, "自然语言提示词 (caption)"),
+    el("option", { value: "layout" }, "空间布局结构 (layout)"),
+    el("option", { value: "danbooru" }, "二次元标签风格 (danbooru)"),
+  ]);
+
+  const widthInput = el("input", {
+    class: "aps-input",
+    type: "number",
+    step: "64",
+    value: "1024",
+  });
+  const heightInput = el("input", {
+    class: "aps-input",
+    type: "number",
+    step: "64",
+    value: "1024",
+  });
+
+  const feedback = el("span", { class: "aps-hint" }, "结果将按所选模式直接写入当前节点或提示词框（支持一键撤销）。");
+
+  const runBtn = el(
+    "button",
+    {
+      class: "aps-btn aps-primary",
+      type: "button",
+      onclick: async () => {
+        const text = promptInput.value.trim();
+        if (!text) {
+          setStatus("请输入提示词描述。", "error");
+          promptInput.focus();
+          return;
+        }
+        runBtn.disabled = true;
+        feedback.textContent = "正在调用云端模型扩展生图内容…";
+        setBusy(true, "正在云端生成…");
+        try {
+          const resp = await state.api.cloudGenerate({
+            prompt: text,
+            width: Number(widthInput.value) || 1024,
+            height: Number(heightInput.value) || 1024,
+            mode: modeSelect.value,
+          });
+          const payload = resp.payload || {};
+          let textToWrite = payload.caption || text;
+          if (modeSelect.value === "layout" && payload.draft) {
+            textToWrite = JSON.stringify(payload.draft);
+          } else if (modeSelect.value === "danbooru" && (payload.danbooru_prompt || payload.tags)) {
+            textToWrite = payload.danbooru_prompt || payload.tags;
+          }
+
+          const target = activeTarget();
+          if (target) {
+            await applyText(textToWrite, {
+              key: target.key,
+              source: "cloud_generate",
+              label: `云端生成 (${modeSelect.value})`,
+            });
+            setStatus("云端生成成功，已写入当前节点（可撤销）。", "ok");
+          } else {
+            if (ui.prompt) ui.prompt.value = textToWrite;
+            setStatus("云端生成成功，已填入提示词框。", "ok");
+          }
+          feedback.textContent = `已成功生成 (${resp.width}×${resp.height})！`;
+          setTimeout(() => {
+            ui.cloudPanel.hidden = true;
+          }, 1200);
+        } catch (err) {
+          feedback.textContent = `云端生成失败：${err?.message || err}`;
+          setStatus(`云端生成失败: ${err?.message || err}`, "error");
+        } finally {
+          runBtn.disabled = false;
+          setBusy(false);
+        }
+      },
+    },
+    "🚀 生成并应用",
+  );
+
+  const closeBtn = iconButton("关闭", "关闭云端生图面板", () => {
+    ui.cloudPanel.hidden = true;
+  });
+
+  const form = el("div", { class: "aps-setup-form" }, [
+    el("label", {}, ["提示词描述", promptInput]),
+    el("label", {}, ["输出模式", modeSelect]),
+    el("div", { class: "aps-row" }, [
+      el("label", { style: "flex: 1;" }, ["宽度 (px)", widthInput]),
+      el("label", { style: "flex: 1;" }, ["高度 (px)", heightInput]),
+    ]),
+  ]);
+
+  const actions = el("div", { class: "aps-row aps-row-between", style: "margin-top: 6px;" }, [
+    closeBtn,
+    runBtn,
+  ]);
+
+  ui.cloudPanel.append(title, form, feedback, actions);
 }
 
 // -------------------------------------------------- dual-column workbench

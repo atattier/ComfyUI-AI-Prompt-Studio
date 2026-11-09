@@ -33,7 +33,7 @@ import {
 } from "./lib/layout_editor.js";
 import { UndoStack } from "./lib/undo.js";
 
-const NODE_TYPE = "AIPromptStudioCaption";
+const NODE_TYPES = ["AIPromptStudioCaption", "AIPromptStudioImagine"];
 const ALL_MODES = ["caption", "layout", "danbooru"];
 
 function formatFriendlyErrorMessage(err, actionName = "操作") {
@@ -83,7 +83,31 @@ function cleanWidgetStr(val, { isPath = false } = {}) {
 }
 
 function healLegacyWidgets(node) {
-  if (!node?.widgets) return;
+  if (!node) return;
+  const isCaptionNode = node.comfyClass === "AIPromptStudioCaption" || node.type === "AIPromptStudioCaption";
+
+  // 自愈清除 AIPromptStudioCaption 节点上不应该存在的灵感临时 widget / input 槽位
+  if (isCaptionNode) {
+    const invalidNames = new Set(["idea", "theme", "style", "aspect", "auto_brainstorm"]);
+    if (Array.isArray(node.widgets)) {
+      node.widgets = node.widgets.filter((w) => !w || !invalidNames.has(w.name));
+    }
+    if (Array.isArray(node.inputs)) {
+      node.inputs = node.inputs.filter((i) => !i || !invalidNames.has(i.name));
+    }
+  }
+
+  if (!node.widgets) return;
+
+  // 自愈与修复 seed 控件类型，防止旧工作流反序列化错位导致输入值类型错误
+  const seedW = widget(node, "seed");
+  if (seedW) {
+    const num = Number(seedW.value);
+    if (typeof seedW.value !== "number" || isNaN(num) || !Number.isFinite(num)) {
+      seedW.value = Math.max(0, Math.floor(Math.abs(num || 0)));
+    }
+  }
+
   const pathW = widget(node, "image_path");
   if (pathW) {
     const cleaned = cleanWidgetStr(pathW.value, { isPath: true });
@@ -118,7 +142,7 @@ function el(tag, className, text) {
   return node;
 }
 
-const STYLE_VERSION = "20261107_v7";
+const STYLE_VERSION = "20261108_v8";
 
 function hasNodeSize(node) {
   return Boolean(node?.size && typeof node.size.length === "number" && node.size.length >= 2);
@@ -378,19 +402,25 @@ function normalizeStateObject(raw) {
   if (!state.caption && state.summary?.caption) {
     state.caption = String(state.summary.caption);
   }
-  if (!state.draft?.items?.length && Array.isArray(state.regions) && state.regions.length > 0) {
-    const w = Number(state.width) || 1024;
-    const h = Number(state.height) || 1024;
-    state.draft = normalizeDraft(
-      {
-        width: w,
-        height: h,
-        summary: { caption: state.caption || "A composed image.", canvas: "single" },
-        items: state.regions,
-      },
-      w,
-      h,
-    );
+  if (!state.draft?.items?.length) {
+    if (state.layout_draft?.items?.length) {
+      state.draft = { ...state.layout_draft };
+    } else if (state.hybrid_draft?.items?.length) {
+      state.draft = { ...state.hybrid_draft };
+    } else if (Array.isArray(state.regions) && state.regions.length > 0) {
+      const w = Number(state.width) || 1024;
+      const h = Number(state.height) || 1024;
+      state.draft = normalizeDraft(
+        {
+          width: w,
+          height: h,
+          summary: { caption: state.caption || "A composed image.", canvas: "single" },
+          items: state.regions,
+        },
+        w,
+        h,
+      );
+    }
   }
   return state;
 }
@@ -572,8 +602,9 @@ async function handleNewReferenceImage(node, fileOrDataUrl, statusEl = null) {
   // 4. Save to persistent state so F5 refresh or restart won't reset to example.png
   const state = readPayload(node);
   state.last_image_file = serverFilename;
+  delete state.source;
   node._apsLastUpstreamFile = serverFilename;
-  writePayload(node, state);
+  setPayload(node, state);
 
   if (statusEl) {
     statusEl.textContent = upstream
@@ -583,8 +614,8 @@ async function handleNewReferenceImage(node, fileOrDataUrl, statusEl = null) {
   node._apsSyncCard?.();
 }
 
-/** Find the LoadImage node feeding our IMAGE input and read its filename widget. */
-function upstreamImageFile(node) {
+/** Find the upstream node feeding our IMAGE input. */
+function upstreamImageNode(node) {
   const link = node.inputs?.find((i) => i.name === "image" && i.link != null);
   if (!link) return null;
   const graph = node.graph;
@@ -595,9 +626,31 @@ function upstreamImageFile(node) {
       : graph?.links?.[link.link];
   if (!sourceLink) return null;
   const sourceId = sourceLink.origin_id ?? sourceLink[1];
-  const source = graph?.getNodeById
+  return graph?.getNodeById
     ? graph.getNodeById(sourceId)
     : (graph?._nodes || []).find((n) => String(n.id) === String(sourceId));
+}
+
+/** Hook upstream LoadImage widget so choosing another image updates this node immediately. */
+function hookUpstreamImageNode(node) {
+  const source = upstreamImageNode(node);
+  if (!source) return;
+  const fileWidget = source.widgets?.find((w) => w.name === "image");
+  if (!fileWidget || fileWidget._apsHooked) return;
+  fileWidget._apsHooked = true;
+  const origCallback = fileWidget.callback;
+  fileWidget.callback = function (...args) {
+    const res = origCallback?.apply(this, args);
+    setTimeout(() => {
+      node._apsSyncCard?.();
+    }, 60);
+    return res;
+  };
+}
+
+/** Find the LoadImage node feeding our IMAGE input and read its filename widget. */
+function upstreamImageFile(node) {
+  const source = upstreamImageNode(node);
   if (!source) return null;
   const fileWidget = source.widgets?.find((w) => w.name === "image");
   const value = fileWidget?.value;
@@ -1574,7 +1627,278 @@ function mountRichCard(node, statusEl) {
   btnUndo.disabled = true;
   btnUndo.addEventListener("click", handleUndo);
 
-  quickBar.append(btnReverse, btnExpand, btnTrans, btnMoss, btnCopy, btnUndo);
+  const btnImagine = el("button", "aps-btn aps-accent aps-btn-sm", "💡 灵感");
+  btnImagine.type = "button";
+  btnImagine.title = "没有参考图？输入一句想法，让 AI 想象完整画面并生成提示词";
+
+  quickBar.append(btnReverse, btnImagine, btnExpand, btnTrans, btnMoss, btnCopy, btnUndo);
+
+  // ---- 💡 Imagine panel: idea → candidate prompts → adopt into active modes ----
+  const imaginePanel = el("div", "aps-imagine-panel");
+  imaginePanel.hidden = true;
+  const imagineHead = el("div", "aps-imagine-head");
+  const imagineTitle = el("span", "aps-imagine-title", "💡 灵感生成");
+  const imagineHint = el("span", "aps-imagine-hint", "一句话描述想法，AI 负责想象画面");
+  const imagineClose = el("button", "aps-chip-btn aps-btn-xs", "✕");
+  imagineClose.type = "button";
+  imagineClose.title = "收起灵感面板";
+  imagineHead.append(imagineTitle, imagineHint, imagineClose);
+
+  // Themes Pills row (model dreams up ideas under selected genre)
+  const imagineThemes = el("div", "aps-imagine-themes");
+  const THEME_PILLS = [
+    ["random", "🎲 帮我想点子"],
+    ["cyberpunk", "🚀 赛博科幻"],
+    ["fantasy", "✨ 史诗奇幻"],
+    ["cinematic", "🎬 电影故事"],
+    ["anime", "🌸 唯美动漫"],
+    ["surreal", "🌌 梦境奇观"],
+    ["nature", "🌿 自然光影"],
+  ];
+  THEME_PILLS.forEach(([tKey, tLabel], idx) => {
+    const pill = el("button", `aps-chip-btn aps-btn-xs aps-theme-pill${idx === 0 ? " is-accent" : ""}`, tLabel);
+    pill.type = "button";
+    pill.title = idx === 0
+      ? "让大模型完全自由想象、构想一个惊艳的新颖点子并自动生成构图方案"
+      : `让大模型构想【${tLabel}】题材的创意点子并自动生成构图方案`;
+    pill.addEventListener("click", () => void runBrainstorm(tKey));
+    imagineThemes.append(pill);
+  });
+
+  const imagineRow = el("div", "aps-imagine-row");
+  const imagineInput = el("input", "aps-input aps-imagine-input");
+  imagineInput.type = "text";
+  imagineInput.placeholder = "输入画面想法，或点击上方「🎲 帮我想点子」让 AI 自己构思…";
+
+  const btnBrainstormRow = el("button", "aps-btn aps-accent aps-btn-sm aps-brainstorm-trigger", "🎲 想点子");
+  btnBrainstormRow.type = "button";
+  btnBrainstormRow.title = "无需打字！让大模型自己构想一个富有视觉张力和创意的绝妙点子，并直接生成画面方案";
+  btnBrainstormRow.addEventListener("click", () => void runBrainstorm("random"));
+
+  const imagineGo = el("button", "aps-btn aps-primary aps-btn-sm", "生成 ✦");
+  imagineGo.type = "button";
+  imagineGo.title = "根据当前输入的想法生成 3 种画幅和构图方案";
+  imagineRow.append(imagineInput, btnBrainstormRow, imagineGo);
+
+  function makeSelect(options, title) {
+    const sel = el("select", "aps-select aps-select-xs");
+    sel.title = title;
+    for (const [val, label] of options) {
+      const opt = el("option", "", label);
+      opt.value = val;
+      sel.append(opt);
+    }
+    return sel;
+  }
+  const imagineStyle = makeSelect(
+    [["auto", "风格：自动"], ["anime", "动漫"], ["realistic", "写实摄影"], ["cinematic", "电影感"], ["illustration", "插画"], ["3d", "3D 渲染"]],
+    "画面风格",
+  );
+  const imagineAspect = makeSelect(
+    [["auto", "画幅：自动"], ["portrait", "竖版"], ["landscape", "横版"], ["square", "方形"]],
+    "画布方向（会同步到 width/height 输出）",
+  );
+  const imagineCount = makeSelect([["3", "3 个候选"], ["1", "1 个"]], "一次生成几个候选");
+  const imagineModesNote = el("span", "aps-imagine-modes");
+  const imagineOpts = el("div", "aps-imagine-row aps-imagine-opts");
+  imagineOpts.append(imagineStyle, imagineAspect, imagineCount, imagineModesNote);
+
+  const autoImagineRow = el("div", "aps-imagine-row aps-auto-imagine-row");
+  const autoImagineLabel = el("label", "aps-auto-imagine-toggle");
+  autoImagineLabel.style.display = "inline-flex";
+  autoImagineLabel.style.alignItems = "center";
+  autoImagineLabel.style.gap = "6px";
+  autoImagineLabel.style.cursor = "pointer";
+  autoImagineLabel.style.fontSize = "12px";
+  autoImagineLabel.style.color = "var(--aps-accent, #38bdf8)";
+  autoImagineLabel.style.userSelect = "none";
+
+  const autoImagineCheckbox = el("input");
+  autoImagineCheckbox.type = "checkbox";
+  autoImagineCheckbox.style.cursor = "pointer";
+  autoImagineCheckbox.title = "勾选后启用全自动文生图盲盒链路：未连接图片时，每次点击「运行」模型都会自主构思新画面并生成整套提示词与画框！连接随机种子可每次排队自动开盲盒。";
+
+  const autoImagineText = el("span", "", "🎲 每次排队自动开盲盒 (文生图全自动构思链路)");
+  autoImagineLabel.append(autoImagineCheckbox, autoImagineText);
+
+  autoImagineCheckbox.addEventListener("change", () => {
+    const st = readPayload(node);
+    st.auto_imagine = autoImagineCheckbox.checked;
+    setPayload(node, st);
+    node._apsDirty = true;
+    if (autoImagineCheckbox.checked) {
+      statusEl.textContent = "✓ 已开启全自动盲盒链路：连接 seed 到随机种子节点，每次点击「运行」模型都会自主构想全新画面！";
+      btnImagine.style.borderColor = "var(--aps-accent, #38bdf8)";
+    } else {
+      statusEl.textContent = "已关闭自动盲盒链路，恢复常规缓存模式。";
+      btnImagine.style.borderColor = "";
+    }
+    node.setDirtyCanvas?.(true, true);
+  });
+  autoImagineRow.append(autoImagineLabel);
+
+  const imagineResults = el("div", "aps-imagine-results");
+  imaginePanel.append(imagineHead, imagineThemes, imagineRow, imagineOpts, autoImagineRow, imagineResults);
+
+  const MODE_LABELS = { caption: "散文", layout: "布局画框", danbooru: "Danbooru 标签" };
+  const ASPECT_LABELS = { portrait: "竖版", landscape: "横版", square: "方形" };
+  let imagineCandidates = [];
+
+  function updateImagineModesNote() {
+    const modes = currentModes(node);
+    imagineModesNote.textContent = `采用后输出：${modes.map((m) => MODE_LABELS[m] || m).join(" + ")}`;
+    imagineModesNote.title = "跟随节点顶部已勾选的格式；想要画框就勾上「布局」";
+  }
+
+  function setImagineOpen(open) {
+    imaginePanel.hidden = !open;
+    btnImagine.classList.toggle("is-active", open);
+    if (open) {
+      updateImagineModesNote();
+      setTimeout(() => imagineInput.focus(), 0);
+    }
+    applyStageGeometry();
+    node.setDirtyCanvas?.(true, true);
+  }
+  btnImagine.addEventListener("click", () => setImagineOpen(imaginePanel.hidden));
+  imagineClose.addEventListener("click", () => setImagineOpen(false));
+
+  function renderImagineResults() {
+    imagineResults.textContent = "";
+    imagineCandidates.forEach((cand, idx) => {
+      const cardEl = el("div", "aps-imagine-card");
+      const top = el("div", "aps-imagine-card-top");
+      const title = el("span", "aps-imagine-card-title", `${idx + 1}. ${cand.title || "方案"}`);
+      const badge = el("span", "aps-imagine-badge", `${ASPECT_LABELS[cand.aspect] || cand.aspect} ${cand.width}×${cand.height}`);
+      const adopt = el("button", "aps-btn aps-primary aps-btn-xs", "采用");
+      adopt.type = "button";
+      adopt.addEventListener("click", () => adoptCandidate(cand));
+      top.append(title, badge, adopt);
+      const body = el("div", "aps-imagine-card-text", cand.prompt);
+      body.title = "点击展开 / 收起全文";
+      body.addEventListener("click", () => body.classList.toggle("is-open"));
+      cardEl.append(top, body);
+      imagineResults.append(cardEl);
+    });
+  }
+
+  async function runBrainstorm(theme = "random") {
+    statusEl.textContent = "🎲 模型正在自己想点子（头脑风暴中）…";
+    imagineInput.placeholder = "🎲 AI 正在头脑风暴构思新点子…";
+    node._apsSetBusy?.(true);
+    try {
+      const res = await api.request("/brainstorm", {
+        method: "POST",
+        body: {
+          theme,
+          style: imagineStyle.value,
+          count: 1,
+          model: cleanWidgetStr(widget(node, "model")?.value) || undefined,
+          extra_instruction: cleanWidgetStr(widget(node, "extra_instruction")?.value) || undefined,
+        },
+      });
+      const ideaObj = res.ideas?.[0];
+      if (ideaObj?.idea) {
+        imagineInput.value = ideaObj.idea;
+        statusEl.textContent = `💡 AI 已构思好点子「${ideaObj.title || "灵感"}」，正在生成画面方案…`;
+        await runImagine();
+      } else {
+        statusEl.textContent = "未能生成有效点子，请重试。";
+      }
+    } catch (err) {
+      statusEl.textContent = formatFriendlyErrorMessage(err, "想点子");
+    } finally {
+      imagineInput.placeholder = "输入画面想法，或点击上方「🎲 帮我想点子」让 AI 自己构思…";
+      node._apsSetBusy?.(false);
+    }
+  }
+
+  async function runImagine() {
+    const idea = imagineInput.value.trim();
+    if (!idea) {
+      statusEl.textContent = "请先输入一句想法。";
+      imagineInput.focus();
+      return;
+    }
+    statusEl.textContent = "💡 AI 正在想象画面…";
+    node._apsSetBusy?.(true);
+    try {
+      const res = await api.request("/imagine", {
+        method: "POST",
+        body: {
+          idea,
+          count: Number(imagineCount.value) || 3,
+          style: imagineStyle.value,
+          aspect: imagineAspect.value,
+          model: cleanWidgetStr(widget(node, "model")?.value) || undefined,
+          extra_instruction: cleanWidgetStr(widget(node, "extra_instruction")?.value) || undefined,
+        },
+      });
+      imagineCandidates = Array.isArray(res.candidates) ? res.candidates : [];
+      renderImagineResults();
+      statusEl.textContent = imagineCandidates.length
+        ? `已生成 ${imagineCandidates.length} 个画面方案，点「采用」写入节点。`
+        : "模型没有返回可用方案，请换个说法重试。";
+      applyStageGeometry();
+    } catch (err) {
+      statusEl.textContent = formatFriendlyErrorMessage(err, "灵感生成");
+    } finally {
+      node._apsSetBusy?.(false);
+    }
+  }
+  imagineGo.addEventListener("click", () => void runImagine());
+  imagineInput.addEventListener("keydown", (ev) => {
+    if (ev.key === "Enter") {
+      ev.preventDefault();
+      void runImagine();
+    }
+  });
+
+  async function adoptCandidate(cand) {
+    const existing = readPayload(node);
+    if (node._apsDirty && (existing.caption || existing.draft)) {
+      if (!globalThis.confirm?.("当前提示词手动改过，采用新方案会覆盖。继续吗？")) return;
+    }
+    const mode = currentMode(node);
+    const modes = currentModes(node);
+    const needsMore = modes.some((m) => m !== "caption");
+    statusEl.textContent = needsMore
+      ? `正在把方案转换为 ${modes.map((m) => MODE_LABELS[m] || m).join(" + ")}…`
+      : "正在写入方案…";
+    node._apsSetBusy?.(true);
+    try {
+      const ordered = [mode, ...modes.filter((m) => m !== mode)];
+      const res = await api.request("/imagine_expand", {
+        method: "POST",
+        body: {
+          prompt: cand.prompt,
+          modes: ordered,
+          width: cand.width,
+          height: cand.height,
+          model: cleanWidgetStr(widget(node, "model")?.value) || undefined,
+          extra_instruction: cleanWidgetStr(widget(node, "extra_instruction")?.value) || undefined,
+        },
+      });
+      const state = res.payload || {};
+      state.mode = mode;
+      state.modes = modes;
+      if (existing.last_image_file) state.last_image_file = existing.last_image_file;
+      setPayload(node, state);
+      node._apsUndo?.record({
+        key: "payload_state",
+        before: JSON.stringify(existing),
+        after: "",
+        label: `采用灵感方案「${cand.title || ""}」`,
+        source: "imagine",
+      });
+      statusEl.textContent = `✅ 已采用「${cand.title || "方案"}」：${state.width}×${state.height}，可直接排队出图（↩ 撤销可恢复）。`;
+      syncCard();
+    } catch (err) {
+      statusEl.textContent = formatFriendlyErrorMessage(err, "采用方案");
+    } finally {
+      node._apsSetBusy?.(false);
+    }
+  }
 
   const chatRow = el("div", "aps-node-chat-row");
   const chatInput = el("input", "aps-input aps-node-chat-input");
@@ -1886,7 +2210,7 @@ function mountRichCard(node, statusEl) {
 
   const statusLine = el("div", "aps-node-status", "就绪 · 可勾选 1~3 个格式同时输出（caption / layout / hybrid）");
 
-  mainCol.append(nodeDiffHost, promptBox, quickBar, chatRow, rulesPanel, statusLine);
+  mainCol.append(nodeDiffHost, imaginePanel, promptBox, quickBar, chatRow, rulesPanel, statusLine);
   workspaceWrap.append(stagePanel, mainCol);
   card.addEventListener("paste", async (ev) => {
     // Ignore paste if user is typing in an input or textarea
@@ -2157,6 +2481,10 @@ function mountRichCard(node, statusEl) {
     const mode = currentMode(node);
     const modes = currentModes(node);
     const state = readPayload(node);
+    if (typeof autoImagineCheckbox !== "undefined") {
+      autoImagineCheckbox.checked = Boolean(state.auto_imagine);
+      btnImagine.style.borderColor = state.auto_imagine ? "var(--aps-accent, #38bdf8)" : "";
+    }
     const w = Number(state.width) || 1024;
     const h = Number(state.height) || 1024;
 
@@ -2263,6 +2591,19 @@ function mountRichCard(node, statusEl) {
       const boundsBadge = el("span", "aps-region-bounds-badge", `${bw}×${bh} (${Math.round(bx1)},${Math.round(by1)})`);
       boundsBadge.title = `区域范围: 左上角 (${Math.round(bx1)}, ${Math.round(by1)})，尺寸 ${bw}×${bh}`;
 
+      const centerX = (bx1 + bx2) / 2;
+      let posText = "居中";
+      let posPhraseEn = "in the center of the frame";
+      if (centerX < w * 0.42) {
+        posText = "画面左侧";
+        posPhraseEn = "on the viewer's left side of the frame";
+      } else if (centerX > w * 0.58) {
+        posText = "画面右侧";
+        posPhraseEn = "on the viewer's right side of the frame";
+      }
+      const posBadge = el("span", "aps-region-bounds-badge", `📍 ${posText}`);
+      posBadge.title = `空间方位：观众视角【${posText}】（对应英文词: ${posPhraseEn}）`;
+
       const delBtn = el("button", "aps-btn aps-btn-xs aps-danger-text", "🗑 删除框");
       delBtn.type = "button";
       delBtn.title = "删除该区域框（或按键盘 Delete 键）";
@@ -2272,7 +2613,7 @@ function mountRichCard(node, statusEl) {
         commitDraftToState(state, normalizeDraft(state.draft, w, h), w, h, true, `删除区域框`);
         statusEl.textContent = "已删除区域框。";
       });
-      row1.append(badge, labelSel, nameInput, boundsBadge, delBtn);
+      row1.append(badge, labelSel, nameInput, boundsBadge, posBadge, delBtn);
 
       // Row 2: Detailed Caption & Text input
       const row2 = el("div", "aps-region-inspect-row");
@@ -2317,6 +2658,21 @@ function mountRichCard(node, statusEl) {
       const regTransBtn = el("button", "aps-btn aps-btn-xs", "🌐 译英");
       regTransBtn.type = "button";
       regTransBtn.title = "将此区域描述翻译为精准生图英文";
+
+      const regPosBtn = el("button", "aps-btn aps-btn-xs", `📍 注入【${posText}】`);
+      regPosBtn.type = "button";
+      regPosBtn.title = `一键将观众视角的绝对空间方位（${posPhraseEn}）注入此区域描述，锁定构图防止生图模型左右颠倒！`;
+      regPosBtn.addEventListener("click", () => {
+        let curCap = (item.caption || "").trim();
+        if (curCap.toLowerCase().includes("left") || curCap.toLowerCase().includes("right") || curCap.toLowerCase().includes("center")) {
+          statusEl.textContent = `该区域描述中已包含方位词。`;
+          return;
+        }
+        item.caption = curCap ? `${posPhraseEn}, ${curCap}` : posPhraseEn;
+        commitDraftToState(state, normalizeDraft(state.draft, w, h), w, h, true, `注入方位词 #${selectedRegion + 1}`);
+        statusEl.textContent = `✅ 已为区域 #${selectedRegion + 1} 注入空间方位【${posText}】！`;
+        syncCard();
+      });
 
       async function doRegionAi(instruction, actionTip) {
         const curItem = state.draft?.items?.[selectedRegion];
@@ -2375,7 +2731,7 @@ function mountRichCard(node, statusEl) {
         void doRegionAi("Translate the description into accurate, descriptive English suitable for image generation prompts.", "译英此区域");
       });
 
-      row3.append(regAiInput, regAiBtn, regExpandBtn, regTransBtn);
+      row3.append(regAiInput, regAiBtn, regExpandBtn, regTransBtn, regPosBtn);
       regionInspector.append(row1, row2, row3);
     } else {
       regionInspector.hidden = true;
@@ -2383,76 +2739,87 @@ function mountRichCard(node, statusEl) {
     }
 
     // Image recovery and upstream synchronization
+    hookUpstreamImageNode(node);
     const upFile = upstreamImageFile(node);
     const savedFile = state.last_image_file || null;
+    const isImagined = state.source === "imagine";
 
-    // 1. If memory dataUrl is absent (e.g. after refresh/restart), restore from savedFile or upFile
-    if (!node._apsImageDataUrl && (savedFile || upFile)) {
-      const restoreFile = savedFile || upFile;
+    // 确定当前应该展示的底图目标文件
+    // 优先级规则：
+    // 1. 若有上游连线且有明确上游文件（非 example 默认占位图），绝对优先以上游节点为准！
+    // 2. 否则优先使用持久化保存的 savedFile
+    // 3. 最后才考虑其他 fallback
+    let targetFile = null;
+    if (!isImagined) {
+      const isUpDefault = !upFile || upFile === "example.png" || upFile.includes("example");
+      if (upFile && !isUpDefault) {
+        targetFile = upFile;
+      } else if (savedFile) {
+        targetFile = savedFile;
+      } else if (upFile) {
+        targetFile = upFile;
+      }
+    }
+
+    // 检查是否需要重新拉取底图数据
+    const needFetch = Boolean(
+      targetFile &&
+      (!node._apsImageDataUrl || targetFile !== node._apsLastUpstreamFile) &&
+      node._apsFetchingFile !== targetFile
+    );
+
+    if (needFetch) {
+      node._apsFetchingFile = targetFile;
       void (async () => {
         try {
-          const query = new URLSearchParams({ filename: restoreFile, type: "input" });
+          const query = new URLSearchParams({ filename: targetFile, type: "input" });
           const resp = await fetch(`/view?${query.toString()}`, { credentials: "same-origin" });
           if (resp.ok) {
             const blob = await resp.blob();
             node._apsImageDataUrl = await blobToDataUrl(blob);
-            node._apsLastUpstreamFile = restoreFile;
-            renderSvgStage(stageSvg, {
-              width: w,
-              height: h,
-              draft: state.draft,
-              imageUrl: node._apsImageDataUrl,
-              selected: selectedRegion,
-              showBoxes,
-              dimImage: dimStageImage,
-            });
+            node._apsLastUpstreamFile = targetFile;
+            node._apsFetchingFile = null;
+
+            // 持久化当前生效的文件名到 payload
+            const curState = readPayload(node);
+            if (curState && curState.last_image_file !== targetFile) {
+              curState.last_image_file = targetFile;
+              delete curState.source;
+              setPayload(node, curState);
+            } else {
+              // 重新调用 syncCard 确保使用最新完整 state 原子化重绘底图与画框
+              node._apsSyncCard?.();
+            }
+          } else {
+            node._apsFetchingFile = null;
           }
         } catch (e) {
-          console.warn("恢复画框图片失败:", e);
+          node._apsFetchingFile = null;
+          console.warn("恢复底图图片失败:", e);
         }
       })();
-    } else if (upFile && upFile !== node._apsLastUpstreamFile) {
-      // 2. Upstream file changed on canvas (e.g. user selected another image in LoadImage)
-      // Guard: do not let default placeholder 'example.png' overwrite user's custom saved file
-      const isDefaultPlaceholder = (upFile === "example.png" || upFile.includes("example"));
-      if (!(isDefaultPlaceholder && savedFile && savedFile !== upFile)) {
-        void fetchImageDataUrl(node)
-          .then((newUrl) => {
-            if (newUrl) {
-              state.last_image_file = upFile;
-              writePayload(node, state);
-            }
-            renderSvgStage(stageSvg, {
-              width: w,
-              height: h,
-              draft: state.draft,
-              imageUrl: node._apsImageDataUrl,
-              selected: selectedRegion,
-              showBoxes,
-              dimImage: dimStageImage,
-            });
-          })
-          .catch(() => {});
-      }
     }
 
     renderSvgStage(stageSvg, {
       width: w,
       height: h,
       draft: state.draft,
-      imageUrl: node._apsImageDataUrl || null,
+      imageUrl: isImagined ? null : (node._apsImageDataUrl || null),
       selected: selectedRegion,
       showBoxes,
       dimImage: dimStageImage,
     });
     fillRulesConfig(node._apsActiveConfig);
     if (typeof updatePromptStats === "function") updatePromptStats();
+    if (!imaginePanel.hidden) updateImagineModesNote();
   }
 
   node._apsSyncCard = syncCard;
   node._apsSetBusy = (isBusy) => {
     btnReverse.disabled = isBusy;
     chatSend.disabled = isBusy;
+    imagineGo.disabled = isBusy;
+    imagineResults.querySelectorAll("button").forEach((b) => { b.disabled = isBusy; });
     card.classList.toggle("is-busy", isBusy);
   };
 
@@ -2519,7 +2886,7 @@ function addButtons(node) {
 }
 
 function onNodeCreated(node) {
-  if (node.comfyClass !== NODE_TYPE && node.type !== NODE_TYPE) return;
+  if (!NODE_TYPES.includes(node.comfyClass) && !NODE_TYPES.includes(node.type)) return;
   addButtons(node);
   hideRawWidgets(node);
 
@@ -2546,6 +2913,10 @@ function onNodeCreated(node) {
     hideRawWidgets(node);
     node._apsOnResize?.();
     node._apsSyncCard?.();
+    // 延迟 250ms 再次同步一次，防止上游 LoadImage 节点后于本节点反序列化完成
+    setTimeout(() => {
+      node._apsSyncCard?.();
+    }, 250);
     return res;
   };
 
@@ -2588,7 +2959,7 @@ export const extension = {
     for (const node of app?.graph?._nodes || []) onNodeCreated(node);
   },
   async beforeRegisterNodeDef(nodeType, nodeData) {
-    if (nodeData?.name !== NODE_TYPE) return;
+    if (!NODE_TYPES.includes(nodeData?.name)) return;
     const origCreated = nodeType.prototype.onNodeCreated;
     nodeType.prototype.onNodeCreated = function (...args) {
       const r = origCreated?.apply(this, args);

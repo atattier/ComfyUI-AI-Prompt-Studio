@@ -82,6 +82,20 @@ const QUICK_ACTIONS = [
     instruction:
       "Convert the prompt into clean, comma-separated English image generation tags ordered from subject and appearance to environment, lighting, and camera.",
   },
+  {
+    id: "moss_cinematic",
+    label: "🎞 电影胶片质感",
+    title: "应用 MOSS 官方 A 级实测电影摄影语法：注入 35mm 胶片硬直闪、暗角、真实光学景深与微观毛孔",
+    instruction:
+      "Rewrite this prompt using MOSS-Image authentic cinema/analog film photography conventions: prepend concrete optical traits (raw 35mm film photograph, harsh direct on-camera flash, hard drop shadow, razor-sharp focus, deep depth of field), describe specific physical lighting falloff, and finish with texture lock (unretouched real human skin texture with microscopic pores, organic Kodak film grain). Keep prompt in English.",
+  },
+  {
+    id: "moss_anti_bleed",
+    label: "🛡 肢体防崩/防撞脸",
+    title: "MOSS A 级实测防崩坏规范：衣服拉扯转静态结果防多手、多人因果阻断防双胞胎",
+    instruction:
+      "Audit and repair this prompt for MOSS-Image stability: 1) Convert dynamic garment pulling/lifting verbs into completed static states (e.g. 'shirt already pushed up') so the model does not draw extra hands. 2) If multiple subjects exist, put primary character first and begin secondary character with causal blocking ('In sharp contrast, the second person has NO...'). 3) Anchor viewer perspective (viewer's left vs right) for asymmetrical poses.",
+  },
 ];
 
 function el(tag, className, text) {
@@ -96,7 +110,7 @@ function clamp(value, lo, hi) {
 }
 
 function cloneDraft(state, width, height) {
-  const draft = state?.draft;
+  const draft = state?.draft || state?.layout_draft || state?.hybrid_draft;
   if (draft && Array.isArray(draft.items) && draft.items.length) {
     return {
       width: draft.width || width,
@@ -254,67 +268,73 @@ export function renderSvgStage(svg, { width, height, draft, imageUrl, selected =
 
     const bw = Math.max(1, x2 - x1);
     const bh = Math.max(1, y2 - y1);
-    const strokeW = isSel ? Math.max(6, Math.round(width / 135)) : Math.max(3, Math.round(width / 220));
+    const strokeW = isSel ? Math.max(3.5, Math.round(width / 260)) : Math.max(1.8, Math.round(width / 440));
 
-    // High-contrast dark outer halo so boxes remain clearly visible on pure white backgrounds
+    // Outer subtle contrast halo (crisp solid outline, NO dashed lines, matching KohakuGBC)
     const haloRect = svgRect(NS, x1, y1, bw, bh, {
       fill: "none",
-      stroke: "rgba(15, 23, 42, 0.78)",
-      "stroke-width": strokeW + Math.max(3, Math.round(width / 280)),
-      "stroke-dasharray": isSel ? "none" : "12 8",
+      stroke: "rgba(10, 15, 29, 0.76)",
+      "stroke-width": strokeW + Math.max(1.5, Math.round(width / 460)),
     });
     haloRect.style.pointerEvents = "none";
     group.append(haloRect);
 
+    // Main solid color bounding box (solid stroke, pure & clean, subtle glass fill)
     const rect = svgRect(NS, x1, y1, bw, bh, {
-      fill: isSel ? color + "33" : color + "18",
+      fill: isSel ? color + "2b" : color + "0d",
       stroke: color,
       "stroke-width": strokeW,
-      "stroke-dasharray": isSel ? "none" : "12 8",
     });
     group.append(rect);
 
-    const fontSize = Math.max(18, Math.round(width / 38));
-    const semanticName = item.name || (item.label === "character" ? "人物主体" : (item.label === "text" ? (item.text ? `文字「${item.text.slice(0, 8)}」` : "文字") : "物体"));
+    // Adaptive, elegant typography & pill badge (matching KohakuGBC professional aesthetic)
+    const fontSize = Math.max(13, Math.round(width / 52));
+    const semanticName = item.name || (item.label === "character" ? "人物主体" : (item.label === "text" ? (item.text ? `文字「${item.text.slice(0, 8)}」` : "画面文字") : "场景物体"));
     const badgeText = `${index + 1} ${semanticName}`;
 
     let textUnits = 0;
     for (const ch of badgeText) {
-      textUnits += ch.charCodeAt(0) > 255 ? 1.05 : 0.62;
+      textUnits += ch.charCodeAt(0) > 255 ? 1.02 : 0.58;
     }
-    const badgeW = Math.min(bw, Math.max(fontSize * 3.2, Math.round(textUnits * fontSize + fontSize * 0.9)));
-    const badgeH = Math.round(fontSize * 1.55);
+    const badgeW = Math.min(bw, Math.max(fontSize * 2.8, Math.round(textUnits * fontSize + fontSize * 0.9)));
+    const badgeH = Math.round(fontSize * 1.48);
 
+    // Clean, modern, solid-color pill badge pinned at top-left
     const badgeBg = svgRect(NS, x1, y1, badgeW, badgeH, {
       fill: color,
-      stroke: "rgba(15, 23, 42, 0.9)",
-      "stroke-width": 1.5,
-      rx: 4,
+      stroke: "rgba(15, 23, 42, 0.4)",
+      "stroke-width": 1,
+      rx: 3,
+      ry: 3,
     });
     badgeBg.style.pointerEvents = "none";
     group.append(badgeBg);
 
     const label = document.createElementNS(NS, "text");
-    label.setAttribute("x", x1 + Math.round(fontSize * 0.45));
-    label.setAttribute("y", y1 + Math.round(fontSize * 1.15));
+    label.setAttribute("x", x1 + Math.round(fontSize * 0.42));
+    label.setAttribute("y", y1 + Math.round(fontSize * 1.08));
     label.setAttribute("fill", "#ffffff");
     label.setAttribute("font-size", fontSize);
-    label.setAttribute("font-weight", "800");
-    label.setAttribute("font-family", '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Microsoft YaHei", sans-serif');
+    label.setAttribute("font-weight", "600");
+    label.setAttribute("font-family", '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", sans-serif');
     label.textContent = badgeText;
     label.style.pointerEvents = "none";
     group.append(label);
 
-    const hs = Math.max(22, Math.round(width / 48));
-    const handle = svgRect(NS, x2 - hs, y2 - hs, hs, hs, {
-      fill: color,
-      stroke: "#ffffff",
-      "stroke-width": 2.5,
-      rx: 3,
-    });
-    handle.setAttribute("data-resize", String(index));
-    handle.style.cursor = "nwse-resize";
-    group.append(handle);
+    // Only render resize handle when selected to keep canvas ultra-clean
+    if (isSel) {
+      const hs = Math.max(16, Math.round(width / 60));
+      const handle = svgRect(NS, x2 - hs, y2 - hs, hs, hs, {
+        fill: color,
+        stroke: "#ffffff",
+        "stroke-width": 2,
+        rx: 3,
+        ry: 3,
+      });
+      handle.setAttribute("data-resize", String(index));
+      handle.style.cursor = "nwse-resize";
+      group.append(handle);
+    }
     svg.append(group);
   });
 }
@@ -1609,20 +1629,65 @@ export function openLayoutEditor({
 }
 
 export const RULE_PRESET_OPTIONS = [
-  ["moss", "散文规则（MOSS 官方自然语言规范）"],
-  ["layout", "布局规则（MOSS 官方空间区域排版规范）"],
-  ["danbooru", "Danbooru 规则（结构化逗号标签规范）"],
+  ["moss", "MOSS 散文规则（官方实测无废话规范）"],
+  ["moss_cinematic", "MOSS 摄影与电影质感（12 种实测胶片/剧照预设）"],
+  ["moss_anime", "MOSS 二次元通道（90s 赛璐璐/黑白漫画/水彩/像素）"],
+  ["moss_closed_tags", "MOSS 闭合标签（<|概念|>防多头多肢串色分块）"],
+  ["layout", "MOSS 布局规则（空间区域排版规范）"],
+  ["pixel_fidelity", "高保真全要素反推（像素级解构·过滤水印·全模型通用）"],
+  ["portrait_master", "人像摄影大师（亚洲真实审美·微观肌理与眼眸光彩）"],
+  ["character_extractor", "人设三视图提取（剥离背景画风·服饰道具与站姿固化）"],
+  ["qwen_edit", "局部图像编辑（Qwen/图生图精准改写指令）"],
+  ["video_wan_h3", "视频动态运镜（Wan2.1 / MiniMax H3 官方五段式物理引擎）"],
+  ["danbooru", "Danbooru 标签（二次元高审美结构化标签）"],
+  ["cinematic", "电影级运镜（景深/光比/冷暖调色电影语言）"],
   ["custom", "自定义规则（仅使用自定义要求）"],
 ];
 
 export const PRESET_RULE_TEMPLATES = {
   moss: [
-    "- 遵循 MOSS-Image 官方视觉扩写规范：仅描述客观可见的选择（主体与动作、外貌细节、环境空间、镜头取景、物理采光、材质纹理、色彩影调与氛围情绪）。",
-    "- 严格保留用户意图：忠实保留用户指定的主体、数量、空间拓扑关系、媒介类型、艺术风格、排除项与特定字样；极简需求保持极简，丰富需求具象展开。",
-    "- 严禁冗余画质词与干扰：严禁使用 (word:1.2) 等权重括号语法，严禁营销词与画质空话（如 masterpiece, best quality, 8k, photorealistic），不随意增添未经请求的风格反转或隐式处理备注。",
-    "- 画面文字精准渲染：招牌、印刷品、包装或界面中需要显示的可见文字，必须使用半角双引号 \"text\" 逐字精准描述，保留原始字符、大小写、标点与排版换行；严禁使用 \"headline here\" 等敷衍占位符。",
-    "- 区分可见文字与约束指令：严格区分画面应渲染的字样与参考指令/系统约束，严禁将格式说明、JSON 标注或负面排除指令误画在图像中。",
-    "- 图文与构图排版设计：排版类与海报画面需统一规划视觉阅读顺序（reading order）、主次对比（prominence）、视觉群组（coherent groups）与像素清晰可读性；画布宽高必须为 16 的正整数倍。",
+    "- 遵循 MOSS-Image (Qwen3.5-9B TE + DiT) 官方编译器 A 级受控实验实测规范：",
+    "- 1. 因果注意力语序不可颠倒：光影、色温与摄影媒介词必须置于主体和衣物名词之前，确保 directional key light 能够正确渲染表面色彩，避免后置光影被衰减为局部微弱道具。",
+    "- 2. 空间方位与观众视角绝对锚定：偏侧主体、手势（如比耶/OK手势）、关键道具或分屏背景，必须以观众视角（from the viewer's perspective: on the viewer's left side / right side of the frame）显式写明，消除 DiT 模型镜像反转。",
+    "- 3. 肢体动作与衣物防多手：半脱衣、掀裙等拉扯动作必须写为完成态静态结果（如 'shirt already pushed up, skirt hem already lifted'），严禁使用拉扯动词占用双手，彻底防止模型凭空多画出第三只手。",
+    "- 4. 多人场景因果阻断防双胞胎：主角色排在第 1 段定调；第 2 人及后续角色段落首句必须使用反向因果阻断词（如 'In sharp contrast, the person on the right has NO glasses, contrasting hair and spotless skin...'），阻断人种骨相与服饰串色。",
+    "- 5. 暗室与逆光正面防死白：夜间暗室或逆光剪影必须显式写明正面暗部位置（'front of body submerged in deep dark shadows'），同时正文彻底删除 fair skin，负面封杀 flat front lighting，防止人物正面惨白发亮。",
+    "- 6. 真实物理光学与微观质感：直接写明镜头光斑、硬直闪投影、微观毛孔、真实发丝与 35mm 胶片颗粒，禁止单独写空洞的相机型号（如单独写 Hasselblad 无效），严禁 (word:1.2) 权重与画质空话。",
+    "- 7. 画面文字精准引用：图内文字必须用半角英文双引号 \"text\" 逐字精准包裹，换行处直接换行。",
+  ].join("\n"),
+
+  moss_cinematic: [
+    "- MOSS-Image 12 种三次元摄影与电影风格实测预设（证据等级 A）：",
+    "- 结构要求：[摄影器材与物理光学] -> [机位景别与前景遮挡] -> [主体骨相与真发细节] -> [特定灯具与受光阴影] -> [显影颗粒与肤质锁定]。",
+    "- 实测生效风格库（开头词组）：",
+    "  • 90s 一次性胶片硬直闪：raw 1990s disposable 35mm film snapshot, harsh direct on-camera flash, hard black drop shadow on the wall, dark vignette, heavy grain, unretouched pores.",
+    "  • 暗室单束光伦勃朗切割：dramatic low-key chiaroscuro in pitch-black room, lit only by narrow warm beam, half of face in deep dark shadow, zero front fill light.",
+    "  • 王家卫 90s 港片霓虹抽帧：1990s Hong Kong cinema film still, emerald-green and amber tungsten neon, slow-shutter motion blur ghosting trails, glowing red halation.",
+    "  • 好莱坞变形宽银幕青橙：cinematic 35mm anamorphic widescreen still, Hollywood teal-and-orange grading, oval vertical bokeh, horizontal blue lens flare.",
+    "  • 1994 家用 VHS 录像机：1994 lo-fi home VHS camcorder video tape still, CRT scanlines, RGB chroma bleed, green VCR OSD timestamp.",
+    "  • 日系空气感高调胶片：airy Japanese overexposed pastel film photo, high-key diffused soft window light, milky lifted shadows, pale cyan-mint cast.",
+    "- 打破摆拍感的关键：在画面一侧加入虚化前景遮挡物（越肩后脑勺/门框/反光玻璃条）以及真实生活道具（凌乱发丝/牙签/告示纸）。",
+  ].join("\n"),
+
+  moss_anime: [
+    "- MOSS-Image 二次元四大调动通道（证据等级 A，SLG置空/16步即可完美呈现）：",
+    "- 核心原则：主体描述必须保持【画风中立】（严禁出现毛孔、闪光灯、照片胶片词），仅靠开头分类词组即可精准切换风格：",
+    "  • 1990s 复古赛璐璐 OVA：1990s (style), retro artstyle, anime screencap, cel shading, vintage 1990s OVA anime aesthetic, VHS tape color bleed, hand-painted cel animation.",
+    "  • 纯黑白日漫网点纸：manga page, monochrome, greyscale, screentones, inked lineart, bold black ink outlines, pen crosshatching（必须删去正文所有颜色词）。",
+    "  • 透明水彩晕染绘本：watercolor (medium), traditional media, ink and wash, soft pastel watercolor bleed on rough textured paper, delicate hand-painted illustration.",
+    "  • 高饱和扁平矢量波普：flat color, vector illustration, bold thick colored outlines, vibrant pop art palette, hard geometric cel shading, flat graphic artstyle.",
+    "  • 16-bit 像素游戏图：pixel art, 16-bit retro PC-98 Japanese adventure game graphic, crisp visible square pixel grid, checkerboard dithering, limited 16-color palette.",
+    "- 严禁写入未经预训练收录的个人画师名（如 ask, ciloranko 等已被 Gemma 4 重打标稀释），严禁使用细碎五官几何词硬凑画风。",
+  ].join("\n"),
+
+  moss_closed_tags: [
+    "- MOSS-Image 官方 <|概念|>...<|/概念|> 闭合标签结构化写法（证据等级 A）：",
+    "- 为什么使用闭合标签：Qwen3.5 底座针对 ChatML 定界符训练，每行一个闭合标签可降低跨区块词语相互污染达 50% 以上，防止多头多肢、景深塌陷与冷暖光互串。",
+    "- 标准分行闭合结构：",
+    "  <|style_and_camera|>[摄影设备/画种分类], [机位景别], razor-sharp focus, deep depth of field, [角色名], [核心 Tags], uncensored.<|/style_and_camera|>",
+    "  <|left_focus|>On the viewer's left: [主体1的骨相、真实发丝、表情、专属受光色温、静态衣物结果与动作]...<|/left_focus|>",
+    "  <|right_focus|>In sharp contrast, on the viewer's right: [主体2（含反向因果阻断词与相异发色/肤色）]...<|/right_focus|>",
+    "  <|texture_lock|>Unretouched youthful fair skin texture with microscopic pores, real human hair strands in sharp focus, realistic wet specular highlights, organic 35mm film grain.<|/texture_lock|>",
   ].join("\n"),
 
   layout: [
@@ -1649,7 +1714,7 @@ export const PRESET_RULE_TEMPLATES = {
 
   detailed: [
     "- 针对 Flux / SD3 的高密度超精细描述：深度刻画微观材质肌理（皮肤毛孔纹理、织物针织经纬、金属拉丝与微小划痕）。",
-    "- 严密的空间景深分层：分明界定前景（foreground）、中景（midground）与背景（background）的空间拓扑关系与前后遮挡。",
+    "- 严密的空间景深分层与观众视角方位：分明界定前景（foreground）、中景（midground）与背景（background）的空间拓扑关系；偏侧主体与手势必须明确标明在画面左侧（viewer's left）或右侧（viewer's right），杜绝左右翻转。",
     "- 严格保留可见文字：招牌、印刷品、衣物上的所有文字必须用半角引号 \"text\" 逐字精准记录，绝不漏字改字。",
     "- 真实物理光学与材质反应：强调高光镜面反射、次表面散射（SSS）、环境光遮蔽（AO）与地面接触软阴影。",
   ].join("\n"),
@@ -1663,6 +1728,39 @@ export const PRESET_RULE_TEMPLATES = {
     "- 采用逗号分隔的结构化标签短语输出（Danbooru 标签规范）。",
     "- 严格优先级排序：画质媒介基底, 角色核心身份与数量, 发型发色, 面部神态, 服饰穿搭与配件, 动作体态, 背景环境与场景, 采光照明, 构图视角, 艺术风格。",
     "- 所有标签全小写，标签内多词以下划线或空格连接，避免完整自然语言长句，方便直接接入标签生图工作流。",
+  ].join("\n"),
+
+  pixel_fidelity: [
+    "- 像素级全要素提取：全面客观分析主体、衣饰材质、五官面貌、解剖细节、空间布局与物理光影，每个核心元素保持 3~5 个具象细节特征。",
+    "- 拒绝营销空话与模糊词：严禁使用 masterpiece, 8k 等无意义空话，采用精准形态术语与真实物理材质描述。",
+    "- 严禁臆造与水印过滤：文字提取仅识别画面内的招牌与服饰字样，自动剔除无关水印与元数据；画面内文字使用半角双引号 \"text\" 标出。",
+    "- 双模态融合模式：若有补充修改要求，以补充要求为绝对准则对局部进行定向改写，未修改区域与原图保持严格锚定。",
+  ].join("\n"),
+
+  portrait_master: [
+    "- 追求亚洲面孔自然审美与真实摄影质感：细腻刻画微观皮肤肌理（真实毛孔、微小皮脂光泽、自然红润），杜绝塑料假面与绿色/僵尸斑驳感。",
+    "- 神态与眼眸聚焦：生动刻画视线方向、生动的眼神光斑（catchlight）、轻微微表情与自然唇纹。",
+    "- 人像摄影光学参数：模拟 50mm / 85mm 人像定焦镜头大光圈（f/1.4 - f/2.0）浅景深，主体极度锐利，背景呈现奶油般柔美散景虚化（creamy bokeh）。",
+    "- 柔和物理光效：侧逆光勾勒发丝轮廓边缘光（rim light），正面柔和反光板补光，明暗过渡平滑自然。",
+  ].join("\n"),
+
+  character_extractor: [
+    "- 彻底剥离背景与画风：完全忽略原图的画风媒介、原图背景、光影色调及次要无关元素，纯粹聚焦角色人设本体。",
+    "- 角色本体特征固化：精准提取性别、年龄段、发型发色、眼型瞳色、五官面貌、解剖体态及标志性特征。",
+    "- 服饰与道具全景解析：由内而外详细描述全部衣物层级、布料材质（如皮革/丝绸/粗麻）、装饰配件、徽章符号与专属武器装备。",
+    "- 强制站立基准姿态：忽略原图动态，将姿态基准规范为符合角色设定的稳定静态站姿，专为角色三视图与视频动作迁移提供基准。",
+  ].join("\n"),
+
+  qwen_edit: [
+    "- 遵循 Qwen-Image-Edit 视觉编辑逻辑：精准锁定画面中需要修改的目标主体或区域。",
+    "- 明晰修改与保留边界：明确声明原图哪些元素必须绝对保留（如姿势、身份特征、背景结构），哪些必须进行精准替换或重绘。",
+    "- 避免误伤未指定区域：指令保持高度具象，不产生附带的多余幻觉修改。",
+  ].join("\n"),
+
+  video_wan_h3: [
+    "- 严格对齐 Wan 2.1 & MiniMax H3 官方五段式公式：[主体描述] -> [场景描述] -> [运动描述] -> [美学与灯光] -> [风格总结]。",
+    "- 完整动作链与次级动力学：详细描述主体起始到结束的完整动作，并刻画动作引发的次级物理运动（发丝飘动、衣摆惯性抖动、重心转移）。",
+    "- 明确的电影运镜轨迹：清晰标注平滑推近（push-in）、侧向跟拍（tracking shot）、低角度仰拍或一镜到底连贯调度。",
   ].join("\n"),
 
   custom: [

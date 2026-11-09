@@ -407,7 +407,11 @@ class ChatClient:
         request_id: str | None = None,
     ) -> ChatResult:
         request_id = request_id or self.new_request_id()
-        model_name = model or self.settings.model
+        model_name = str(model or self.settings.model).strip()
+        if model and self.settings.model and "/" in self.settings.model and "/" not in model:
+            candidate = f"{self.settings.model.split('/', 1)[0]}/{model.strip()}"
+            if candidate == self.settings.model:
+                model_name = candidate
         body: dict[str, Any] = {"model": model_name, "messages": list(messages), "stream": False}
         if temperature is not None:
             body["temperature"] = temperature
@@ -490,7 +494,13 @@ class ChatClient:
         request_id: str | None = None,
     ) -> Iterator[StreamEvent]:
         request_id = request_id or self.new_request_id()
-        model_name = model or self.settings.model
+        model_name = str(model or self.settings.model).strip()
+        # Smart prefix fallback: if node provides a model name without prefix but default model has prefix
+        if model and self.settings.model and "/" in self.settings.model and "/" not in model:
+            candidate = f"{self.settings.model.split('/', 1)[0]}/{model.strip()}"
+            if candidate == self.settings.model:
+                model_name = candidate
+
         body: dict[str, Any] = {"model": model_name, "messages": list(messages), "stream": True}
         if temperature is not None:
             body["temperature"] = temperature
