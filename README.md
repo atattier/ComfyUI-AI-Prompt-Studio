@@ -9,7 +9,14 @@
   <img src="https://img.shields.io/badge/license-GPL--3.0-blue.svg" alt="License GPL-3.0">
   <img src="https://img.shields.io/badge/python-3.10+-brightgreen.svg" alt="Python 3.10+">
   <img src="https://img.shields.io/badge/ComfyUI-Custom--Node-orange.svg" alt="ComfyUI Custom Node">
-  <img src="https://img.shields.io/badge/tests-208%20passed-success.svg" alt="Tests">
+  <img src="https://img.shields.io/badge/Android-APK%20Release-brightgreen?logo=android&logoColor=white" alt="Android APK">
+  <img src="https://img.shields.io/badge/tests-231%20passed-success.svg" alt="Tests">
+</p>
+
+<p align="center">
+  <a href="https://github.com/atattier/ComfyUI-AI-Prompt-Studio/releases">
+    <img src="https://img.shields.io/badge/📲%20下载-Android%20APK%20安装包-2ea44f?style=for-the-badge" alt="下载 APK">
+  </a>
 </p>
 
 ---
