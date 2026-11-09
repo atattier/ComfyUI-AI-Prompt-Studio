@@ -19,6 +19,7 @@ server_token
 media/
 audit.jsonl
 *.tmp
+*.zip
 
 # OS generated files
 .DS_Store

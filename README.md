@@ -14,8 +14,12 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/atattier/ComfyUI-AI-Prompt-Studio/releases">
-    <img src="https://img.shields.io/badge/📲%20下载-Android%20APK%20安装包-2ea44f?style=for-the-badge" alt="下载 APK">
+  <a href="https://github.com/atattier/ComfyUI-AI-Prompt-Studio/releases/download/v1.0.0/ComfyUI-AI-Prompt-Studio.zip">
+    <img src="https://img.shields.io/badge/🧩%20下载-ComfyUI%20插件压缩包%20(.zip)-0969da?style=for-the-badge" alt="下载插件 zip">
+  </a>
+  &nbsp;&nbsp;
+  <a href="https://github.com/atattier/ComfyUI-AI-Prompt-Studio/releases/download/v1.0.0/ComfyUI-PromptStudio-v1.0.0.apk">
+    <img src="https://img.shields.io/badge/📲%20下载-Android%20APK%20安装包%20(.apk)-2ea44f?style=for-the-badge" alt="下载 APK">
   </a>
 </p>
 
