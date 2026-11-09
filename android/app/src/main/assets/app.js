@@ -28,6 +28,46 @@
     { value: 'moss-image-base-1.0-2026-10-09', label: 'moss-image-base-1.0-2026-10-09' }
   ];
 
+  // --- 生图服务商预设（含免费端点） ---
+  const GEN_PROVIDERS = {
+    moss: {
+      label: 'MOSS 官方',
+      baseUrl: 'https://api.mosi.cn/v1',
+      model: 'moss-image-sft-1.0',
+      endpoint: 'https://api.mosi.cn/v1/images/generations',
+      needKey: true,
+      keyField: 'moss_api_key',
+      hint: 'MOSS 官方出图，需要官方 Key；支持 layout 布局提示词。'
+    },
+    siliconflow: {
+      label: '硅基流动',
+      baseUrl: 'https://api.siliconflow.cn/v1',
+      model: 'black-forest-labs/FLUX.1-schnell',
+      endpoint: 'https://api.siliconflow.cn/v1/images/generations',
+      needKey: true,
+      keyField: 'gen_api_key',
+      hint: '注册送额度，FLUX.1-schnell / Kwai-Kolors/Kolors 可免费调用。'
+    },
+    pollinations: {
+      label: 'Pollinations.ai',
+      baseUrl: '',
+      model: 'flux',
+      endpoint: '',
+      needKey: false,
+      keyField: '',
+      hint: '完全免费、无需 Key。用 GET 图片直链，尺寸按官方规格自动映射。'
+    },
+    openai_compat: {
+      label: '自定义 OpenAI 兼容',
+      baseUrl: 'http://127.0.0.1:8188/v1',
+      model: 'flux',
+      endpoint: '',
+      needKey: false,
+      keyField: 'gen_api_key',
+      hint: '任何 /images/generations 服务：本地 ComfyUI 代理 / OneAPI / NewAPI / vLLM 都可。'
+    }
+  };
+
   const DEFAULT_CONFIG = {
     // MOSS Official Image Gen
     moss_api_key: '',
@@ -37,6 +77,12 @@
     moss_cfg: 7.0,
     moss_watermark: false,
     moss_negative: 'worst quality, bad anatomy, watermark, jpeg artifact',
+
+    // 生图服务商（新增）
+    gen_provider: 'moss',
+    gen_base_url: 'https://api.mosi.cn/v1',
+    gen_model: 'moss-image-sft-1.0',
+    gen_api_key: '',
 
     // Optional LLM for Prompt Expansion & Vision
     llm_provider: 'siliconflow',
@@ -62,6 +108,182 @@
     } catch (e) {
       console.warn('Storage save error:', e);
     }
+  }
+
+  // --- 抄自插件 prompt_studio/layout.py 的优秀部分 ---
+  const LAYOUT_MAX_ITEMS = 16;              // 与源码 MAX_ITEMS 一致
+  const MIN_SIDE = 256, MAX_SIDE = 2048, MULTIPLE = 16;
+  const MAX_PIXELS = 2097152, TARGET_PIXELS = 1048576;  // ~1M 目标面积
+
+  // 官方尺寸网格算法（16 倍数、256~2048、<=2M 像素、比例优先、面积近 1M）
+  function officialCanvasSize(w0, h0) {
+    if (!w0 || !h0 || w0 <= 0 || h0 <= 0) return { w: 1024, h: 1024 };
+    const ratio = w0 / h0;
+    let best = null;
+    for (let w = MIN_SIDE; w <= MAX_SIDE; w += MULTIPLE) {
+      const maxH = Math.min(MAX_SIDE, Math.floor(MAX_PIXELS / w));
+      for (let h = MIN_SIDE; h <= maxH; h += MULTIPLE) {
+        const err = Math.abs((w / h) - ratio) / ratio;
+        const areaGap = Math.abs(w * h - TARGET_PIXELS);
+        const key = [err, areaGap, -(w * h)];
+        if (!best || key[0] < best.key[0] ||
+            (key[0] === best.key[0] && key[1] < best.key[1]) ||
+            (key[0] === best.key[0] && key[1] === best.key[1] && key[2] < best.key[2])) {
+          best = { key, w, h };
+        }
+      }
+    }
+    return { w: best.w, h: best.h };
+  }
+
+  // --- 按图片宽高比匹配最相近的官方尺寸 ---
+  function matchNearestSize(w, h) {
+    if (!w || !h) return null;
+    const target = w / h;
+    let best = null, bestDiff = Infinity;
+    MOSI_SIZES.forEach(s => {
+      const m = /^(\d+)x(\d+)$/.exec(s.value);
+      if (!m) return;
+      const sw = parseInt(m[1], 10), sh = parseInt(m[2], 10);
+      const r = sw / sh;
+      const diff = Math.abs(Math.log(r / target));
+      if (diff < bestDiff) { bestDiff = diff; best = s; }
+    });
+    return best;
+  }
+
+  function applyMatchedSize(w, h, note) {
+    const s = matchNearestSize(w, h);
+    if (!s) return null;
+    if (mosiSizeSelect) {
+      mosiSizeSelect.value = s.value;
+      config.moss_size = s.value;
+      saveConfig();
+    }
+    const info = note || ('原图 ' + w + '×' + h + '（比例 ' + (w / h).toFixed(3) + '）');
+    const txt = '📐 已按图片比例自动匹配官方尺寸：<b>' + s.value + '</b>（' + s.label.split('(')[1]?.replace(')', '') + '）<br>' + info;
+    const box1 = document.getElementById('ratioMatchBox');
+    const box2 = document.getElementById('sizeMatchHint');
+    if (box1) { box1.innerHTML = txt; box1.style.display = 'block'; }
+    if (box2) { box2.innerHTML = txt; box2.style.display = 'block'; }
+    return s;
+  }
+
+  // --- MOSS Layout 布局提示词（抄自插件 prompt_studio/layout.py 的 6 级层次化场景图） ---
+  // 上限 16 个 box，与 MAX_ITEMS 一致；bbox 绝对像素 xyxy，label ∈ object|character|text
+  function currentCanvasSize() {
+    const m = /^(\d+)x(\d+)$/.exec(config.moss_size || '1024x1024');
+    return { w: m ? parseInt(m[1], 10) : 1024, h: m ? parseInt(m[2], 10) : 1024 };
+  }
+
+  // 6 级层次化分解指令（原文照抄插件 layout_instruction 的语义）
+  const LAYOUT_INSTRUCTION = `你是专家级视觉场景图解析器（inspired by KohakuGBC graph-based scene decomposition）。
+把整张图分解为分层、分级的视觉场景图，AT MOST 16 个区域（默认最多 6 个，丰富场景可达 16 个）。
+
+### 严格 6 级层次分解规则：
+1. Level 0 - 全局环境空间：整体背景/场景（如 咖啡厅内景 / 街道 / Cafe Interior）
+2. Level 1 - 建筑/结构分隔：框住场景的实体结构（玻璃门 / 窗 / 柜台 / Counter）
+3. Level 2 - 主体人物：主要角色的身体与姿态（红发少女 / Red-haired Girl）
+4. Level 3 - 解耦显著特征与幻想元素（关键）：
+   绝不把独立/幻想特征并进人物身体！必须单独成紧致框：
+   光环、光之碎片翼、角、尾巴、武器、悬浮法器
+5. Level 4 - 独立道具与媒介：海报、传单、屏幕、招牌等显著物体
+6. Level 5 - 嵌套文字与排版（细粒度子级）：
+   海报/传单里的标题文字，parent 指向所属道具，text 字段逐字转录可见文字
+
+### Bounding Box：
+- bbox [x1,y1,x2,y2] 为绝对像素 xyxy，画布 = width×height，越界自动夹取。
+- 框要紧贴物体，不留松散边距。
+
+### 严格 JSON（不要 markdown 围栏、不要解释）：
+{"summary":{"caption":"整体连贯画面描述"},"items":[
+  {"name":"中文/英文实体名","label":"object|character|text","parent":"父级实体名或空","bbox":[x1,y1,x2,y2],"caption":"Vivid English visual description for generation","text":"可见文字(仅 text 标签)"}
+]}
+label 只能是 object | character | text。items 最多 16 个。`;
+
+  function normalizeLayout(raw, w, h) {
+    // 把 LLM 或本地生成的 items 规范化：夹取 bbox、限制 16 个、补字段
+    let j = raw;
+    if (typeof raw === 'string') {
+      let t = extractPromptText(raw);
+      try { j = JSON.parse(t); } catch (e) { return null; }
+    }
+    if (!j || typeof j !== 'object') return null;
+    const items = (Array.isArray(j.items) ? j.items : []).slice(0, LAYOUT_MAX_ITEMS);
+    const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, Math.round(Number(v) || 0)));
+    return {
+      width: w, height: h,
+      bbox_coord_space: 'abs', bbox_format: 'xyxy',
+      summary: {
+        caption: String(j.summary?.caption || j.caption || 'A composed image.'),
+        canvas: 'single'
+      },
+      items: items.map((it, idx) => {
+        const label = ['object', 'character', 'text'].includes(it.label) ? it.label : 'object';
+        let b = Array.isArray(it.bbox) && it.bbox.length === 4 ? it.bbox : [0, 0, w, h];
+        // 兼容 0-1000 归一化坐标（插件指令里常用）
+        const norm = b.every(v => v <= 1000) && w > 1000;
+        const cv = v => norm ? Math.round(Number(v) * w / 1000) : Number(v);
+        const cw = v => norm ? Math.round(Number(v) * h / 1000) : Number(v);
+        let x1 = clamp(cv(b[0]), 0, w - 2), y1 = clamp(cw(b[1]), 0, h - 2);
+        let x2 = clamp(cv(b[2]), x1 + 1, w), y2 = clamp(cw(b[3]), y1 + 1, h);
+        const caption = String(it.caption || it.text || ('Region ' + (idx + 1))).trim() || ('Region ' + (idx + 1));
+        const out = {
+          name: String(it.name || ('Region ' + (idx + 1))).slice(0, 24),
+          parent: String(it.parent || ''),
+          label,
+          caption,
+          text: String(it.text || ''),
+          bbox: [x1, y1, x2, y2]
+        };
+        if (label === 'text' && !out.text.trim()) out.text = caption;
+        return out;
+      })
+    };
+  }
+
+  function buildLayoutJSON(concept, tags) {
+    const { w, h } = currentCanvasSize();
+    const kw = (concept || '').trim();
+    const tagText = (tags || []).join(', ');
+    const caption = (kw || 'A captivating cinematic scene') + (tagText ? '. Style: ' + tagText : '');
+    // 6 级层次化模板：全局背景 / 结构 / 主体 / 特征 / 道具 / 文字
+    const box = (x1, y1, x2, y2) => [
+      Math.round(x1 * w / 100), Math.round(y1 * h / 100),
+      Math.round(x2 * w / 100), Math.round(y2 * h / 100)
+    ];
+    const raw = {
+      summary: { caption },
+      items: [
+        { name: '全局环境', label: 'object', parent: '', caption: 'overall background / setting, layered atmospheric depth', bbox: box(0, 0, 100, 60) },
+        { name: '结构分隔', label: 'object', parent: '全局环境', caption: 'architectural divider framing the scene', bbox: box(0, 35, 22, 100) },
+        { name: '主体人物', label: 'character', parent: '', caption: kw || 'focal subject, pose and attire', bbox: box(28, 22, 72, 88) },
+        { name: '显著特征', label: 'object', parent: '主体人物', caption: 'distinctive detached feature (halo / wings / weapon)', bbox: box(55, 12, 82, 38) },
+        { name: '道具媒介', label: 'object', parent: '', caption: 'standalone prop, poster or flyer', bbox: box(72, 48, 95, 78) },
+        { name: '嵌套文字', label: 'text', parent: '道具媒介', caption: 'title text on the prop', text: 'TEXT', bbox: box(75, 52, 92, 60) },
+        { name: '前景', label: 'object', parent: '', caption: 'foreground depth cues, leading lines', bbox: box(0, 72, 100, 100) }
+      ]
+    };
+    return JSON.stringify(normalizeLayout(raw, w, h), null, 2);
+  }
+
+  // 把任意描述文本套进合法 layout 结构（单区域，可通过对话再扩展到 16 个）
+  function textToLayout(text) {
+    const { w, h } = currentCanvasSize();
+    const cap = extractPromptText(text) || 'A composed image.';
+    const raw = {
+      summary: { caption: cap },
+      items: [{ name: '主体', label: 'character', parent: '', caption: cap, bbox: [20, 18, 80, 92] }]
+    };
+    return JSON.stringify(normalizeLayout(raw, w, h), null, 2);
+  }
+
+  // 从任意文本里提取可送去生图的内容（去掉 markdown 代码块围栏）
+  function extractPromptText(t) {
+    let x = String(t || '').trim();
+    const fence = /```(?:json|text)?\s*([\s\S]*?)```/.exec(x);
+    if (fence) x = fence[1].trim();
+    return x;
   }
 
   // --- MOSS-Image Tag Vocabulary ---
@@ -306,69 +528,247 @@
     } catch (e) {}
   }
 
-  // Start MOSS Official Generation
+  // ==================== 多服务商生图（含免费模型） ====================
+  const genProviderSelect = document.getElementById('genProviderSelect');
+  const genModelInput = document.getElementById('genModelInput');
+  const genModelGroup = document.getElementById('genModelGroup');
+  const genBaseUrlGroup = document.getElementById('genBaseUrlGroup');
+  const genBaseUrlInput = document.getElementById('genBaseUrlInput');
+  const genModelHint = document.getElementById('genModelHint');
+  const mosiModelGroup = document.getElementById('mosiModelGroup');
+  const btnFetchGenModels = document.getElementById('btnFetchGenModels');
+  const btnClearGenModels = document.getElementById('btnClearGenModels');
+  const genModelListBox = document.getElementById('genModelListBox');
+
+  const settingsGenProvider = document.getElementById('settingsGenProvider');
+  const settingsGenBaseUrl = document.getElementById('settingsGenBaseUrl');
+  const settingsGenModel = document.getElementById('settingsGenModel');
+
+  function syncGenProviderUI() {
+    const p = config.gen_provider || 'moss';
+    const preset = GEN_PROVIDERS[p] || GEN_PROVIDERS.moss;
+    const url = config.gen_base_url || preset.baseUrl;
+    const model = config.gen_model || preset.model;
+    if (genProviderSelect) genProviderSelect.value = p;
+    if (genModelInput) genModelInput.value = model;
+    if (genBaseUrlInput) genBaseUrlInput.value = url;
+    // 设置页三个控件同步（图二：URL / 模型名 / 服务商）
+    if (settingsGenProvider) settingsGenProvider.value = p;
+    if (settingsGenBaseUrl) settingsGenBaseUrl.value = url;
+    if (settingsGenModel) settingsGenModel.value = model;
+    if (genModelHint) genModelHint.textContent = preset.hint;
+    // MOSS 下拉只在官方模式显示
+    if (mosiModelGroup) mosiModelGroup.style.display = (p === 'moss') ? 'block' : 'none';
+    // 自定义端点显示 Base URL 输入
+    if (genBaseUrlGroup) genBaseUrlGroup.style.display = (p === 'openai_compat') ? 'block' : 'none';
+    // Pollinations 不需要模型名（但仍可选用 flux/turbo）
+    if (genModelInput) genModelInput.disabled = false;
+  }
+
+  if (genProviderSelect) {
+    genProviderSelect.addEventListener('change', () => {
+      const p = genProviderSelect.value;
+      const preset = GEN_PROVIDERS[p] || GEN_PROVIDERS.moss;
+      config.gen_provider = p;
+      config.gen_base_url = preset.baseUrl;
+      config.gen_model = preset.model;
+      saveConfig();
+      syncGenProviderUI();
+      toast('已切换到：' + preset.label);
+    });
+  }
+  // 设置页：切换服务商 → 自动带出推荐 URL / 模型，并同步生图页
+  if (settingsGenProvider) {
+    settingsGenProvider.addEventListener('change', () => {
+      const p = settingsGenProvider.value;
+      const preset = GEN_PROVIDERS[p] || GEN_PROVIDERS.moss;
+      config.gen_provider = p;
+      config.gen_base_url = preset.baseUrl;
+      config.gen_model = preset.model;
+      saveConfig();
+      syncGenProviderUI();
+      toast('已切换到：' + preset.label + '（记得点保存）');
+    });
+  }
+  if (settingsGenBaseUrl) settingsGenBaseUrl.addEventListener('change', () => {
+    config.gen_base_url = settingsGenBaseUrl.value.trim(); saveConfig();
+  });
+  if (settingsGenModel) settingsGenModel.addEventListener('change', () => {
+    config.gen_model = settingsGenModel.value.trim(); saveConfig();
+  });
+  // 设置页独立保存按钮
+  document.getElementById('btnSaveGenSettings')?.addEventListener('click', () => {
+    if (settingsGenProvider) config.gen_provider = settingsGenProvider.value;
+    if (settingsGenBaseUrl) config.gen_base_url = settingsGenBaseUrl.value.trim();
+    if (settingsGenModel) config.gen_model = settingsGenModel.value.trim();
+    if (genApiKeyInput) config.gen_api_key = genApiKeyInput.value.trim();
+    saveConfig();
+    syncGenProviderUI();
+    toast('✅ 生图服务商配置已保存');
+  });
+  if (genModelInput) genModelInput.addEventListener('change', () => {
+    config.gen_model = genModelInput.value.trim();
+    saveConfig();
+  });
+  if (genBaseUrlInput) genBaseUrlInput.addEventListener('change', () => {
+    config.gen_base_url = genBaseUrlInput.value.trim();
+    saveConfig();
+  });
+
+  // 自动获取生图模型（复用 /models 探测）
+  if (btnFetchGenModels) btnFetchGenModels.addEventListener('click', async () => {
+    const p = config.gen_provider || 'moss';
+    if (p === 'pollinations') {
+      toast('Pollinations 无需获取模型，直接用即可');
+      return;
+    }
+    const base = (config.gen_base_url || (GEN_PROVIDERS[p] && GEN_PROVIDERS[p].baseUrl) || '').trim();
+    if (!base) { toast('请先填写接口基地址'); return; }
+    const key = (config.gen_api_key || '').trim();
+    btnFetchGenModels.disabled = true;
+    toast('正在探测 /models …');
+    let found = [];
+    try {
+      const ctrl = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+      const timer = setTimeout(() => { if (ctrl) ctrl.abort(); }, 7000);
+      const opt = { headers: { 'Accept': 'application/json' } };
+      if (ctrl) opt.signal = ctrl.signal;
+      if (key) opt.headers['Authorization'] = 'Bearer ' + key;
+      const r = await fetch(base.replace(/\/+$/, '') + '/models', opt);
+      clearTimeout(timer);
+      if (r.ok) {
+        const j = await r.json();
+        const d = (j && (j.data || j.models)) || [];
+        if (Array.isArray(d)) d.forEach(m => {
+          const nm = typeof m === 'string' ? m : (m && (m.id || m.name));
+          if (nm) found.push(nm);
+        });
+      }
+    } catch (e) {}
+    btnFetchGenModels.disabled = false;
+    if (!found.length) { toast('没读到模型列表，手动填模型名即可'); return; }
+    // 优先展示看起来像生图的模型
+    const imgKw = /flux|image|kolors|sd|stable|diffusion|dall|seedream|hunyuan|wan|cogview|moss|schnell|realistic|anime/i;
+    const sorted = found.slice().sort((x, y) => (imgKw.test(y) ? 1 : 0) - (imgKw.test(x) ? 1 : 0));
+    renderGenModelList(sorted);
+    toast('发现 ' + found.length + ' 个模型，点选填入');
+  });
+
+  function renderGenModelList(list) {
+    if (!genModelListBox) return;
+    const esc = t => String(t).replace(/[&<>"']/g, c =>
+      ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+    genModelListBox.innerHTML = list.slice(0, 80).map(m =>
+      '<div class="gm-pick" data-m="' + esc(m) + '" style="padding:7px 6px; border-bottom:1px solid var(--border); font-size:12px; font-family:monospace; word-break:break-all; cursor:pointer;">' + esc(m) + '</div>'
+    ).join('');
+    genModelListBox.style.display = 'block';
+    if (btnClearGenModels) btnClearGenModels.style.display = 'block';
+  }
+  if (genModelListBox) genModelListBox.addEventListener('click', e => {
+    const p = e.target.closest && e.target.closest('.gm-pick');
+    if (!p) return;
+    if (genModelInput) genModelInput.value = p.getAttribute('data-m');
+    config.gen_model = p.getAttribute('data-m');
+    saveConfig();
+    toast('已选模型：' + config.gen_model);
+  });
+  if (btnClearGenModels) btnClearGenModels.addEventListener('click', () => {
+    if (genModelListBox) genModelListBox.style.display = 'none';
+    btnClearGenModels.style.display = 'none';
+  });
+
+  function providerKey(p) {
+    const preset = GEN_PROVIDERS[p] || GEN_PROVIDERS.moss;
+    if (!preset.needKey) return '';
+    if (preset.keyField === 'moss_api_key') return (config.moss_api_key || '').trim();
+    return (config.gen_api_key || config.moss_api_key || '').trim();
+  }
+
+  // Pollinations 免费直链：把官方尺寸映射成宽高参数
+  function pollinationsUrl(prompt, size, model) {
+    const m = /^(\d+)x(\d+)$/.exec(size || '1024x1024');
+    const w = m ? parseInt(m[1], 10) : 1024;
+    const h = m ? parseInt(m[2], 10) : 1024;
+    const params = new URLSearchParams();
+    params.set('width', String(w));
+    params.set('height', String(h));
+    params.set('nologo', 'true');
+    params.set('seed', String(Math.floor(Math.random() * 1000000)));
+    params.set('model', model || 'flux');
+    return 'https://image.pollinations.ai/prompt/' + encodeURIComponent(prompt) + '?' + params.toString();
+  }
+
   if (btnStartMosiGen) {
     btnStartMosiGen.addEventListener('click', async () => {
-      const key = (config.moss_api_key || '').trim();
-      if (!key) {
-        toast('请先在「设置」中填写 MOSS 出图 Key');
+      const p = (config.gen_provider || 'moss');
+      const preset = GEN_PROVIDERS[p] || GEN_PROVIDERS.moss;
+      const key = providerKey(p);
+      if (preset.needKey && !key) {
+        toast('请先在「设置」填写该服务商的 API Key（或切到 Pollinations 免费端点）');
         switchTab('settings');
         return;
       }
 
       const prompt = mosiPrompt.value.trim();
-      if (!prompt) {
-        toast('请输入生图提示词');
-        return;
-      }
+      if (!prompt) { toast('请输入生图提示词'); return; }
 
-      btnStartMosiGen.disabled = true;
-      btnStartMosiGen.innerHTML = '<span class="spinner"></span> MOSS 官方渲染中...';
-
-      const model = mosiModelSelect.value;
       const size = mosiSizeSelect.value;
       const steps = parseInt(mosiStepsRange.value, 10) || 50;
       const cfg = parseFloat(mosiCfgRange.value) || 7.0;
       const neg = mosiNegPrompt.value.trim();
       const seedVal = mosiSeedInput.value.trim();
       const watermark = mosiWatermark ? mosiWatermark.checked : false;
+      const model = (genModelInput && genModelInput.value.trim()) || preset.model;
 
-      const payload = {
-        model: model,
-        prompt: prompt,
-        size: size,
-        n: 1,
-        response_format: 'url',
-        output_watermark: { enabled: watermark },
-        num_inference_steps: steps,
-        guidance_scale: cfg
-      };
-      if (neg) payload.negative_prompt = neg;
-      if (seedVal && !isNaN(parseInt(seedVal, 10))) {
-        payload.seed = parseInt(seedVal, 10);
-      }
-
+      btnStartMosiGen.disabled = true;
+      btnStartMosiGen.innerHTML = '<span class="spinner"></span> ' + preset.label + ' 渲染中...';
       const startTime = Date.now();
+
       try {
-        const resp = await fetch(MOSI_GEN_URL, {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${key}`,
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify(payload)
-        });
+        let imgUrl = null;
 
-        if (!resp.ok) {
-          const errData = await resp.json().catch(() => ({}));
-          const errMsg = errData.error?.message || errData.detail || `HTTP ${resp.status}`;
-          throw new Error(errMsg);
-        }
-
-        const data = await resp.json();
-        const imgUrl = data.data?.[0]?.url;
-        if (!imgUrl) {
-          throw new Error('未获取到图片 URL');
+        if (p === 'pollinations') {
+          // 免费端点：直接当图片 URL 用
+          imgUrl = pollinationsUrl(prompt, size, model);
+        } else {
+          const base = (config.gen_base_url || preset.baseUrl || '').replace(/\/+$/, '');
+          const endpoint = preset.endpoint || (base + '/images/generations');
+          const payload = {
+            model: model,
+            prompt: prompt,
+            size: size,
+            n: 1,
+            response_format: 'url'
+          };
+          if (p === 'moss') {
+            payload.output_watermark = { enabled: watermark };
+            payload.num_inference_steps = steps;
+            payload.guidance_scale = cfg;
+            if (neg) payload.negative_prompt = neg;
+            if (seedVal && !isNaN(parseInt(seedVal, 10))) payload.seed = parseInt(seedVal, 10);
+          } else {
+            // OpenAI 兼容 / SiliconFlow
+            if (neg) payload.negative_prompt = neg;
+            if (seedVal && !isNaN(parseInt(seedVal, 10))) payload.seed = parseInt(seedVal, 10);
+          }
+          const resp = await fetch(endpoint, {
+            method: 'POST',
+            headers: {
+              'Authorization': 'Bearer ' + key,
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify(payload)
+          });
+          if (!resp.ok) {
+            const errData = await resp.json().catch(() => ({}));
+            throw new Error(errData.error?.message || errData.detail || ('HTTP ' + resp.status));
+          }
+          const data = await resp.json();
+          imgUrl = data.data?.[0]?.url
+                || (data.data?.[0]?.b64_json ? ('data:image/png;base64,' + data.data[0].b64_json) : null)
+                || data.images?.[0]?.url
+                || data.output?.images?.[0];
+          if (!imgUrl) throw new Error('未从响应中拿到图片（' + preset.label + ' 可能返回格式不同）');
         }
 
         const elapsedSec = ((Date.now() - startTime) / 1000).toFixed(1);
@@ -376,13 +776,13 @@
         mosiResultImg.setAttribute('referrerpolicy', 'no-referrer');
         mosiResultCard.style.display = 'block';
         addHistory(imgUrl, prompt);
-        toast(`🎉 MOSS 出图成功！耗时 ${elapsedSec}s`);
+        toast('🎉 ' + preset.label + ' 出图成功！耗时 ' + elapsedSec + 's');
       } catch (err) {
-        console.error('MOSS Gen error:', err);
+        console.error('Gen error:', err);
         toast('出图失败: ' + err.message);
       } finally {
         btnStartMosiGen.disabled = false;
-        btnStartMosiGen.innerHTML = '<span>🚀</span> 立即调用 MOSS 官方生图';
+        btnStartMosiGen.innerHTML = '<span>🚀</span> 立即生图';
       }
     });
   }
@@ -412,154 +812,455 @@
     });
   }
 
-  // --- Tab 2: MOSS Prompt Studio (Workshop) ---
+  // ==================== Tab 2: 对话式提示词工坊 ====================
+  const chatMessages = document.getElementById('chatMessages');
   const userConceptInput = document.getElementById('userConcept');
+  const btnChatSend = document.getElementById('btnChatSend');
+  const chatActionBar = document.getElementById('chatActionBar');
   const posResultEl = document.getElementById('posResult');
   const negResultEl = document.getElementById('negResult');
+  // 旧按钮现在都是隐藏占位，保留引用避免其它段报错
   const btnFastCombine = document.getElementById('btnFastCombine');
   const btnMagicExpand = document.getElementById('btnMagicExpand');
   const btnSendToMosi = document.getElementById('btnSendToMosi');
 
+  let chatHistory = [];          // {role:'user'|'assistant', content}
+  let lastAssistantText = '';    // 最近一条助手结果，用于送去生图/复制
+  function appendChatMessage(role, text) {
+    if (!chatMessages) return;
+    const div = document.createElement('div');
+    const isUser = role === 'user';
+    div.className = 'chat-msg ' + (isUser ? 'user' : 'bot');
+    div.style.cssText = [
+      'align-self:' + (isUser ? 'flex-end' : 'flex-start'),
+      'max-width:88%',
+      'background:' + (isUser ? 'var(--moss-gradient)' : 'var(--bg-card)'),
+      'border:1px solid ' + (isUser ? 'transparent' : 'var(--border)'),
+      'border-radius:14px 14px ' + (isUser ? '4px 14px' : '14px 4px'),
+      'padding:10px 13px',
+      'font-size:13px',
+      'line-height:1.7',
+      'color:' + (isUser ? '#fff' : 'var(--text-main)'),
+      'white-space:pre-wrap',
+      'word-break:break-word'
+    ].join(';');
+    div.textContent = text;
+    chatMessages.appendChild(div);
+    chatMessages.scrollTop = chatMessages.scrollHeight;
+  }
+
+  function showThinking() {
+    if (!chatMessages) return null;
+    const div = document.createElement('div');
+    div.id = 'chatThinking';
+    div.style.cssText = 'align-self:flex-start;max-width:88%;background:var(--bg-card);border:1px solid var(--border);border-radius:14px 14px 14px 4px;padding:10px 13px;font-size:13px;color:var(--text-muted);';
+    div.innerHTML = '<span class="spinner"></span> 正在思考…';
+    chatMessages.appendChild(div);
+    chatMessages.scrollTop = chatMessages.scrollHeight;
+    return div;
+  }
+
+  // 离线兜底：没配 LLM Key 时用本地规则直拼
   function buildOfflineMossPrompt(concept) {
     const parts = [];
-    if (concept && concept.trim()) {
-      parts.push(concept.trim());
-    }
+    if (concept && concept.trim()) parts.push(concept.trim());
     for (const [category, tags] of Object.entries(MOSS_TAG_LIBRARIES)) {
-      tags.forEach(item => {
-        if (activeTags.has(item.id)) parts.push(item.prompt);
+      tags.forEach(item => { if (activeTags.has(item.id)) parts.push(item.prompt); });
+    }
+    return {
+      positive: parts.join(', '),
+      negative: config.moss_negative || 'worst quality, bad anatomy, watermark, jpeg artifact'
+    };
+  }
+
+  function offlineReply(cmd, concept) {
+    const { positive, negative } = buildOfflineMossPrompt(concept);
+    if (/layout|布局/i.test(cmd)) {
+      return '```json\n' + buildLayoutJSON(concept || positive, []) + '\n```\n\n📐 这是离线套模板生成的 Layout 布局 JSON。配置 LLM Key 后我能按你的画面细拆区域。';
+    }
+    if (/自检|检查|问题/i.test(cmd)) {
+      return '🔍 自检清单（离线规则）：\n' +
+        '1. 主体是谁/是什么？姿态、服饰、材质是否写清\n' +
+        '2. 光源方向、色温、明暗对比有没有交代\n' +
+        '3. 镜头：景别（特写/半身/全身）、焦段、视角\n' +
+        '4. 背景层次：前景/中景/远景是否分明\n' +
+        '5. 画风与画质词是否补齐\n' +
+        '6. 负面词：' + negative + '\n\n把你的场景发我，我逐条帮你补。';
+    }
+    if (/标签|danbooru/i.test(cmd)) {
+      return (concept || positive) + '\n\n🏷️ 离线版：补上 masterpeice, best quality, ultra-detailed, 1girl 等通用标签即可。配置 LLM Key 后我能输出完整 Danbooru 标签串。';
+    }
+    if (/负面|negative/i.test(cmd)) {
+      return '🚫 建议负面提示词：\n' + negative + '\n\n（可在「设置」里改 MOSS 负面词）';
+    }
+    return '✨ 直拼提示词（离线，未配 LLM Key）：\n' + (positive || '请先描述你的画面') +
+      '\n\n💡 想让我真正润色 / 输出 Layout JSON，去「设置」填一个大模型 API Key，免费额度也行。';
+  }
+
+  // LLM 系统提示：三种格式（散文 / Layout / Danbooru），MOSS 规范
+  // ==================== 抄自插件的优秀机制 ====================
+  // ① 撤销栈（web/lib/undo.js）：记录每次 before/after，可无限撤销
+  const undoStack = {
+    entries: [], redo: [],
+    record(key, before, after, label) {
+      if (before === after) return;
+      this.entries.push({ key, before, after, label: label || '', at: Date.now() });
+      if (this.entries.length > 50) this.entries.shift();
+      this.redo = [];
+    },
+    undo() { const e = this.entries.pop(); if (e) this.redo.push(e); return e || null; },
+    redo() { const e = this.redo.pop(); if (e) this.entries.push(e); return e || null; },
+    clear() { this.entries = []; this.redo = []; },
+    get size() { return this.entries.length; }
+  };
+
+  // ② 结构化改词（prompt_studio/diff.py + edit_agent.py）：
+  //    模型只输出 replace / insert_after / delete / append 操作，
+  //    before 必须在当前文本中唯一匹配才允许应用 —— 杜绝幻觉重写整段。
+  const OP_LABELS = { replace: '替换', delete: '删除', insert_after: '插入', append: '追加' };
+
+  function applyStructuredOps(current, ops) {
+    let text = String(current || '');
+    const applied = [], rejected = [];
+    (Array.isArray(ops) ? ops : []).forEach((op, i) => {
+      const kind = String(op && op.op || '').toLowerCase();
+      const before = String(op && op.before || '');
+      const after = String(op && op.after || '');
+      if (kind === 'append') {
+        applied.push({ i, kind, before: '', after, excerpt: '末尾追加：' + after.slice(0, 40) });
+        text = text + after;
+        return;
+      }
+      if (!before) { rejected.push({ i, reason: '缺少 before 锚点' }); return; }
+      const count = text.split(before).length - 1;
+      if (count !== 1) {
+        rejected.push({ i, reason: '锚点匹配 ' + count + ' 次（必须唯一）' });
+        return;
+      }
+      if (kind === 'replace') { text = text.replace(before, after); applied.push({ i, kind, before, after }); }
+      else if (kind === 'insert_after') { text = text.replace(before, before + after); applied.push({ i, kind, before, after }); }
+      else if (kind === 'delete') { text = text.replace(before, ''); applied.push({ i, kind, before, after: '' }); }
+      else { rejected.push({ i, reason: '未知操作 ' + kind }); return; }
+      applied[applied.length - 1].excerpt = OP_LABELS[kind] + '：' + before.slice(0, 24) + (after ? ' → ' + after.slice(0, 24) : '');
+    });
+    return { text, applied, rejected };
+  }
+
+  // ③ 块级 Diff 审阅（web/lib/diff.js）：逐块对比，标出 未变/新增/删除/修改
+  function computeDiff(before, after) {
+    const b = String(before || '').split(/(?<=[,\n])/);
+    const a = String(after || '').split(/(?<=[,\n])/);
+    const blocks = [];
+    const max = Math.max(b.length, a.length);
+    for (let i = 0; i < max; i++) {
+      const x = b[i], y = a[i];
+      if (x === undefined) blocks.push({ type: 'add', text: y });
+      else if (y === undefined) blocks.push({ type: 'del', text: x });
+      else if (x === y) blocks.push({ type: 'equal', text: x });
+      else blocks.push({ type: 'change', before: x, after: y });
+    }
+    const counts = { equal: 0, add: 0, del: 0, change: 0 };
+    blocks.forEach(bl => { if (bl.type in counts) counts[bl.type]++; });
+    return { blocks, counts, changes: counts.add + counts.del + counts.change };
+  }
+
+  function describeDiff(d) {
+    const parts = [];
+    if (d.counts.change) parts.push(d.counts.change + ' 处修改');
+    if (d.counts.add) parts.push(d.counts.add + ' 处新增');
+    if (d.counts.del) parts.push(d.counts.del + ' 处删除');
+    return parts.length ? parts.join('，') : '没有变化';
+  }
+
+  function renderDiff(before, after) {
+    const box = document.getElementById('chatDiffBox');
+    if (!box) return;
+    const d = computeDiff(before, after);
+    const color = { equal: 'var(--text-dim)', add: 'var(--success)', del: 'var(--danger)', change: 'var(--warning)' };
+    const prefix = { equal: '  ', add: '+ ', del: '- ', change: '~ ' };
+    const bg = { equal: 'transparent', add: 'rgba(16,185,129,.10)', del: 'rgba(239,68,68,.10)', change: 'rgba(245,158,11,.10)' };
+    const esc = t => String(t == null ? '' : t).replace(/[&<>"']/g, c =>
+      ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+    let html = '<div style="font-size:12px; margin-bottom:8px; color:var(--text-muted);">🔍 块级 Diff：<b>' + describeDiff(d) + '</b>（共 ' + d.blocks.length + ' 块）</div>';
+    html += '<div style="max-height:240px; overflow-y:auto; border:1px solid var(--border); border-radius:8px; font-family:monospace; font-size:11.5px; line-height:1.7;">';
+    d.blocks.forEach(bl => {
+      const t = bl.type === 'change' ? (bl.before + ' → ' + bl.after) : bl.text;
+      html += '<div style="padding:3px 8px; color:' + color[bl.type] + '; background:' + bg[bl.type] + '; white-space:pre-wrap; word-break:break-all;">' + prefix[bl.type] + esc(t) + '</div>';
+    });
+    html += '</div>';
+    box.innerHTML = html;
+    box.style.display = 'block';
+    return d;
+  }
+
+  // ④ 实时字数统计（插件：词数 / 标签数 / 空间区域数）
+  function updateChatStats() {
+    const el = document.getElementById('chatStats');
+    if (!el) return;
+    const t = extractPromptText(lastAssistantText);
+    const words = t ? (t.match(/[\u4e00-\u9fff]|[A-Za-z]+|\d+/g) || []).length : 0;
+    const tags = t ? (t.split(/[,，]/).filter(x => x.trim()).length) : 0;
+    let regions = 0;
+    try {
+      const j = JSON.parse(t);
+      if (j && Array.isArray(j.items)) regions = j.items.length;
+    } catch (e) {}
+    el.textContent = words + ' 字 · ' + tags + ' 标签 · ' + regions + ' 区域 · 可撤销 ' + undoStack.size + ' 步';
+  }
+
+  // ⑤ ★ 用户自定义要求：自动合并注入所有预设规则（插件独创）
+  function customRule() {
+    const el = document.getElementById('chatCustomRule');
+    return (el && el.value.trim()) || '';
+  }
+
+  const CHAT_SYSTEM_PROMPT = `你是 MOSS-Image 提示词专家（Qwen3.5 文本编码器 + DiT）。
+与用户对话，帮他把想法打磨成可直接生图的提示词。
+必须遵守 MOSS 规范：用具象名词、写清光影物理规律、禁用空洞废词（如 "beautiful"、"amazing"）。
+
+用户可能要求三种输出格式，按要求返回：
+1) 散文 (Prose)：流畅自然的英文/中文描述段落，含主体、姿态、服饰材质、光影、镜头、背景层次。
+2) Layout 布局 JSON：必须是下面这个 PromptBoard 兼容结构（bbox 为绝对像素 xyxy）：
+{
+  "width": 1024, "height": 1024,
+  "bbox_coord_space": "abs", "bbox_format": "xyxy",
+  "summary": { "caption": "整体画面描述", "canvas": "single" },
+  "items": [
+    { "name":"focal_subject","parent":"","label":"character","caption":"主体描述","text":"","bbox":[280,220,720,900] },
+    { "name":"background","parent":"","label":"object","caption":"背景/环境/光影","text":"","bbox":[0,0,1024,450] }
+  ]
+}
+label 只能是 "object" | "character" | "text"。Layout 输出请用 \`\`\`json 代码块包起来。
+3) Danbooru 标签：英文逗号分隔的结构化标签串，按 主体/发型/神态/服饰/构图/光影/画质 优先级排列。
+
+其它要求：
+- 「优化提示词」「扩写细节」→ 在用户原意基础上补全，不幻觉重写，并说明改了什么。
+- 「自检问题」→ 列出针对当前提示词的具体检查问题与缺口，逐条给建议。
+- 「翻译成英文」→ 只输出英文版本。
+- 保持简洁，直接给可用结果，不要客套。`;
+
+  async function callChatLLM(messages) {
+    const key = (config.llm_api_key || '').trim();
+    if (!key) return null;
+    const base = (config.llm_base_url || 'https://api.siliconflow.cn/v1').replace(/\/+$/, '');
+    const resp = await fetch(base + '/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + key },
+      body: JSON.stringify({
+        model: config.llm_chat_model || 'Qwen/Qwen2.5-7B-Instruct',
+        messages: messages,
+        temperature: 0.7
+      })
+    });
+    if (!resp.ok) {
+      const e = await resp.json().catch(() => ({}));
+      throw new Error(e.error?.message || ('HTTP ' + resp.status));
+    }
+    const data = await resp.json();
+    return (data.choices?.[0]?.message?.content || '').trim();
+  }
+
+  let chatBusy = false;
+  async function sendChat(text, presetCmd) {
+    if (chatBusy) return;
+    // ↏ 撤销上一步：直接回退 lastAssistantText
+    if (presetCmd === '撤销上一步') {
+      const e = undoStack.undo();
+      if (!e) { toast('没有可撤销的步骤'); return; }
+      lastAssistantText = e.before;
+      if (posResultEl) posResultEl.textContent = extractPromptText(e.before);
+      appendChatMessage('assistant', '↩️ 已撤销「' + (e.label || '上一步') + '」，恢复到：\n' + extractPromptText(e.before).slice(0, 300));
+      if (chatActionBar) chatActionBar.style.display = 'block';
+      updateChatStats();
+      toast('已撤销');
+      return;
+    }
+    text = String(text || '').trim();
+    if (!text) { toast('先写点什么吧'); return; }
+    appendChatMessage('user', (presetCmd ? '【' + presetCmd + '】' : '') + text);
+    chatHistory.push({ role: 'user', content: text });
+    if (chatHistory.length > 20) chatHistory = chatHistory.slice(-20);
+    if (userConceptInput) { userConceptInput.value = ''; userConceptInput.style.height = 'auto'; }
+
+    chatBusy = true;
+    if (btnChatSend) btnChatSend.disabled = true;
+    const thinking = showThinking();
+    try {
+      const key = (config.llm_api_key || '').trim();
+      let reply;
+      if (key) {
+        const rule = customRule();
+        const sys = CHAT_SYSTEM_PROMPT + (rule ? ('\n\n### ★ 用户自定义要求（最高优先级，必须合并注入本次所有输出）\n' + rule) : '');
+        const msgs = [{ role: 'system', content: sys }].concat(chatHistory);
+        // 预设指令作为显式要求附在最后一条
+        if (presetCmd) {
+          let extra = '本次用户点选的预设指令：' + presetCmd + '。请严格按该要求处理上面的内容。';
+          if (presetCmd === '结构化改词') {
+            extra += `\n请只输出 JSON（不要 markdown 围栏）：{"ops":[{"op":"replace|insert_after|delete|append","before":"原文中必须唯一匹配的片段","after":"新文本"}]}。
+严格遵守：before 必须在上一轮提示词中唯一存在，禁止重写整段。若上一轮是 Layout JSON，请针对 items[].caption / summary.caption 做小范围替换。`;
+          }
+          msgs.push({ role: 'system', content: extra });
+        }
+        reply = await callChatLLM(msgs);
+      }
+      if (!reply) reply = offlineReply(presetCmd || '', text);
+      // 结构化改词：解析 ops，唯一匹配校验后应用（防幻觉）
+      if (presetCmd === '结构化改词' && reply) {
+        const before = extractPromptText(lastAssistantText) || text;
+        let ops = null;
+        try {
+          const t = extractPromptText(reply);
+          const j = JSON.parse(t);
+          ops = j.ops || j.changes || (Array.isArray(j) ? j : null);
+        } catch (e) {}
+        if (ops) {
+          const r = applyStructuredOps(before, ops);
+          const note = '🧩 结构化改词：应用 ' + r.applied.length + ' 项' + (r.rejected.length ? ('，拒绝 ' + r.rejected.length + ' 项（锚点不唯一，已防幻觉）') : '') +
+            '\n' + r.applied.map(x => '  · ' + (x.excerpt || x.kind)).join('\n') +
+            '\n\n' + extractPromptText(r.text);
+          undoStack.record('prompt', before, extractPromptText(r.text), '结构化改词');
+          lastAssistantText = r.text;
+          reply = note;
+        }
+      }
+      if (thinking) thinking.remove();
+      appendChatMessage('assistant', reply);
+      chatHistory.push({ role: 'assistant', content: reply });
+      if (chatHistory.length > 20) chatHistory = chatHistory.slice(-20);
+      if (presetCmd !== '结构化改词' && lastAssistantText && lastAssistantText !== reply) {
+        undoStack.record('prompt', extractPromptText(lastAssistantText), extractPromptText(reply), presetCmd || '对话');
+      }
+      lastAssistantText = reply;
+      updateChatStats();
+      if (posResultEl) posResultEl.textContent = extractPromptText(reply);
+      if (negResultEl) negResultEl.textContent = config.moss_negative || '';
+      if (chatActionBar) chatActionBar.style.display = 'block';
+    } catch (err) {
+      if (thinking) thinking.remove();
+      const fallback = offlineReply(presetCmd || '', text);
+      appendChatMessage('assistant', '⚠️ LLM 调用失败（' + err.message + '），先用离线结果：\n' + fallback);
+      lastAssistantText = fallback;
+      if (chatActionBar) chatActionBar.style.display = 'block';
+      toast('LLM 失败，已用离线兜底');
+    } finally {
+      chatBusy = false;
+      if (btnChatSend) btnChatSend.disabled = false;
+    }
+  }
+
+  function initChat() {
+    if (btnChatSend) btnChatSend.addEventListener('click', () => {
+      sendChat(userConceptInput ? userConceptInput.value : '', '');
+    });
+    if (userConceptInput) {
+      userConceptInput.addEventListener('keydown', e => {
+        if (e.key === 'Enter' && !e.shiftKey) {
+          e.preventDefault();
+          sendChat(userConceptInput.value, '');
+        }
+      });
+      userConceptInput.addEventListener('input', () => {
+        userConceptInput.style.height = 'auto';
+        userConceptInput.style.height = Math.min(userConceptInput.scrollHeight, 110) + 'px';
       });
     }
-    const positive = parts.join(', ');
-    const negative = config.moss_negative || 'worst quality, bad anatomy, watermark, jpeg artifact';
-    return { positive, negative };
-  }
-
-  if (btnFastCombine) {
-    btnFastCombine.addEventListener('click', () => {
-      const concept = userConceptInput.value;
-      const { positive, negative } = buildOfflineMossPrompt(concept);
-      posResultEl.textContent = positive || '(请先输入描述或选中上方标签)';
-      negResultEl.textContent = negative;
-      toast('提示词已快速直拼');
+    document.querySelectorAll('.chat-preset').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const cmd = btn.getAttribute('data-cmd') || '';
+        if (cmd === '清空对话') {
+          chatHistory = []; lastAssistantText = '';
+          if (chatMessages) chatMessages.innerHTML = '<div class="chat-msg bot" style="align-self:flex-start;max-width:88%;background:var(--bg-card);border:1px solid var(--border);border-radius:14px 14px 14px 4px;padding:11px 13px;font-size:13px;line-height:1.7;color:var(--text-main);">已清空，重新聊聊想画什么吧 ✨</div>';
+          if (chatActionBar) chatActionBar.style.display = 'none';
+          toast('对话已清空');
+          return;
+        }
+        // 预设指令：拿输入框内容；若为空，则以上一轮助手结果或上下文为主题
+        let topic = (userConceptInput && userConceptInput.value.trim()) ||
+                    (lastAssistantText ? extractPromptText(lastAssistantText) : '');
+        if (!topic) {
+          // 找最后一条用户消息
+          for (let i = chatHistory.length - 1; i >= 0; i--) {
+            if (chatHistory[i].role === 'user') { topic = chatHistory[i].content; break; }
+          }
+        }
+        if (!topic) {
+          toast('先在下面输入你的需求，或先发一句描述');
+          if (userConceptInput) userConceptInput.focus();
+          return;
+        }
+        sendChat(topic, cmd);
+      });
     });
-  }
 
-  if (btnMagicExpand) {
-    btnMagicExpand.addEventListener('click', async () => {
-      const concept = userConceptInput.value.trim();
-      const { positive: basePrompt, negative: defaultNeg } = buildOfflineMossPrompt(concept);
-
-      const llmKey = (config.llm_api_key || '').trim();
-      if (!llmKey) {
-        toast('未配置 LLM Key，已使用本地 MOSS 规则快速直拼');
-        posResultEl.textContent = basePrompt || '(请先输入描述或选中上方标签)';
-        negResultEl.textContent = defaultNeg;
-        return;
-      }
-
-      btnMagicExpand.disabled = true;
-      btnMagicExpand.innerHTML = '<span class="spinner"></span> AI 散文扩写中...';
-
-      try {
-        const systemPrompt = `You are an elite prompt engineer specialized for MOSS-Image (Qwen3.5-9B text encoder + DiT).
-Convert user concepts into high-coherence, descriptive English prose prompts.
-Rules:
-1. Depict the focal character/subject, pose, attire, materials, lighting atmosphere, camera framing, and background depth in fluent, natural English prose.
-2. Return STRICT JSON:
-{
-  "prompt": "...",
-  "negative_prompt": "..."
-}`;
-
-        const activeTagPrompts = [];
-        for (const [cat, tags] of Object.entries(MOSS_TAG_LIBRARIES)) {
-          tags.forEach(t => { if (activeTags.has(t.id)) activeTagPrompts.push(t.prompt); });
-        }
-
-        const userMsg = `Concept: ${concept || 'Captivating cinematic scene'}\nStyle Tags: ${activeTagPrompts.join(', ')}`;
-
-        const resp = await fetch(`${config.llm_base_url.replace(/\/+$/, '')}/chat/completions`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${llmKey}`
-          },
-          body: JSON.stringify({
-            model: config.llm_chat_model || 'Qwen/Qwen2.5-7B-Instruct',
-            messages: [
-              { role: 'system', content: systemPrompt },
-              { role: 'user', content: userMsg }
-            ],
-            temperature: 0.7
-          })
-        });
-
-        if (!resp.ok) {
-          const errData = await resp.json().catch(() => ({}));
-          throw new Error(errData.error?.message || `HTTP ${resp.status}`);
-        }
-
-        const data = await resp.json();
-        const content = data.choices?.[0]?.message?.content || '';
-
-        let parsed = null;
-        try {
-          const match = content.match(/\{[\s\S]*\}/);
-          if (match) parsed = JSON.parse(match[0]);
-        } catch (e) {}
-
-        if (parsed && parsed.prompt) {
-          posResultEl.textContent = parsed.prompt;
-          negResultEl.textContent = parsed.negative_prompt || defaultNeg;
-        } else {
-          posResultEl.textContent = content.trim();
-          negResultEl.textContent = defaultNeg;
-        }
-        toast('✨ MOSS 提示词扩写完成！');
-      } catch (err) {
-        console.error('Magic expand failed:', err);
-        toast('扩写失败: ' + err.message);
-        posResultEl.textContent = basePrompt;
-        negResultEl.textContent = defaultNeg;
-      } finally {
-        btnMagicExpand.disabled = false;
-        btnMagicExpand.innerHTML = '<span>🪄</span> AI 智能扩写润色';
-      }
-    });
-  }
-
-  // Send to MOSS Gen
-  if (btnSendToMosi) {
-    btnSendToMosi.addEventListener('click', () => {
-      const p = posResultEl.textContent.trim();
-      const n = negResultEl.textContent.trim();
-      if (!p || p.startsWith('(')) {
-        toast('请先生成或直拼提示词');
-        return;
-      }
-      if (mosiPrompt) mosiPrompt.value = p;
-      if (mosiNegPrompt && n) mosiNegPrompt.value = n;
+    // 动作条
+    document.getElementById('btnChatToGen')?.addEventListener('click', () => {
+      const p = extractPromptText(lastAssistantText).trim();
+      if (!p) { toast('还没有可送去的结果'); return; }
+      mosiPrompt.value = p;
       switchTab('gen');
-      toast('已带入 MOSS 生图');
+      toast('已送去生图工作台');
     });
+    document.getElementById('btnChatCopy')?.addEventListener('click', () => {
+      const p = extractPromptText(lastAssistantText).trim();
+      if (!p) { toast('还没有可复制的结果'); return; }
+      copyText(p);
+    });
+    document.getElementById('btnChatToLayout')?.addEventListener('click', () => {
+      if (!lastAssistantText) { toast('先聊出点内容'); return; }
+      const txt = extractPromptText(lastAssistantText);
+      // 若已是合法 layout JSON 直接规范化，否则套 6 级层次模板
+      let out;
+      try {
+        const j = JSON.parse(txt);
+        if (j && Array.isArray(j.items)) {
+          const cs = currentCanvasSize();
+          out = JSON.stringify(normalizeLayout(j, cs.w, cs.h), null, 2);
+        }
+      } catch (e) {}
+      if (!out) out = buildLayoutJSON(txt, []);
+      const wrapped = '```json\n' + out + '\n```';
+      const before = txt;
+      undoStack.record('prompt', before, out, '转成 Layout');
+      appendChatMessage('assistant', '📐 已转成 Layout（最多 16 个区域）：\n' + wrapped);
+      chatHistory.push({ role: 'assistant', content: wrapped });
+      lastAssistantText = out;
+      updateChatStats();
+      toast('已生成 6 级层次 Layout');
+    });
+    document.getElementById('btnChatToProse')?.addEventListener('click', () => {
+      if (!lastAssistantText) { toast('先聊出点内容'); return; }
+      sendChat('把下面这段整理成 MOSS 散文提示词（去掉 JSON/标签结构）：\n' + extractPromptText(lastAssistantText), '输出散文提示词');
+    });
+
+    // 块级 Diff 审阅：对比上一轮与当前结果
+    document.getElementById('btnChatReviewDiff')?.addEventListener('click', () => {
+      const cur = extractPromptText(lastAssistantText);
+      if (!cur) { toast('先聊出点内容'); return; }
+      let prev = '';
+      for (let i = chatHistory.length - 1; i >= 0; i--) {
+        if (chatHistory[i].role === 'assistant' && chatHistory[i].content !== lastAssistantText) {
+          prev = extractPromptText(chatHistory[i].content); break;
+        }
+      }
+      const box = document.getElementById('chatDiffBox');
+      if (!prev) {
+        if (box) { box.innerHTML = '<div style="font-size:12px;color:var(--text-dim);">这是第一轮结果，没有可对比的上一版。再改一次提示词后就能看 Diff 了。</div>'; box.style.display = 'block'; }
+        return;
+      }
+      renderDiff(prev, cur);
+      toast('已生成块级 Diff');
+    });
+
+    const ruleEl = document.getElementById('chatCustomRule');
+    if (ruleEl) {
+      try { ruleEl.value = localStorage.getItem('moss_chat_custom_rule') || ''; } catch (e) {}
+      ruleEl.addEventListener('change', () => {
+        try { localStorage.setItem('moss_chat_custom_rule', ruleEl.value.trim()); } catch (e) {}
+        toast('★ 自定义要求已保存，之后每次对话自动注入');
+      });
+    }
+    updateChatStats();
   }
-
-  document.getElementById('btnCopyPos')?.addEventListener('click', () => copyText(posResultEl.textContent));
-  document.getElementById('btnCopyNeg')?.addEventListener('click', () => copyText(negResultEl.textContent));
-
-  document.getElementById('btnRandomIdea')?.addEventListener('click', () => {
-    const ideas = [
-      '赛博雨夜霓虹街道中，机械义肢白发少女手握发光武士刀，全身特写',
-      '悬浮在云海之上的远古机械天空岛遗迹，丁达尔阳光倾泻而下',
-      '夏日向日葵花田里戴着草帽的清纯少女，微笑着回头看向镜头',
-      '深海古遗迹中穿梭的发光机械座头鲸，电影级写实摄影',
-      '水墨山水画风中的白衣剑客立于孤舟，云雾缭绕，诗意朦胧',
-      '高精写实科幻机甲战士在火星废墟中巡航，夕阳金属反光'
-    ];
-    userConceptInput.value = ideas[Math.floor(Math.random() * ideas.length)];
-    toast('已填入随机灵感');
-  });
 
   // --- Tab 3: Vision Caption ---
   const imageFileInput = document.getElementById('imageFileInput');
@@ -605,10 +1306,12 @@ Rules:
         uploadedImageBase64 = canvas.toDataURL('image/jpeg', 0.85);
 
         previewImg.src = uploadedImageBase64;
-        imgInfoText.textContent = `${img.width}×${img.height} (适配为 ${w}×${h})`;
+        imgInfoText.textContent = `原图 ${img.width}×${img.height}（预览适配 ${w}×${h}）`;
         uploadDropzone.style.display = 'none';
         previewContainer.style.display = 'block';
-        toast('图片加载成功');
+        // 按原图宽高比自动匹配最相近的官方尺寸，并同步到生图页
+        const matched = applyMatchedSize(img.width, img.height);
+        toast(matched ? ('图片加载成功 · 自动匹配尺寸 ' + matched.value) : '图片加载成功');
       };
       img.src = evt.target.result;
     };
@@ -645,7 +1348,9 @@ Rules:
       if (mode === 'anime') {
         promptText = 'Output comma-separated Danbooru tags describing this anime image (characters, hair, eyes, clothing, pose, setting, style).';
       } else if (mode === 'layout') {
-        promptText = 'Deconstruct this image into structured spatial layout components for MOSS-Image: 1) Focal Subject, 2) Objects, 3) Background environment, 4) Lighting and colors.';
+        const cs = currentCanvasSize();
+        promptText = LAYOUT_INSTRUCTION +
+          `\n当前画布 ${cs.w}×${cs.h}。请输出 STRICT JSON（不要 markdown 围栏），items 最多 16 个。`;
       } else {
         promptText = 'Describe this image in rich descriptive English prose tailored for text-to-image models like MOSS-Image. Detail the character/subject, posture, clothing textures, expressions, lighting, colors, and camera angle.';
       }
@@ -680,7 +1385,17 @@ Rules:
         const data = await resp.json();
         const output = data.choices?.[0]?.message?.content || '未获取到反推结果';
         visionResultEl.textContent = output.trim();
-        toast('🎉 反推成功！');
+        // layout 模式：把反推文本包成合法 PromptBoard 布局 JSON（MOSS 吃的格式）
+        if (mode === 'layout') {
+          const cs = currentCanvasSize();
+          const norm = normalizeLayout(output.trim(), cs.w, cs.h);
+          visionResultEl.textContent = norm
+            ? JSON.stringify(norm, null, 2)
+            : textToLayout(output.trim());
+          toast(norm ? ('🎉 反推成功 · Layout 共 ' + norm.items.length + ' 个区域') : '🎉 反推成功');
+        } else {
+          toast('🎉 反推成功！尺寸已按原图比例自动匹配');
+        }
       } catch (err) {
         console.error('Vision error:', err);
         toast('反推失败: ' + err.message);
@@ -699,9 +1414,10 @@ Rules:
       toast('暂无反推结果');
       return;
     }
-    userConceptInput.value = text;
     switchTab('studio');
-    toast('已导入工坊');
+    // 作为一条用户消息送进对话（不自动发送，爸爸可再加要求）
+    if (typeof appendChatMessage === 'function') appendChatMessage('user', text);
+    toast('已导入工坊对话');
   });
 
   document.getElementById('btnSendVisionToMosi')?.addEventListener('click', () => {
@@ -712,11 +1428,12 @@ Rules:
     }
     mosiPrompt.value = text;
     switchTab('gen');
-    toast('已填入 MOSS 生图');
+    toast('已送去生图（尺寸按原图比例自动匹配）');
   });
 
   // --- Tab 4: Settings ---
   const mossApiKeyInput = document.getElementById('mossApiKeyInput');
+  const genApiKeyInput = document.getElementById('genApiKeyInput');
   const btnTestMosiKey = document.getElementById('btnTestMosiKey');
   const btnSaveSettings = document.getElementById('btnSaveSettings');
   const llmProviderSelect = document.getElementById('llmProviderSelect');
@@ -750,6 +1467,8 @@ Rules:
 
   function populateSettings() {
     if (mossApiKeyInput) mossApiKeyInput.value = config.moss_api_key || '';
+    if (genApiKeyInput) genApiKeyInput.value = config.gen_api_key || '';
+    syncGenProviderUI();
     if (llmProviderSelect) llmProviderSelect.value = config.llm_provider || 'siliconflow';
     if (llmBaseUrlInput) llmBaseUrlInput.value = config.llm_base_url || 'https://api.siliconflow.cn/v1';
     if (llmApiKeyInput) llmApiKeyInput.value = config.llm_api_key || '';
@@ -813,6 +1532,7 @@ Rules:
   if (btnSaveSettings) {
     btnSaveSettings.addEventListener('click', () => {
       config.moss_api_key = mossApiKeyInput.value.trim();
+      if (genApiKeyInput) config.gen_api_key = genApiKeyInput.value.trim();
       config.llm_provider = llmProviderSelect.value;
       config.llm_base_url = llmBaseUrlInput.value.trim();
       config.llm_api_key = llmApiKeyInput.value.trim();
@@ -824,11 +1544,225 @@ Rules:
     });
   }
 
+  // ==================== ⚡ 自动获取模型列表 ====================
+  // 复用现有 config 里的 llm_base_url / llm_api_key，探测 OpenAI 兼容 /models
+  // 以及 ComfyUI /object_info、/models 等接口，点选即填入扩写 / 视觉模型框。
+  const btnFetchModels = document.getElementById('btnFetchModels');
+  const btnRefreshModels = document.getElementById('btnRefreshModels');
+  const btnCloseModelList = document.getElementById('btnCloseModelList');
+  const modelFetchStatus = document.getElementById('modelFetchStatus');
+  const modelListBox = document.getElementById('modelListBox');
+  const modelList = document.getElementById('modelList');
+  const modelSearchInput = document.getElementById('modelSearchInput');
+  let fetchedModels = [];
+
+  function mfStatus(msg, kind) {
+    if (!modelFetchStatus) return;
+    modelFetchStatus.style.display = 'block';
+    const color = kind === 'ok' ? 'var(--success, #4ade80)'
+                : kind === 'bad' ? 'var(--danger, #f87171)'
+                : 'var(--text-muted, #aaa)';
+    modelFetchStatus.innerHTML = '<span style="color:' + color + '">' + msg + '</span>';
+  }
+
+  function normalizeBase(v) {
+    v = (v || '').trim().replace(/\/+$/, '');
+    if (!v) return '';
+    if (!/^https?:\/\//i.test(v)) v = 'http://' + v;
+    return v;
+  }
+
+  function modelEndpoints(base) {
+    const b = normalizeBase(base);
+    const root = b.replace(/\/v1$/i, '');
+    const list = [
+      b + '/models',
+      root + '/v1/models',
+      root + '/object_info',
+      root + '/api/object_info',
+      root + '/models',
+      root + '/model_list',
+      root + '/api/models'
+    ];
+    const seen = {}, out = [];
+    list.forEach(u => { if (!seen[u]) { seen[u] = 1; out.push(u); } });
+    return out;
+  }
+
+  function mfPush(arr, name) {
+    name = String(name == null ? '' : name).trim();
+    if (!name || name.length > 200) return;
+    for (let i = 0; i < arr.length; i++) if (arr[i] === name) return;
+    arr.push(name);
+  }
+
+  function parseModels(txt) {
+    const out = [];
+    if (!txt) return out;
+    let j;
+    try { j = JSON.parse(txt); } catch (e) { return out; }
+    let n = 0;
+    // OpenAI 兼容: {data:[{id}]} / {models:[...]}
+    const d = j && (j.data || j.models);
+    if (d && Array.isArray(d)) {
+      d.forEach(m => {
+        if (typeof m === 'string') { mfPush(out, m); n++; }
+        else if (m && (m.id || m.name)) { mfPush(out, m.id || m.name); n++; }
+      });
+    }
+    // ComfyUI /object_info
+    if (j && typeof j === 'object' && !Array.isArray(j)) {
+      const nodeMap = [
+        'CheckpointLoaderSimple', 'CheckpointLoader', 'LoraLoader', 'VAELoader',
+        'CLIPLoader', 'ControlNetLoader', 'UpscaleModelLoader', 'DiffusionModelLoader'
+      ];
+      nodeMap.forEach(nk => {
+        const node = j[nk];
+        if (!node || !node.input) return;
+        const req = node.input.required || node.input.optional || {};
+        Object.keys(req).forEach(k => {
+          const v = req[k];
+          if (!Array.isArray(v) || !v.length) return;
+          const first = v[0];
+          if (typeof first === 'string') {
+            v.forEach(x => { if (typeof x === 'string') { mfPush(out, x); n++; } });
+          } else if (Array.isArray(first)) {
+            first.forEach(x => {
+              if (typeof x === 'string') { mfPush(out, x); n++; }
+              else if (Array.isArray(x)) x.forEach(y => { if (typeof y === 'string') { mfPush(out, y); n++; } });
+            });
+          }
+        });
+      });
+      // /models 风格: {checkpoints:[...], loras:[{name}]}
+      if (n === 0) {
+        Object.keys(j).forEach(k => {
+          const v = j[k];
+          if (!Array.isArray(v)) return;
+          v.forEach(x => {
+            if (typeof x === 'string') { mfPush(out, x); n++; }
+            else if (x && (x.name || x.id)) { mfPush(out, x.name || x.id); n++; }
+          });
+        });
+      }
+    }
+    // 顶层数组
+    if (n === 0 && Array.isArray(j)) {
+      j.forEach(x => {
+        if (typeof x === 'string') { mfPush(out, x); n++; }
+        else if (x && (x.name || x.id)) { mfPush(out, x.name || x.id); n++; }
+      });
+    }
+    return out;
+  }
+
+  async function fetchOne(url) {
+    const key = (llmApiKeyInput && llmApiKeyInput.value || config.llm_api_key || '').trim();
+    const ctrl = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+    const timer = setTimeout(() => { if (ctrl) ctrl.abort(); }, 7000);
+    const opt = { method: 'GET', headers: { 'Accept': 'application/json' } };
+    if (ctrl) opt.signal = ctrl.signal;
+    if (key) opt.headers['Authorization'] = 'Bearer ' + key;
+    try {
+      const r = await fetch(url, opt);
+      if (!r.ok) return null;
+      return await r.text();
+    } catch (e) {
+      return null;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  async function doFetchModels() {
+    const base = (llmBaseUrlInput && llmBaseUrlInput.value || config.llm_base_url || '').trim();
+    if (!base) {
+      mfStatus('请先填写接口基地址 (Base URL)', 'bad');
+      toast('请先填写接口基地址');
+      if (llmBaseUrlInput) llmBaseUrlInput.focus();
+      return;
+    }
+    if (btnFetchModels) btnFetchModels.disabled = true;
+    const eps = modelEndpoints(base);
+    let ok = 0;
+    const found = [];
+    mfStatus('<span class="spinner"></span> 正在探测 ' + eps.length + ' 个接口…', '');
+    for (let i = 0; i < eps.length; i++) {
+      const txt = await fetchOne(eps[i]);
+      if (txt) {
+        ok++;
+        parseModels(txt).forEach(m => mfPush(found, m));
+      }
+    }
+    if (btnFetchModels) btnFetchModels.disabled = false;
+    fetchedModels = found;
+    if (found.length) {
+      mfStatus('✓ 发现 ' + found.length + ' 个模型（' + ok + ' 个接口有响应）· 点名字填入「扩写模型」，点「视」填入「视觉识图模型」', 'ok');
+      if (modelListBox) modelListBox.style.display = 'block';
+      renderModelList();
+      toast('自动获取成功：' + found.length + ' 个模型');
+    } else {
+      mfStatus('✗ 没读到模型。检查：地址是否正确 / 服务是否启动 / 电脑侧是否 --listen 0.0.0.0 / 手机与电脑是否同一 Wi-Fi。已试 ' + eps.length + ' 个接口。', 'bad');
+      toast('未读到模型，请检查服务地址');
+    }
+  }
+
+  function renderModelList() {
+    if (!modelList) return;
+    const kw = (modelSearchInput && modelSearchInput.value || '').trim().toLowerCase();
+    const items = fetchedModels.filter(m => !kw || m.toLowerCase().indexOf(kw) >= 0);
+    if (!items.length) {
+      modelList.innerHTML = '<div style="padding:10px; color:var(--text-muted); font-size:12px;">没有匹配的模型</div>';
+      return;
+    }
+    const esc = t => String(t).replace(/[&<>"']/g, c =>
+      ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+    modelList.innerHTML = items.map(m =>
+      '<div style="display:flex; align-items:center; gap:6px; padding:8px 6px; border-bottom:1px solid rgba(128,128,128,.18);">' +
+        '<div data-m="' + esc(m) + '" class="mf-pick" style="flex:1; min-width:0; word-break:break-all; font-size:12px; font-family:monospace; line-height:1.4; cursor:pointer;">' + esc(m) + '</div>' +
+        '<button data-v="' + esc(m) + '" class="mf-vision btn btn-sm btn-outline" style="flex:0 0 auto; padding:4px 9px; font-size:11px;">视</button>' +
+      '</div>'
+    ).join('');
+  }
+
+  function applyModel(name, target) {
+    name = String(name || '').trim();
+    if (!name) return;
+    if (target === 'vision' && llmVisionModelInput) {
+      llmVisionModelInput.value = name;
+      config.llm_vision_model = name;
+      toast('已填入「视觉识图模型」：' + name);
+    } else if (llmChatModelInput) {
+      llmChatModelInput.value = name;
+      config.llm_chat_model = name;
+      toast('已填入「扩写模型」：' + name);
+    }
+    saveConfig();
+    updateStatus();
+  }
+
+  if (btnFetchModels) btnFetchModels.addEventListener('click', doFetchModels);
+  if (btnRefreshModels) btnRefreshModels.addEventListener('click', doFetchModels);
+  if (btnCloseModelList) btnCloseModelList.addEventListener('click', () => {
+    if (modelListBox) modelListBox.style.display = 'none';
+  });
+  if (modelSearchInput) modelSearchInput.addEventListener('input', renderModelList);
+  if (modelList) {
+    modelList.addEventListener('click', e => {
+      const v = e.target.closest && e.target.closest('.mf-vision');
+      if (v) { applyModel(v.getAttribute('data-v'), 'vision'); return; }
+      const p = e.target.closest && e.target.closest('.mf-pick');
+      if (p) applyModel(p.getAttribute('data-m'), 'chat');
+    });
+  }
+
   // --- Initialize ---
   function init() {
     initMosiSelects();
     renderChips();
     populateSettings();
+    syncGenProviderUI();
+    initChat();
     updateStatus();
     loadHistory();
   }
