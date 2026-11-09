@@ -7,9 +7,9 @@ on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: '发布版本号 Tag (例如 v1.0.0)'
+        description: '发布版本号 Tag (例如 v1.0.1)'
         required: false
-        default: 'v1.0.0'
+        default: 'v1.0.1'
 
 permissions:
   contents: write
@@ -35,19 +35,6 @@ jobs:
           gradle-version: '8.7'
           cache-disabled: true
 
-      - name: Build APK with Gradle
-        working-directory: android
-        run: |
-          gradle assembleDebug --no-daemon --stacktrace
-          mkdir -p ../dist-apk
-          cp app/build/outputs/apk/debug/app-debug.apk ../dist-apk/ComfyUI-PromptStudio-v1.0.0.apk
-
-      - name: Upload APK as Workflow Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: ComfyUI-PromptStudio-Android-APK
-          path: dist-apk/ComfyUI-PromptStudio-v1.0.0.apk
-
       - name: Determine Release Tag
         id: release_info
         run: |
@@ -58,6 +45,21 @@ jobs:
           fi
           echo "tag=$TAG" >> $GITHUB_OUTPUT
 
+      - name: Build APK with Gradle
+        working-directory: android
+        run: |
+          TAG="${{ steps.release_info.outputs.tag }}"
+          gradle assembleDebug --no-daemon --stacktrace
+          mkdir -p ../dist-apk
+          cp app/build/outputs/apk/debug/app-debug.apk "../dist-apk/ComfyUI-PromptStudio-${TAG}.apk"
+          cp app/build/outputs/apk/debug/app-debug.apk "../dist-apk/ComfyUI-PromptStudio-latest.apk"
+
+      - name: Upload APK as Workflow Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ComfyUI-PromptStudio-Android-APK
+          path: dist-apk/
+
       - name: Create or Update GitHub Release
         uses: softprops/action-gh-release@v2
         with:
@@ -65,18 +67,22 @@ jobs:
           name: "ComfyUI AI Prompt Studio ${{ steps.release_info.outputs.tag }}"
           draft: false
           prerelease: false
-          files: dist-apk/ComfyUI-PromptStudio-v1.0.0.apk
+          files: |
+            dist-apk/ComfyUI-PromptStudio-${{ steps.release_info.outputs.tag }}.apk
+            dist-apk/ComfyUI-PromptStudio-latest.apk
           body: |
-            ### 📱 ComfyUI AI Prompt Studio Android 安装包发布
+            ### 📱 ComfyUI AI Prompt Studio 移动端 Android 安装包 (${{ steps.release_info.outputs.tag }})
 
             欢迎下载使用 **ComfyUI AI Prompt Studio** 移动端 App！
 
-            #### ✨ 主要特性
-            - 🖥️ **随时随地使用提示词工作台**：手机端直接连接云端或局域网 ComfyUI 服务。
-            - ☁️ **云端生图与多模态反推**：支持自然语言描述扩写、空间区域排版以及 Danbooru 动漫标签反推。
-            - 🔄 **实时双向同步**：提示词修改自动写回画布，支持一键撤销与历史版本管理。
+            #### ✨ 本次更新重点 (v1.0.1)
+            - 🚀 **全面支持离线独立与大众云端模式**：解决手机打开报 `10.0.2.2 ERR_CONNECTION_TIMED_OUT` 超时问题，手机端无需运行或依赖电脑 ComfyUI，开箱即用！
+            - ✍️ **离线提示词工坊与 AI 扩写**：集成丰富风格、视角、光影、画质分类词库，离线可快速组装，配置 API Key 后可进行自然语言智能扩写与润色。
+            - 📷 **手机拍照 / 相册选图反推**：支持调用手机相机或从相册选择图片，通过多模态视觉模型一键反推详尽英文描述词、Danbooru 动漫标签或空间元素分解。
+            - ☁️ **手机直接云端生图**：支持通过 SiliconFlow (免费/极速 FLUX.1)、OpenAI DALL-E、Kolors 等直接在手机上出图，支持多种画幅比例与画廊历史记录。
+            - 🖥️ **贴心远程 ComfyUI 局域网连接模式**：支持一键连接同局域网的电脑 ComfyUI，连接异常自动降级回独立工作台，杜绝白屏与报错。
 
             #### 📥 下载安装方法
-            1. 点击下方 Assets 区域的 **`ComfyUI-PromptStudio-v1.0.0.apk`** 直接下载。
+            1. 点击下方 Assets 区域的 **`ComfyUI-PromptStudio-${{ steps.release_info.outputs.tag }}.apk`** 或 **`ComfyUI-PromptStudio-latest.apk`** 下载。
             2. 在 Android 手机上打开安装（首次安装需允许系统安装来自浏览器的应用）。
-            3. 启动应用后即可流畅使用提示词工作室！
+            3. 安装完成即可直接使用！

@@ -14,12 +14,12 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/atattier/ComfyUI-AI-Prompt-Studio/releases/download/v1.0.0/ComfyUI-AI-Prompt-Studio.zip">
+  <a href="https://github.com/atattier/ComfyUI-AI-Prompt-Studio/releases/latest">
     <img src="https://img.shields.io/badge/🧩%20下载-ComfyUI%20插件压缩包%20(.zip)-0969da?style=for-the-badge" alt="下载插件 zip">
   </a>
   &nbsp;&nbsp;
-  <a href="https://github.com/atattier/ComfyUI-AI-Prompt-Studio/releases/download/v1.0.0/ComfyUI-PromptStudio-v1.0.0.apk">
-    <img src="https://img.shields.io/badge/📲%20下载-Android%20APK%20安装包%20(.apk)-2ea44f?style=for-the-badge" alt="下载 APK">
+  <a href="https://github.com/atattier/ComfyUI-AI-Prompt-Studio/releases/download/v1.0.1/ComfyUI-PromptStudio-v1.0.1.apk">
+    <img src="https://img.shields.io/badge/📲%20下载-Android%20APK%20最新安装包%20(v1.0.1)-2ea44f?style=for-the-badge" alt="下载 APK">
   </a>
 </p>
 
@@ -185,21 +185,18 @@ Content-Type: application/json
 
 ## 📱 移动端与 Android APK 支持
 
-本项目自带原生 Android WebView 模板与一键打包脚本，方便将提示词工作台打包为 APK 在手机或平板上直接使用：
+本项目自带原生 Android 独立移动端应用，专为大众创作者和移动办公设计：
 
-### 一键打包脚本
-在 Windows PowerShell 中运行：
-```powershell
-.\build_apk.ps1 -ComfyPort 8188
-```
+- ☁️ **云端独立模式 (默认开箱即用)**：无需在手机或电脑运行 ComfyUI！支持直接配置 SiliconFlow (硅基流动)、DeepSeek、OpenAI、阿里云百炼等 API 密钥，在手机上直接实现**灵感提示词扩写**、**拍照/选图多模态反推**与**云端 FLUX.1 / SD3.5 高速出图**。
+- 🖥️ **局域网远程 ComfyUI 联动**：在设置中输入电脑的局域网 IP（例如 `http://192.168.1.100:8188`），即可无缝操控电脑端的 ComfyUI 工作流。
+- 🛡️ **异常自动容灾**：当远程 ComfyUI 无法连通时，自动回退到本地独立工作台，彻底避免 `net::ERR_CONNECTION_TIMED_OUT` 等网络白屏错误。
 
-- **自定义服务地址**：若使用局域网连接真机或云端实例：
-  ```powershell
-  .\build_apk.ps1 -ServerUrl "http://192.168.1.100:8188/"
-  ```
-- **构建方式**：
-  1. **Android Studio 一键打开**：直接打开项目根目录下的 `android/` 目录，点按 Run 或 Build APK；
-  2. **命令行构建**：已安装 Android SDK 环境下直接运行 `gradle assembleDebug`，生成 `app-debug.apk`。
+### 📥 快速下载
+- **GitHub Release 最新版**：[下载 ComfyUI-PromptStudio-v1.0.1.apk](https://github.com/atattier/ComfyUI-AI-Prompt-Studio/releases/download/v1.0.1/ComfyUI-PromptStudio-v1.0.1.apk)
+
+### 本地构建方式
+- **Android Studio**：直接打开项目根目录下的 `android/` 目录，点按 Run 或 Build APK；
+- **命令行构建**：`cd android && gradle assembleDebug`，生成 `app-debug.apk`。
 
 ---
 
