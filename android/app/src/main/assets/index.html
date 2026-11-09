@@ -27,13 +27,39 @@
     <section id="tab_gen" class="tab-panel active">
       <div class="card">
         <div class="card-title">
-          <span>☁️ MOSS 官方生图</span>
-          <span class="sub">MOSI API 直连</span>
+          <span>☁️ AI 生图工作台</span>
+          <span class="sub">多服务商 · 可接免费模型</span>
         </div>
 
         <div class="input-group">
-          <label for="mosiPrompt">正向提示词 (Prompt)</label>
-          <textarea id="mosiPrompt" placeholder="输入生图提示词，支持中英文自然语言描述..."></textarea>
+          <label for="genProviderSelect">生图服务商</label>
+          <select id="genProviderSelect">
+            <option value="moss" selected>MOSS 官方 (api.mosi.cn · 需官方 Key)</option>
+            <option value="siliconflow">硅基流动 SiliconFlow (免费额度 · FLUX/Kolors)</option>
+            <option value="pollinations">Pollinations.ai (完全免费 · 无需 Key)</option>
+            <option value="openai_compat">自定义 OpenAI 兼容 /images/generations</option>
+          </select>
+        </div>
+
+        <div class="input-group" id="genModelGroup">
+          <label for="genModelInput">生图模型名</label>
+          <input type="text" id="genModelInput" placeholder="如 black-forest-labs/FLUX.1-schnell / flux / Kolors" />
+          <div id="genModelHint" class="banner-tip" style="font-size: 11.5px; margin-top: 6px;">切换服务商会自动填入推荐模型；也可手动改。</div>
+          <div class="btn-row" style="margin-top: 8px;">
+            <button class="btn btn-sm btn-outline" id="btnFetchGenModels">⚡ 自动获取可用生图模型</button>
+            <button class="btn btn-sm btn-outline" id="btnClearGenModels" style="display:none">收起</button>
+          </div>
+          <div id="genModelListBox" style="display:none; margin-top:8px; max-height:220px; overflow-y:auto; border:1px solid var(--border); border-radius:8px; padding:6px;"></div>
+        </div>
+
+        <div class="input-group" id="genBaseUrlGroup" style="display:none">
+          <label for="genBaseUrlInput">接口基地址 (Base URL)</label>
+          <input type="text" id="genBaseUrlInput" placeholder="https://api.siliconflow.cn/v1" />
+        </div>
+
+        <div class="input-group">
+          <label for="mosiPrompt">正向提示词 (Prompt / 支持 MOSS layout 布局格式)</label>
+          <textarea id="mosiPrompt" placeholder="输入生图提示词，或粘贴工坊输出的 Layout JSON / 散文 / Danbooru 标签..."></textarea>
         </div>
 
         <div class="input-group">
@@ -41,7 +67,7 @@
           <input type="text" id="mosiNegPrompt" value="worst quality, bad anatomy, watermark, jpeg artifact" />
         </div>
 
-        <div class="input-group">
+        <div class="input-group" id="mosiModelGroup">
           <label for="mosiModelSelect">MOSS 模型版本</label>
           <select id="mosiModelSelect"></select>
         </div>
@@ -49,6 +75,7 @@
         <div class="input-group">
           <label for="mosiSizeSelect">官方尺寸规格 (宽×高)</label>
           <select id="mosiSizeSelect"></select>
+          <div id="sizeMatchHint" class="banner-tip" style="font-size: 11.5px; margin-top: 6px; display:none;"></div>
         </div>
 
         <!-- Advanced parameters row -->
@@ -106,74 +133,66 @@
       </div>
     </section>
 
-    <!-- ==================== TAB 2: MOSS 提示词工坊 ==================== -->
+    <!-- ==================== TAB 2: AI 提示词工坊（对话式） ==================== -->
     <section id="tab_studio" class="tab-panel">
-      <div class="card">
-        <div class="card-title">
-          <span>✍️ MOSS 提示词构思与润色</span>
-          <button class="btn btn-sm btn-outline" id="btnRandomIdea">🎲 灵感</button>
-        </div>
-        <div class="input-group">
-          <textarea id="userConcept" placeholder="用中文写下你的创意想法，例如：赛博雨夜霓虹街道中，机械义肢白发少女手握发光武士刀..."></textarea>
+      <div class="card" style="padding: 0; overflow: hidden;">
+        <div class="card-title" style="padding: 14px 16px; margin: 0;">
+          <span>💬 提示词工坊</span>
+          <span class="sub">像聊天一样打磨提示词</span>
         </div>
 
-        <!-- MOSS Style Dimensions -->
-        <div class="input-group">
-          <label>🌟 核心画风维度</label>
-          <div class="chip-group" id="chips_dimension"></div>
+        <!-- 对话消息区 -->
+        <div id="chatMessages" style="height: 64vh; min-height: 380px; overflow-y: auto; padding: 18px 16px 10px; display: flex; flex-direction: column; gap: 14px; background: var(--bg-input);">
+          <div class="chat-msg bot" style="align-self: flex-start; max-width: 88%; background: var(--bg-card); border: 1px solid var(--border); border-radius: 14px 14px 14px 4px; padding: 11px 13px; font-size: 13px; line-height: 1.7; color: var(--text-main);">
+            爸爸，把你想画的场景告诉我，我来帮你写成 MOSS 吃得下的提示词 ✨<br>
+            <span style="color: var(--text-muted); font-size: 12px;">可以输出：散文 / <b>Layout 布局 JSON</b> / Danbooru 标签三种格式，也能直接送去生图。</span>
+          </div>
         </div>
 
-        <!-- Shot & Angles -->
-        <div class="input-group">
-          <label>📐 镜头视角</label>
-          <div class="chip-group" id="chips_shot"></div>
+        <!-- ★ 用户自定义要求：自动注入每次对话 -->
+        <div style="padding: 6px 12px 2px; border-top: 1px solid var(--border);">
+          <input type="text" id="chatCustomRule" placeholder="★ 自定义要求（自动注入）例：全英文、写实、无水印…" />
         </div>
 
-        <!-- Light & Atmosphere -->
-        <div class="input-group">
-          <label>☀️ 光影质感</label>
-          <div class="chip-group" id="chips_light"></div>
+        <!-- 预设快捷指令：只保留三个 -->
+        <div id="chatPresets" style="display: flex; gap: 8px; padding: 10px 12px 2px;">
+          <button class="chip chat-preset" data-cmd="优化提示词" style="flex:1;">✨ 优化提示词</button>
+          <button class="chip chat-preset" data-cmd="自检问题" style="flex:1;">🔍 自检</button>
+          <button class="chip chat-preset" data-cmd="扩写细节" style="flex:1;">🔬 扩写</button>
         </div>
 
-        <!-- Quality & Details -->
-        <div class="input-group">
-          <label>💎 画质与细节</label>
-          <div class="chip-group" id="chips_details"></div>
+        <!-- 输入行 -->
+        <div style="display: flex; gap: 8px; padding: 10px 12px 12px;">
+          <textarea id="userConcept" rows="1" placeholder="输入你的需求，例如：赛博雨夜的机械少女…" style="flex: 1; resize: none; min-height: 42px; max-height: 110px; margin: 0;"></textarea>
+          <button class="btn btn-primary" id="btnChatSend" style="flex: 0 0 auto; width: 64px; padding: 0;">发送</button>
         </div>
 
-        <!-- Actions -->
-        <div class="btn-row">
-          <button class="btn btn-secondary" id="btnFastCombine">
-            <span>⚡</span> 快速直拼 (离线)
-          </button>
-          <button class="btn btn-primary" id="btnMagicExpand">
-            <span>🪄</span> AI 智能散文扩写
-          </button>
+        <!-- 兼容旧逻辑的隐藏输出容器（送去生图 / 复制用） -->
+        <div style="display: none;">
+          <textarea id="conceptMirror"></textarea>
+          <div id="posResult"></div><div id="negResult"></div>
+          <button id="btnFastCombine"></button><button id="btnMagicExpand"></button>
+          <button id="btnSendToMosi"></button><button id="btnRandomIdea"></button>
+          <button id="btnCopyPos"></button><button id="btnCopyNeg"></button>
+          <div id="chips_dimension"></div><div id="chips_shot"></div>
+          <div id="chips_light"></div><div id="chips_details"></div>
         </div>
       </div>
 
-      <!-- Output Card -->
-      <div class="card">
-        <div class="card-title">
-          <span>✨ 组装完成的 MOSS 提示词</span>
-          <button class="btn btn-sm btn-success" id="btnSendToMosi">☁️ 送去 MOSS 生图</button>
+      <!-- 最近一条结果的动作条 -->
+      <div class="card" id="chatActionBar" style="display: none;">
+        <div class="btn-row" style="margin-top: 0;">
+          <button class="btn btn-secondary" id="btnChatToGen">☁️ 送去生图</button>
+          <button class="btn btn-success" id="btnChatCopy">📋 复制内容</button>
         </div>
+      </div>
 
-        <div class="result-box">
-          <div class="result-header">
-            <span>正向提示词 (Positive)</span>
-            <button class="btn btn-sm btn-outline" id="btnCopyPos">📋 复制</button>
-          </div>
-          <div class="copy-content" id="posResult">(点击上方「快速直拼」或「AI 智能散文扩写」生成)</div>
-        </div>
-
-        <div class="result-box">
-          <div class="result-header">
-            <span>负向提示词 (Negative)</span>
-            <button class="btn btn-sm btn-outline" id="btnCopyNeg">📋 复制</button>
-          </div>
-          <div class="copy-content" id="negResult"></div>
-        </div>
+      <!-- 隐藏：兼容旧逻辑 -->
+      <div style="display:none">
+        <div id="chatDiffBox"></div>
+        <button id="btnChatToLayout"></button><button id="btnChatToProse"></button>
+        <button id="btnChatReviewDiff"></button>
+        <div id="chatStats"></div>
       </div>
     </section>
 
@@ -196,10 +215,11 @@
           <div class="preview-container">
             <img id="previewImg" src="" alt="预览图" />
           </div>
-          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
             <span id="imgInfoText" style="font-size: 12px; color: var(--text-muted);"></span>
             <button class="btn btn-sm btn-outline" id="btnClearImage">更换图片</button>
           </div>
+          <div id="ratioMatchBox" class="banner-tip" style="font-size: 12px; margin-bottom: 12px; display: none;"></div>
         </div>
 
         <div class="input-group" style="margin-top: 14px;">
@@ -263,11 +283,54 @@
         </div>
       </div>
 
+      <!-- 生图服务商 / 免费模型 -->
+      <div class="card">
+        <div class="card-title">
+          <span>🎨 生图服务商（支持免费模型）</span>
+          <span class="sub">在「生图」页切换</span>
+        </div>
+        <div class="input-group">
+          <label for="settingsGenProvider">生图服务商</label>
+          <select id="settingsGenProvider">
+            <option value="moss">MOSS 官方 (api.mosi.cn)</option>
+            <option value="siliconflow">硅基流动 SiliconFlow (免费额度)</option>
+            <option value="pollinations">Pollinations.ai (完全免费 · 无需 Key)</option>
+            <option value="openai_compat">自定义 OpenAI 兼容</option>
+          </select>
+        </div>
+
+        <div class="input-group">
+          <label for="settingsGenBaseUrl">接口基地址 (Base URL)</label>
+          <input type="text" id="settingsGenBaseUrl" placeholder="https://api.siliconflow.cn/v1" />
+        </div>
+
+        <div class="input-group">
+          <label for="settingsGenModel">生图模型名</label>
+          <input type="text" id="settingsGenModel" placeholder="black-forest-labs/FLUX.1-schnell / flux" />
+        </div>
+
+        <div class="input-group">
+          <label for="genApiKeyInput">生图服务 API Key（Pollinations 留空即可）</label>
+          <input type="password" id="genApiKeyInput" placeholder="sk-... / 留空走免费端点" />
+        </div>
+
+        <button class="btn btn-secondary" id="btnSaveGenSettings" style="width:100%;">
+          <span>💾</span> 保存生图服务商配置
+        </button>
+
+        <div class="banner-tip" style="font-size: 11.5px; line-height: 1.8; margin-top: 10px;">
+          💡 <b>免费方案：</b><br>
+          · <b>Pollinations.ai</b> — 完全免费、无需 Key，选了直接用<br>
+          · <b>硅基流动</b> — 注册送额度，<code>FLUX.1-schnell</code> / <code>Kolors</code> 免费<br>
+          · <b>自定义</b> — 任何 OpenAI 兼容 <code>/images/generations</code>（本地 ComfyUI / Ollama 代理均可）
+        </div>
+      </div>
+
       <!-- LLM Configuration for Magic Expand & Vision -->
       <div class="card">
         <div class="card-title">
           <span>🤖 提示词扩写与视觉反推大模型</span>
-          <span class="sub">可选辅助能力</span>
+          <span class="sub">工坊对话 / 视觉反推都用它</span>
         </div>
 
         <div class="input-group">
@@ -298,6 +361,28 @@
         <div class="input-group">
           <label for="llmVisionModelInput">视觉识图模型</label>
           <input type="text" id="llmVisionModelInput" value="Qwen/Qwen2-VL-7B-Instruct" />
+        </div>
+
+        <!-- ⚡ 自动获取模型 -->
+        <div class="btn-row" style="margin-top: 4px;">
+          <button class="btn btn-secondary" id="btnFetchModels" style="width: 100%;">
+            <span>⚡</span> 自动获取模型列表
+          </button>
+        </div>
+        <div id="modelFetchStatus" class="banner-tip" style="font-size: 12px; display: none;"></div>
+        <div id="modelListBox" style="display: none; margin-top: 10px;">
+          <div class="input-group">
+            <label for="modelSearchInput">筛选模型名</label>
+            <input type="text" id="modelSearchInput" placeholder="输入关键字过滤…" autocomplete="off" />
+          </div>
+          <div class="banner-tip" style="font-size: 11.5px; margin-bottom: 8px;">
+            点模型名 → 填入「扩写模型」；长按 / 点右侧「视」→ 填入「视觉识图模型」。
+          </div>
+          <div id="modelList" style="max-height: 320px; overflow-y: auto; border: 1px solid var(--border-color, #333); border-radius: 8px; padding: 6px;"></div>
+          <div class="btn-row" style="margin-top: 8px;">
+            <button class="btn btn-sm btn-outline" id="btnCloseModelList">收起列表</button>
+            <button class="btn btn-sm btn-outline" id="btnRefreshModels">重新获取</button>
+          </div>
         </div>
       </div>
 
