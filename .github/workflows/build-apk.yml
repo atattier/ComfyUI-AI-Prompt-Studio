@@ -29,11 +29,11 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
 
-      - name: Setup Gradle
-        uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: '8.7'
-          cache-disabled: true
+      - name: Install Gradle
+        run: |
+          curl -sSL "https://downloads.gradle-dn.com/distributions/gradle-8.7-bin.zip" -o /tmp/gradle.zip || curl -sSL "https://mirrors.cloud.tencent.com/gradle/gradle-8.7-bin.zip" -o /tmp/gradle.zip
+          sudo unzip -q /tmp/gradle.zip -d /opt
+          echo "/opt/gradle-8.7/bin" >> $GITHUB_PATH
 
       - name: Determine Release Tag
         id: release_info
