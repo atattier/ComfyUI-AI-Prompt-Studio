@@ -1282,6 +1282,155 @@ label 只能是 "object" | "character" | "text"。Layout 输出请用 \`\`\`json
     };
   }
 
+  // ==================== 布局框可视化（原图上画 bbox） ====================
+  const BOX_COLORS = [
+    '#2563eb', '#f59e0b', '#10b981', '#ec4899', '#8b5cf6', '#06b6d4',
+    '#3b82f6', '#d97706', '#059669', '#f43f5e', '#a855f7', '#14b8a6',
+    '#e11d48', '#eab308', '#6366f1', '#f97316'
+  ];
+  let bboxVisible = true;       // 当前是否显示
+  let bboxHasData = false;      // 是否已有可显示数据
+
+  function clearBboxOverlay() {
+    const svg = document.getElementById('bboxOverlay');
+    const btn = document.getElementById('btnToggleBbox');
+    const legend = document.getElementById('bboxLegend');
+    if (svg) { svg.innerHTML = ''; svg.style.display = 'none'; }
+    if (legend) { legend.innerHTML = ''; legend.style.display = 'none'; }
+    if (btn) btn.style.display = 'none';
+    bboxHasData = false;
+  }
+
+  // layout: {width,height,items:[{bbox:[x1,y1,x2,y2],label,caption,name}]}
+  function drawBboxOverlay(layout) {
+    const svg = document.getElementById('bboxOverlay');
+    const img = document.getElementById('previewImg');
+    const btn = document.getElementById('btnToggleBbox');
+    if (!svg || !img || !layout || !Array.isArray(layout.items) || !layout.items.length) return;
+
+    const W = Number(layout.width) || img.clientWidth || 1000;
+    const H = Number(layout.height) || img.clientHeight || 1000;
+
+    svg.setAttribute('viewBox', '0 0 ' + W + ' ' + H);
+    svg.setAttribute('preserveAspectRatio', 'none');
+    svg.innerHTML = '';
+
+    layout.items.forEach((it, i) => {
+      const b = it.bbox || [];
+      if (b.length !== 4) return;
+      const [x1, y1, x2, y2] = b.map(Number);
+      const w = Math.max(1, x2 - x1), h = Math.max(1, y2 - y1);
+      const color = BOX_COLORS[i % BOX_COLORS.length];
+
+      const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+      rect.setAttribute('x', x1); rect.setAttribute('y', y1);
+      rect.setAttribute('width', w); rect.setAttribute('height', h);
+      rect.setAttribute('fill', color + '1f');
+      rect.setAttribute('stroke', color);
+      rect.setAttribute('stroke-width', Math.max(2, W / 300));
+      rect.setAttribute('rx', Math.max(2, W / 400));
+      svg.appendChild(rect);
+
+      // 序号标签（左上角）
+      const fs = Math.max(14, W / 30);
+      const label = String(i + 1);
+      const pad = fs * 0.35;
+      const tw = fs * 0.62 * label.length + pad * 2;
+      const th = fs * 1.35;
+
+      const bg = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+      bg.setAttribute('x', x1); bg.setAttribute('y', Math.max(0, y1 - th));
+      bg.setAttribute('width', tw); bg.setAttribute('height', th);
+      bg.setAttribute('fill', color); bg.setAttribute('rx', fs * 0.2);
+      svg.appendChild(bg);
+
+      const t = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+      t.setAttribute('x', x1 + pad); t.setAttribute('y', Math.max(fs * 0.95, y1 - th + fs * 0.95));
+      t.setAttribute('fill', '#fff');
+      t.setAttribute('font-size', fs);
+      t.setAttribute('font-family', 'monospace');
+      t.setAttribute('font-weight', 'bold');
+      t.textContent = label;
+      svg.appendChild(t);
+
+      // 名称（框内底部，太小就不画）
+      if (it.name && w > fs * 4) {
+        const nt = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+        nt.setAttribute('x', x1 + pad);
+        nt.setAttribute('y', y1 + h - pad);
+        nt.setAttribute('fill', color);
+        nt.setAttribute('font-size', fs * 0.78);
+        nt.setAttribute('font-family', 'sans-serif');
+        nt.setAttribute('font-weight', 'bold');
+        nt.setAttribute('stroke', '#000');
+        nt.setAttribute('stroke-width', fs / 14);
+        nt.setAttribute('paint-order', 'stroke');
+        nt.textContent = String(it.name).slice(0, 12);
+        svg.appendChild(nt);
+      }
+    });
+
+    // 让 SVG 精确覆盖在图片的显示区域上（object-fit: contain 会留黑边）
+    const fit = () => {
+      const cw = img.clientWidth, ch = img.clientHeight;
+      const nw = img.naturalWidth || W, nh = img.naturalHeight || H;
+      if (!cw || !ch || !nw || !nh) return;
+      const scale = Math.min(cw / nw, ch / nh);
+      const dw = nw * scale, dh = nh * scale;
+      const left = (cw - dw) / 2, top = (ch - dh) / 2;
+      svg.style.position = 'absolute';
+      svg.style.left = (img.offsetLeft + left) + 'px';
+      svg.style.top = (img.offsetTop + top) + 'px';
+      svg.style.width = dw + 'px';
+      svg.style.height = dh + 'px';
+      svg.style.inset = 'auto';
+    };
+    fit();
+    if (!img._bboxFitBound) {
+      img.addEventListener('load', fit);
+      window.addEventListener('resize', fit);
+      img._bboxFitBound = true;
+    }
+
+    svg.style.display = 'block';
+    bboxHasData = true;
+    bboxVisible = true;
+    if (btn) { btn.style.display = 'inline-block'; btn.textContent = '🙈 隐藏框'; }
+    renderBboxLegend(layout);
+  }
+
+  // 彩色编号图例：和框上的号码一一对应
+  function renderBboxLegend(layout) {
+    const box = document.getElementById('bboxLegend');
+    if (!box) return;
+    const esc = t => String(t == null ? '' : t).replace(/[&<>"']/g, c =>
+      ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+    const items = (layout.items || []).map((it, i) => {
+      const color = BOX_COLORS[i % BOX_COLORS.length];
+      const cap = String(it.caption || '').trim();
+      const short = cap.length > 46 ? cap.slice(0, 46) + '…' : cap;
+      return '<div style="display:flex; gap:7px; align-items:flex-start; padding:5px 6px; border-bottom:1px solid rgba(128,128,128,.15);">' +
+        '<span style="flex:0 0 auto; background:' + color + '; color:#fff; font-size:10.5px; font-weight:bold; ' +
+        'border-radius:4px; padding:1px 6px; font-family:monospace; margin-top:1px;">' + (i + 1) + '</span>' +
+        '<span style="flex:1; min-width:0;">' +
+          '<span style="font-size:11.5px; color:var(--text-main); font-weight:600;">' + esc(it.name || '') + '</span>' +
+          '<span style="font-size:10px; color:var(--text-dim); margin-left:5px;">' + esc(it.label) + '</span>' +
+          (short ? '<div style="font-size:10.5px; color:var(--text-muted); line-height:1.45; margin-top:1px;">' + esc(short) + '</div>' : '') +
+        '</span></div>';
+    }).join('');
+    box.innerHTML = '<div style="font-size:11px; color:var(--text-muted); margin-bottom:5px;">🗂 区域清单（编号对应图上框）</div>' +
+      '<div style="max-height:150px; overflow-y:auto; border:1px solid var(--border); border-radius:8px;">' + items + '</div>';
+    box.style.display = 'block';
+  }
+
+  function toastBboxSummary(layout) {
+    if (!layout || !Array.isArray(layout.items)) return;
+    const counts = {};
+    layout.items.forEach(it => { counts[it.label] = (counts[it.label] || 0) + 1; });
+    const parts = Object.entries(counts).map(([k, v]) => k + '×' + v).join('  ');
+    toast('📐 ' + layout.items.length + ' 个区域：' + parts);
+  }
+
   // --- Tab 3: Vision Caption ---
   const imageFileInput = document.getElementById('imageFileInput');
   const uploadDropzone = document.getElementById('uploadDropzone');
@@ -1330,6 +1479,7 @@ label 只能是 "object" | "character" | "text"。Layout 输出请用 \`\`\`json
         uploadDropzone.style.display = 'none';
         previewContainer.style.display = 'block';
         // 按原图宽高比自动匹配最相近的官方尺寸，并同步到生图页
+        clearBboxOverlay();
         const matched = applyMatchedSize(img.width, img.height);
         toast(matched ? ('图片加载成功 · 自动匹配尺寸 ' + matched.value) : '图片加载成功');
       };
@@ -1344,6 +1494,7 @@ label 只能是 "object" | "character" | "text"。Layout 输出请用 \`\`\`json
       if (imageFileInput) imageFileInput.value = '';
       previewContainer.style.display = 'none';
       uploadDropzone.style.display = 'block';
+      clearBboxOverlay();
     });
   }
 
@@ -1431,7 +1582,8 @@ label 只能是 "object" | "character" | "text"。Layout 输出请用 \`\`\`json
           const norm = normalizeLayout(output, cs.w, cs.h);
           if (!norm) throw new Error('模型没返回合法 JSON 布局，请重试或换视觉模型');
           visionResultEl.textContent = JSON.stringify(norm, null, 2);
-          toast('🎉 反推成功 · Layout 共 ' + norm.items.length + ' 个区域');
+          drawBboxOverlay(norm);
+          toastBboxSummary(norm);
         } else {
           toast('🎉 反推成功！尺寸已按原图比例自动匹配');
         }
@@ -1449,6 +1601,17 @@ label 只能是 "object" | "character" | "text"。Layout 输出请用 \`\`\`json
       }
     });
   }
+
+  // 显示 / 隐藏布局框
+  document.getElementById('btnToggleBbox')?.addEventListener('click', () => {
+    const svg = document.getElementById('bboxOverlay');
+    const btn = document.getElementById('btnToggleBbox');
+    if (!svg || !bboxHasData) return;
+    bboxVisible = !bboxVisible;
+    svg.style.display = bboxVisible ? 'block' : 'none';
+    if (btn) btn.textContent = bboxVisible ? '🙈 隐藏框' : '👁 显示框';
+    toast(bboxVisible ? '已显示布局框' : '已隐藏布局框');
+  });
 
   document.getElementById('btnCopyVision')?.addEventListener('click', () => copyText(visionResultEl.textContent));
 
