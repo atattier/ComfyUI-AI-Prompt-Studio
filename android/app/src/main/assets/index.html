@@ -376,6 +376,10 @@ header{padding-top:calc(var(--safe-top) + 6px) !important; padding-bottom:6px !i
             <button class="btn btn-secondary" id="btnFetchModels" style="margin:0;"><span>⚡</span> 获取模型</button>
             <button class="btn btn-primary" id="btnSaveLLMSettings" style="margin:0;"><span>💾</span> 保存</button>
           </div>
+          <button class="btn btn-sm btn-outline" id="btnTestLLM" style="width:100%; margin-top:6px;">
+            <span>🩺</span> 测试连通性（看服务真实返回）
+          </button>
+          <div id="llmTestOut" class="banner-tip" style="font-size:10.5px; display:none; margin-top:6px; white-space:pre-wrap; word-break:break-all; max-height:150px; overflow-y:auto;"></div>
           <div id="modelFetchStatus" class="banner-tip" style="font-size:10.5px; display:none; margin-top:6px;"></div>
           <div id="modelListBox" style="display:none; margin-top:6px;">
             <input type="text" id="modelSearchInput" placeholder="筛选模型…" autocomplete="off" style="margin-bottom:6px;" />
