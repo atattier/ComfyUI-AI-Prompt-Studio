@@ -193,6 +193,13 @@ header{padding-top:calc(var(--safe-top) + 6px) !important; padding-bottom:6px !i
           <button class="chip chat-preset" data-cmd="扩写细节" style="flex:1;">🔬 扩写</button>
         </div>
 
+        <!-- 引用预览条 -->
+        <div id="quoteBar" style="display:none; margin:0 12px 6px; padding:7px 9px; background:rgba(124,58,237,.14); border-left:3px solid var(--moss-primary); border-radius:6px; position:relative;">
+          <div style="font-size:10.5px; color:var(--moss-primary); font-weight:600; margin-bottom:2px;" id="quoteWho">引用</div>
+          <div style="font-size:11px; color:var(--text-muted); line-height:1.45; max-height:48px; overflow:hidden; word-break:break-all;" id="quoteText"></div>
+          <button id="quoteCancel" style="position:absolute; right:6px; top:5px; background:none; border:none; color:var(--text-dim); font-size:15px; padding:2px 6px;">✕</button>
+        </div>
+
         <!-- 输入行 -->
         <div style="display: flex; gap: 8px; padding: 10px 12px 12px;">
           <textarea id="userConcept" rows="1" placeholder="输入你的需求，例如：赛博雨夜的机械少女…" style="flex: 1; resize: none; min-height: 42px; max-height: 110px; margin: 0;"></textarea>
@@ -427,6 +434,14 @@ header{padding-top:calc(var(--safe-top) + 6px) !important; padding-bottom:6px !i
 
   <!-- Toast Notification Container -->
   <div class="toast-container" id="toastContainer"></div>
+
+  <!-- 消息长按 / 左滑菜单 -->
+  <div id="msgMenu" style="display:none; position:fixed; z-index:9999; background:var(--bg-card); border:1px solid var(--border); border-radius:10px; box-shadow:0 8px 28px rgba(0,0,0,.6); overflow:hidden; min-width:132px;">
+    <button id="msgMenuQuote" style="display:block; width:100%; padding:11px 16px; background:none; border:none; color:var(--text-main); font-size:13px; text-align:left; border-bottom:1px solid var(--border);">💬 引用</button>
+    <button id="msgMenuCopy" style="display:block; width:100%; padding:11px 16px; background:none; border:none; color:var(--text-main); font-size:13px; text-align:left; border-bottom:1px solid var(--border);">📋 复制</button>
+    <button id="msgMenuSend" style="display:block; width:100%; padding:11px 16px; background:none; border:none; color:var(--text-main); font-size:13px; text-align:left; border-bottom:1px solid var(--border);">☁️ 送去生图</button>
+    <button id="msgMenuEdit" style="display:block; width:100%; padding:11px 16px; background:none; border:none; color:var(--text-main); font-size:13px; text-align:left;">✏️ 填入输入框</button>
+  </div>
 
   <script src="app.js"></script>
 </body>
