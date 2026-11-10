@@ -1172,12 +1172,20 @@ label 只能是 "object" | "character" | "text"。Layout 输出请用 \`\`\`json
       if (posResultEl) posResultEl.textContent = extractPromptText(e.before);
       appendChatMessage('assistant', '↩️ 已撤销「' + (e.label || '上一步') + '」，恢复到：\n' + extractPromptText(e.before).slice(0, 300));
       if (chatActionBar) chatActionBar.style.display = 'block';
+      const pb = document.getElementById('btnChatPreviewBbox');
+      if (pb) pb.style.display = detectLayoutJSON(reply) ? 'block' : 'none';
       updateChatStats();
       toast('已撤销');
       return;
     }
     text = String(text || '').trim();
     if (!text) { toast('先写点什么吧'); return; }
+    // 检测上下文里是否已有 Layout 结构：有则强制保持格子格式，不许改写成散文
+    const probeText = (quotedMsg ? quotedMsg.text : '') + '\n' + text + '\n' +
+      (lastAssistantText || '') + '\n' +
+      chatHistory.slice(-4).map(m => m.content).join('\n');
+    const layoutCtx = detectLayoutJSON(probeText);
+
     // 引用：界面上显示引用块，实际发给模型时把引用内容一并带上
     const quoted = quotedMsg;
     const displayPrefix = quoted
@@ -1200,7 +1208,17 @@ label 只能是 "object" | "character" | "text"。Layout 输出请用 \`\`\`json
       let reply;
       if (key) {
         const rule = customRule();
-        const sys = CHAT_SYSTEM_PROMPT + (rule ? ('\n\n### ★ 用户自定义要求（最高优先级，必须合并注入本次所有输出）\n' + rule) : '');
+        let sys = CHAT_SYSTEM_PROMPT + (rule ? ('\n\n### ★ 用户自定义要求（最高优先级，必须合并注入本次所有输出）\n' + rule) : '');
+        if (layoutCtx) {
+          sys += '\n\n### ⛔ 本轮强制约束（最高优先级，覆盖以上所有格式规则）\n' +
+            '当前对话正在编辑一份 **Layout 布局 JSON**，用户可能只要求修改其中某个区域。你必须：\n' +
+            '1. 输出**完整的 Layout JSON**，结构、字段、区域数量全部保持原样（最多 16 个 items）\n' +
+            '2. **绝对不要**改写成散文、Natural language 段落或 Danbooru 标签\n' +
+            '3. 用户提到的"这块/这里/局部"，指的就是 items 里对应 caption 的那个区域，**只改那个 item 的 caption**，其余 items 一个字都不要动\n' +
+            '4. bbox 除非用户明确要求移动/缩放，否则**原样保留****\n' +
+            '5. 输出用 ```json 代码块包裹，只输出 JSON，不要任何解释\n\n' +
+            '待修改的原始 Layout：\n```json\n' + JSON.stringify(layoutCtx, null, 2) + '\n```';
+        }
         const msgs = [{ role: 'system', content: sys }].concat(chatHistory);
         // 预设指令作为显式要求附在最后一条
         if (presetCmd) {
@@ -1242,6 +1260,20 @@ label 只能是 "object" | "character" | "text"。Layout 输出请用 \`\`\`json
       }
       lastAssistantText = reply;
       updateChatStats();
+      // 若本轮上下文是 Layout，或回复里含 Layout JSON → 规范化并实时刷新画框
+      const outLayout = detectLayoutJSON(reply);
+      if (outLayout) {
+        const cs = currentCanvasSize();
+        const norm = normalizeLayout(outLayout, cs.w, cs.h);
+        if (norm) {
+          lastLayout = norm;
+          drawBboxOverlay(norm);
+          toastBboxSummary(norm);
+          if (visionResultEl && document.getElementById('tab_vision')) {
+            visionResultEl.textContent = JSON.stringify(norm, null, 2);
+          }
+        }
+      }
       if (posResultEl) posResultEl.textContent = extractPromptText(reply);
       if (negResultEl) negResultEl.textContent = config.moss_negative || '';
       if (chatActionBar) chatActionBar.style.display = 'block';
@@ -1307,6 +1339,27 @@ label 只能是 "object" | "character" | "text"。Layout 输出请用 \`\`\`json
     });
 
     // 动作条
+    // 到视觉页看布局框（把当前 layout 画出）
+    document.getElementById('btnChatPreviewBbox')?.addEventListener('click', () => {
+      const lay = detectLayoutJSON(lastAssistantText);
+      if (!lay) { toast('当前结果不是 Layout 布局，先在设置里选输出 Layout'); return; }
+      const cs = currentCanvasSize();
+      const norm = normalizeLayout(lay, cs.w, cs.h);
+      if (!norm) { toast('布局解析失败'); return; }
+      lastLayout = norm;
+      if (visionResultEl) visionResultEl.textContent = JSON.stringify(norm, null, 2);
+      switchTab('vision');
+      setTimeout(() => {
+        drawBboxOverlay(norm);
+        const pv = document.getElementById('previewContainer');
+        if (pv && !uploadedImageBase64) {
+          const up = document.getElementById('uploadDropzone');
+          if (up) up.style.display = 'block';
+        }
+        toast('布局框已绘制');
+      }, 150);
+    });
+
     document.getElementById('btnChatToGen')?.addEventListener('click', () => {
       const p = extractPromptText(lastAssistantText).trim();
       if (!p) { toast('还没有可送去的结果'); return; }
@@ -1409,6 +1462,43 @@ label 只能是 "object" | "character" | "text"。Layout 输出请用 \`\`\`json
     updateChatStats();
   }
 
+  // --- 从任意文本里找出 Layout JSON（工坊维持格式用） ---
+  function detectLayoutJSON(txt) {
+    if (!txt) return null;
+    const str = String(txt);
+    // 优先 ```json 围栏
+    const fences = [...str.matchAll(/```(?:json)?\s*([\s\S]*?)```/gi)];
+    const candidates = fences.map(m => m[1]).concat([str]);
+    for (const c of candidates) {
+      const t = String(c).trim();
+      // 直接从每个 { 起尝试解析，取最外层成功且有 items 的
+      for (let i = 0; i < t.length; i++) {
+        if (t[i] !== '{') continue;
+        let depth = 0, end = -1, inStr = false, esc = false;
+        for (let j = i; j < t.length; j++) {
+          const ch = t[j];
+          if (esc) { esc = false; continue; }
+          if (ch === '\\') { esc = true; continue; }
+          if (ch === '"') { inStr = !inStr; continue; }
+          if (inStr) continue;
+          if (ch === '{') depth++;
+          else if (ch === '}') { depth--; if (depth === 0) { end = j; break; } }
+        }
+        if (end < 0) continue;
+        try {
+          const obj = JSON.parse(t.slice(i, end + 1));
+          if (obj && Array.isArray(obj.items) && obj.items.length) {
+            // 校验像不像 layout
+            const ok = obj.bbox_coord_space || obj.bbox_format ||
+              obj.items.some(it => Array.isArray(it.bbox) && it.bbox.length === 4);
+            if (ok) return obj;
+          }
+        } catch (e) {}
+      }
+    }
+    return null;
+  }
+
   // --- 统一读取 LLM 配置：输入框有值就用，并顺手回写 config（无需先点保存） ---
   function liveLLMConfig() {
     const pick = (el, key, fallback) => {
@@ -1430,6 +1520,7 @@ label 只能是 "object" | "character" | "text"。Layout 输出请用 \`\`\`json
     '#3b82f6', '#d97706', '#059669', '#f43f5e', '#a855f7', '#14b8a6',
     '#e11d48', '#eab308', '#6366f1', '#f97316'
   ];
+  let lastLayout = null;        // 最近一次的布局
   let bboxVisible = true;       // 当前是否显示
   let bboxHasData = false;      // 是否已有可显示数据
 
@@ -2156,6 +2247,111 @@ label 只能是 "object" | "character" | "text"。Layout 输出请用 \`\`\`json
   }
 
   // --- Initialize ---
+  // ==================== 全屏图片查看器 ====================
+  let vScale = 1, vTx = 0, vTy = 0, vStartDist = 0, vStartScale = 1, vDragging = false, vPinching = false;
+
+  function applyViewerTransform() {
+    const im = document.getElementById('imgViewerImg');
+    if (im) im.style.transform = 'translate(' + vTx + 'px,' + vTy + 'px) scale(' + vScale + ')';
+  }
+
+  function openImageViewer(src) {
+    const v = document.getElementById('imgViewer');
+    const im = document.getElementById('imgViewerImg');
+    if (!v || !im || !src) return;
+    im.src = src;
+    vScale = 1; vTx = 0; vTy = 0;
+    applyViewerTransform();
+    v.style.display = 'block';
+  }
+
+  function closeImageViewer() {
+    const v = document.getElementById('imgViewer');
+    const im = document.getElementById('imgViewerImg');
+    if (v) v.style.display = 'none';
+    if (im) im.src = '';
+  }
+
+  function bindImageViewer() {
+    const v = document.getElementById('imgViewer');
+    const stage = document.getElementById('imgViewerStage');
+    if (!v || !stage) return;
+
+    document.getElementById('imgViewerClose')?.addEventListener('click', closeImageViewer);
+    document.getElementById('imgViewerReset')?.addEventListener('click', () => {
+      vScale = 1; vTx = 0; vTy = 0; applyViewerTransform();
+    });
+    v.addEventListener('click', e => { if (e.target === v) closeImageViewer(); });
+
+    // 双指缩放
+    stage.addEventListener('touchstart', e => {
+      if (e.touches.length === 2) {
+        vPinching = true;
+        const [a, b] = e.touches;
+        vStartDist = Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
+        vStartScale = vScale;
+      } else if (e.touches.length === 1) {
+        vDragging = true;
+        vStartX = e.touches[0].clientX - vTx;
+        vStartY = e.touches[0].clientY - vTy;
+      }
+    }, { passive: true });
+
+    let vStartX = 0, vStartY = 0;
+    stage.addEventListener('touchmove', e => {
+      if (vPinching && e.touches.length === 2) {
+        const [a, b] = e.touches;
+        const d = Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
+        vScale = Math.min(6, Math.max(1, vStartScale * (d / (vStartDist || 1))));
+        if (vScale === 1) { vTx = 0; vTy = 0; }
+        applyViewerTransform();
+        e.preventDefault();
+      } else if (vDragging && e.touches.length === 1 && vScale > 1) {
+        vTx = e.touches[0].clientX - vStartX;
+        vTy = e.touches[0].clientY - vStartY;
+        applyViewerTransform();
+        e.preventDefault();
+      }
+    }, { passive: false });
+
+    stage.addEventListener('touchend', e => {
+      if (e.touches.length === 0) { vPinching = false; vDragging = false; }
+      else if (e.touches.length === 1) { vPinching = false; }
+    }, { passive: true });
+
+    // 双击复位 / 放大
+    let lastTap = 0;
+    stage.addEventListener('click', () => {
+      const now = Date.now();
+      if (now - lastTap < 300) {
+        if (vScale > 1) { vScale = 1; vTx = 0; vTy = 0; }
+        else { vScale = 2.2; }
+        applyViewerTransform();
+      }
+      lastTap = now;
+    });
+    // 桌面滚轮缩放
+    stage.addEventListener('wheel', e => {
+      e.preventDefault();
+      vScale = Math.min(6, Math.max(1, vScale * (e.deltaY > 0 ? 0.9 : 1.1)));
+      if (vScale === 1) { vTx = 0; vTy = 0; }
+      applyViewerTransform();
+    }, { passive: false });
+  }
+
+  // 给图片绑定"点一下全屏"
+  function makeZoomable(imgEl, getSrc) {
+    if (!imgEl || imgEl._zoomBound) return;
+    imgEl._zoomBound = true;
+    imgEl.style.cursor = 'zoom-in';
+    imgEl.addEventListener('click', e => {
+      const src = getSrc ? getSrc() : imgEl.src;
+      if (!src) return;
+      openImageViewer(src);
+      e.stopPropagation();
+    });
+  }
+
   // --- 折叠交互：让每页一屏装下 ---
   function bindFold(headId, bodyId, arwId, defaultOpen) {
     const head = document.getElementById(headId);
@@ -2174,6 +2370,9 @@ label 只能是 "object" | "character" | "text"。Layout 输出请用 \`\`\`json
   }
 
   function init() {
+    bindImageViewer();
+    makeZoomable(document.getElementById('previewImg'));
+    makeZoomable(document.getElementById('mosiResultImg'));
     bindFold('foldAdvHead', 'foldAdvBody', 'foldAdvArw', false);
     bindFold('foldHistHead', 'foldHistBody', 'foldHistArw', false);
     bindFold('foldLLMHead', 'foldLLMBody', 'foldLLMArw', false);
