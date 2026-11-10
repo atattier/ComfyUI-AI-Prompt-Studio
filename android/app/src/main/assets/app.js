@@ -1800,7 +1800,27 @@ label 只能是 "object" | "character" | "text"。Layout 输出请用 \`\`\`json
   }
 
   // --- Initialize ---
+  // --- 折叠交互：让每页一屏装下 ---
+  function bindFold(headId, bodyId, arwId, defaultOpen) {
+    const head = document.getElementById(headId);
+    const body = document.getElementById(bodyId);
+    const arw = document.getElementById(arwId);
+    if (!head || !body) return;
+    const setOpen = (open) => {
+      body.classList.toggle('off', !open);
+      if (arw) arw.style.transform = open ? 'rotate(0deg)' : 'rotate(-90deg)';
+      try { localStorage.setItem('fold_' + headId, open ? '1' : '0'); } catch (e) {}
+    };
+    let saved = null;
+    try { saved = localStorage.getItem('fold_' + headId); } catch (e) {}
+    setOpen(saved === null ? !!defaultOpen : saved === '1');
+    head.addEventListener('click', () => setOpen(body.classList.contains('off')));
+  }
+
   function init() {
+    bindFold('foldAdvHead', 'foldAdvBody', 'foldAdvArw', false);
+    bindFold('foldHistHead', 'foldHistBody', 'foldHistArw', false);
+    bindFold('foldLLMHead', 'foldLLMBody', 'foldLLMArw', false);
     initMosiSelects();
     renderChips();
     populateSettings();
