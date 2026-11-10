@@ -1404,16 +1404,28 @@ label 只能是 "object" | "character" | "text"。Layout 输出请用 \`\`\`json
         }
 
         const data = await resp.json();
-        const output = data.choices?.[0]?.message?.content || '未获取到反推结果';
-        visionResultEl.textContent = output.trim();
+        // 兼容多种返回结构：content / reasoning_content / text / output
+        const msg = data.choices?.[0]?.message || {};
+        let output = msg.content
+          || msg.reasoning_content
+          || data.choices?.[0]?.text
+          || (typeof data.output === 'string' ? data.output : '')
+          || '';
+        output = String(output).trim();
+        // 真空内容 → 明确报错，不再把兜底文案当成结果
+        if (!output) {
+          console.error('[Vision] 空响应:', JSON.stringify(data).slice(0, 800));
+          const detail = data.choices?.[0]?.finish_reason || data.error?.message || '模型未返回内容';
+          throw new Error('模型返回空内容（' + detail + '）。常见原因：该模型不支持图片输入，请换视觉模型（如 Qwen/Qwen2-VL-7B-Instruct、gpt-4o-mini）');
+        }
+        visionResultEl.textContent = output;
         // layout 模式：把反推文本包成合法 PromptBoard 布局 JSON（MOSS 吃的格式）
         if (mode === 'layout') {
           const cs = currentCanvasSize();
-          const norm = normalizeLayout(output.trim(), cs.w, cs.h);
-          visionResultEl.textContent = norm
-            ? JSON.stringify(norm, null, 2)
-            : textToLayout(output.trim());
-          toast(norm ? ('🎉 反推成功 · Layout 共 ' + norm.items.length + ' 个区域') : '🎉 反推成功');
+          const norm = normalizeLayout(output, cs.w, cs.h);
+          if (!norm) throw new Error('模型没返回合法 JSON 布局，请重试或换视觉模型');
+          visionResultEl.textContent = JSON.stringify(norm, null, 2);
+          toast('🎉 反推成功 · Layout 共 ' + norm.items.length + ' 个区域');
         } else {
           toast('🎉 反推成功！尺寸已按原图比例自动匹配');
         }
@@ -1579,6 +1591,39 @@ label 只能是 "object" | "character" | "text"。Layout 输出请用 \`\`\`json
     saveConfig();
     updateStatus();
   }
+  // 🩺 连通性测试：把真实 HTTP 状态和返回前 400 字打出来
+  document.getElementById('btnTestLLM')?.addEventListener('click', async () => {
+    const out = document.getElementById('llmTestOut');
+    const cfg = liveLLMConfig();
+    if (!out) return;
+    out.style.display = 'block';
+    out.textContent = '测试中…';
+    if (!cfg.apiKey) { out.textContent = '✗ 还没填 API Key'; return; }
+    const base = cfg.baseUrl.replace(/\/+$/, '');
+    let txt = '';
+    txt += 'Base URL: ' + base + '\n';
+    txt += 'Key: ' + cfg.apiKey.slice(0, 6) + '…' + cfg.apiKey.slice(-4) + '（' + cfg.apiKey.length + ' 位）\n';
+    try {
+      const t0 = Date.now();
+      const r = await fetch(base + '/models', { headers: { 'Authorization': 'Bearer ' + cfg.apiKey, 'Accept': 'application/json' } });
+      const ms = Date.now() - t0;
+      txt += '\n/models → HTTP ' + r.status + ' (' + ms + 'ms)\n';
+      const body = await r.text();
+      txt += body.slice(0, 400);
+      let ids = [];
+      try {
+        const j = JSON.parse(body);
+        ids = (j.data || []).map(m => m.id || m);
+        txt += '\n\n共 ' + ids.length + ' 个模型；视觉候选：\n';
+        const visionLike = ids.filter(id => /vl|vision|4o|claude|gemini|glm-4v|qwen.*vl/i.test(id));
+        txt += (visionLike.slice(0, 8).join('\n') || '（没找到明显支持视觉的模型）');
+      } catch (e) {}
+    } catch (e) {
+      txt += '\n✗ 连接失败: ' + e.message;
+    }
+    out.textContent = txt;
+  });
+
   document.getElementById('btnSaveLLMSettings')?.addEventListener('click', () => {
     persistLLM();
     toast('✅ 大模型配置已保存');
