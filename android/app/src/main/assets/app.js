@@ -1361,6 +1361,12 @@ label 只能是 "object" | "character" | "text"。Layout 输出请用 \`\`\`json
         return;
       }
 
+      // 前置提醒：模型名不像视觉模型时提示（避免空转一轮才发现）
+      const vm = (llmCfg.visionModel || '');
+      if (vm && !/vl|vision|4o|4\.1|claude|gemini|glm-4v|internvl|llava|qwen.*vl|pixtral|grok.*vision|step-1v|yi-vl|minicpm-v|m3|multimodal/i.test(vm)) {
+        toast('⚠️ 当前视觉模型「' + vm + '」可能不支持图片输入，若返回空内容请换 Qwen2-VL / gpt-4o-mini 等视觉模型');
+      }
+
       btnStartVision.disabled = true;
       btnStartVision.innerHTML = '<span class="spinner"></span> MOSS 视觉反推中...';
 
@@ -1416,7 +1422,7 @@ label 只能是 "object" | "character" | "text"。Layout 输出请用 \`\`\`json
         if (!output) {
           console.error('[Vision] 空响应:', JSON.stringify(data).slice(0, 800));
           const detail = data.choices?.[0]?.finish_reason || data.error?.message || '模型未返回内容';
-          throw new Error('模型返回空内容（' + detail + '）。常见原因：该模型不支持图片输入，请换视觉模型（如 Qwen/Qwen2-VL-7B-Instruct、gpt-4o-mini）');
+          throw new Error('模型返回空内容（' + detail + '）\n可能原因：①模型不支持图片输入 ← 最常见 ②服务端拒识大图 ③返回字段不在 content 里\n建议：换 Qwen/Qwen2-VL-7B-Instruct、gpt-4o-mini、glm-4v 等视觉模型');
         }
         visionResultEl.textContent = output;
         // layout 模式：把反推文本包成合法 PromptBoard 布局 JSON（MOSS 吃的格式）
