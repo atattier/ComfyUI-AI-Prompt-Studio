@@ -1040,14 +1040,15 @@ label 只能是 "object" | "character" | "text"。Layout 输出请用 \`\`\`json
 - 保持简洁，直接给可用结果，不要客套。`;
 
   async function callChatLLM(messages) {
-    const key = (config.llm_api_key || '').trim();
+    const live = liveLLMConfig();
+    const key = live.apiKey;
     if (!key) return null;
-    const base = (config.llm_base_url || 'https://api.siliconflow.cn/v1').replace(/\/+$/, '');
+    const base = live.baseUrl.replace(/\/+$/, '');
     const resp = await fetch(base + '/chat/completions', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + key },
       body: JSON.stringify({
-        model: config.llm_chat_model || 'Qwen/Qwen2.5-7B-Instruct',
+        model: live.chatModel || 'Qwen/Qwen2.5-7B-Instruct',
         messages: messages,
         temperature: 0.7
       })
@@ -1086,7 +1087,7 @@ label 只能是 "object" | "character" | "text"。Layout 输出请用 \`\`\`json
     if (btnChatSend) btnChatSend.disabled = true;
     const thinking = showThinking();
     try {
-      const key = (config.llm_api_key || '').trim();
+      const key = liveLLMConfig().apiKey;
       let reply;
       if (key) {
         const rule = customRule();
@@ -1141,7 +1142,11 @@ label 只能是 "object" | "character" | "text"。Layout 输出请用 \`\`\`json
       appendChatMessage('assistant', '⚠️ LLM 调用失败（' + err.message + '），先用离线结果：\n' + fallback);
       lastAssistantText = fallback;
       if (chatActionBar) chatActionBar.style.display = 'block';
-      toast('LLM 失败，已用离线兜底');
+      let hint = '';
+      if (/127\.0\.0\.1|localhost/.test(liveLLMConfig().baseUrl)) {
+        hint = '（127.0.0.1 是手机自己，服务在电脑上要填电脑 IP）';
+      }
+      toast('LLM 失败，已用离线兜底' + hint);
     } finally {
       chatBusy = false;
       if (btnChatSend) btnChatSend.disabled = false;
@@ -1262,6 +1267,21 @@ label 只能是 "object" | "character" | "text"。Layout 输出请用 \`\`\`json
     updateChatStats();
   }
 
+  // --- 统一读取 LLM 配置：输入框有值就用，并顺手回写 config（无需先点保存） ---
+  function liveLLMConfig() {
+    const pick = (el, key, fallback) => {
+      const v = (el && el.value || '').trim();
+      if (v) { config[key] = v; return v; }
+      return (config[key] || fallback || '').trim();
+    };
+    return {
+      baseUrl: pick(llmBaseUrlInput, 'llm_base_url', 'https://api.siliconflow.cn/v1'),
+      apiKey: pick(llmApiKeyInput, 'llm_api_key', ''),
+      chatModel: pick(llmChatModelInput, 'llm_chat_model', 'Qwen/Qwen2.5-7B-Instruct'),
+      visionModel: pick(llmVisionModelInput, 'llm_vision_model', 'Qwen/Qwen2-VL-7B-Instruct')
+    };
+  }
+
   // --- Tab 3: Vision Caption ---
   const imageFileInput = document.getElementById('imageFileInput');
   const uploadDropzone = document.getElementById('uploadDropzone');
@@ -1333,9 +1353,10 @@ label 只能是 "object" | "character" | "text"。Layout 输出请用 \`\`\`json
         toast('请先点击上方选择或拍摄一张图片');
         return;
       }
-      const llmKey = (config.llm_api_key || '').trim();
+      const llmCfg = liveLLMConfig();
+      const llmKey = llmCfg.apiKey;
       if (!llmKey) {
-        toast('反推需要配置视觉大模型 Key，请前往「设置」配置');
+        toast('请先在「设置」填写大模型 API Key（填完直接可用，不必点保存）');
         switchTab('settings');
         return;
       }
@@ -1356,14 +1377,14 @@ label 只能是 "object" | "character" | "text"。Layout 输出请用 \`\`\`json
       }
 
       try {
-        const resp = await fetch(`${config.llm_base_url.replace(/\/+$/, '')}/chat/completions`, {
+        const resp = await fetch(`${llmCfg.baseUrl.replace(/\/+$/, '')}/chat/completions`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
             'Authorization': `Bearer ${llmKey}`
           },
           body: JSON.stringify({
-            model: config.llm_vision_model || 'Qwen/Qwen2-VL-7B-Instruct',
+            model: llmCfg.visionModel || 'Qwen/Qwen2-VL-7B-Instruct',
             messages: [
               {
                 role: 'user',
@@ -1398,7 +1419,12 @@ label 只能是 "object" | "character" | "text"。Layout 输出请用 \`\`\`json
         }
       } catch (err) {
         console.error('Vision error:', err);
-        toast('反推失败: ' + err.message);
+        let hint = '';
+        const b = (llmCfg.baseUrl || '');
+        if (/127\.0\.0\.1|localhost/.test(b)) {
+          hint = '（127.0.0.1 指手机自己；若服务在电脑上，请填电脑局域网 IP）';
+        }
+        toast('反推失败: ' + err.message + hint);
       } finally {
         btnStartVision.disabled = false;
         btnStartVision.innerHTML = '<span>🔍</span> 开始图像反推';
@@ -1543,6 +1569,23 @@ label 只能是 "object" | "character" | "text"。Layout 输出请用 \`\`\`json
       toast('设置已保存');
     });
   }
+
+  // ⑤ LLM 配置：保存按钮 + 输入框失焦自动保存（无需先点保存也能用）
+  function persistLLM() {
+    if (llmBaseUrlInput) config.llm_base_url = llmBaseUrlInput.value.trim();
+    if (llmApiKeyInput) config.llm_api_key = llmApiKeyInput.value.trim();
+    if (llmChatModelInput) config.llm_chat_model = llmChatModelInput.value.trim();
+    if (llmVisionModelInput) config.llm_vision_model = llmVisionModelInput.value.trim();
+    saveConfig();
+    updateStatus();
+  }
+  document.getElementById('btnSaveLLMSettings')?.addEventListener('click', () => {
+    persistLLM();
+    toast('✅ 大模型配置已保存');
+  });
+  [llmBaseUrlInput, llmApiKeyInput, llmChatModelInput, llmVisionModelInput].forEach(el => {
+    if (el) el.addEventListener('blur', () => { persistLLM(); });
+  });
 
   // ==================== ⚡ 自动获取模型列表 ====================
   // 复用现有 config 里的 llm_base_url / llm_api_key，探测 OpenAI 兼容 /models
