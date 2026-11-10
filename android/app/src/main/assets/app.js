@@ -826,11 +826,18 @@ label 只能是 object | character | text。items 最多 16 个。`;
 
   let chatHistory = [];          // {role:'user'|'assistant', content}
   let lastAssistantText = '';    // 最近一条助手结果，用于送去生图/复制
+  // 当前引用：{role, text, id}
+  let quotedMsg = null;
+  let msgSeq = 0;
+
   function appendChatMessage(role, text) {
-    if (!chatMessages) return;
-    const div = document.createElement('div');
+    if (!chatMessages) return null;
     const isUser = role === 'user';
+    const div = document.createElement('div');
     div.className = 'chat-msg ' + (isUser ? 'user' : 'bot');
+    div.dataset.msgId = 'm' + (++msgSeq);
+    div.dataset.role = role;
+    div.dataset.text = text;
     div.style.cssText = [
       'align-self:' + (isUser ? 'flex-end' : 'flex-start'),
       'max-width:88%',
@@ -842,11 +849,103 @@ label 只能是 object | character | text。items 最多 16 个。`;
       'line-height:1.7',
       'color:' + (isUser ? '#fff' : 'var(--text-main)'),
       'white-space:pre-wrap',
-      'word-break:break-word'
+      'word-break:break-word',
+      'transition:transform .18s ease, opacity .18s',
+      'position:relative',
+      'touch-action:pan-y'
     ].join(';');
     div.textContent = text;
+    bindMsgGestures(div);
     chatMessages.appendChild(div);
     chatMessages.scrollTop = chatMessages.scrollHeight;
+    return div;
+  }
+
+  // 长按弹菜单；左滑直接引用
+  function bindMsgGestures(el) {
+    let pressTimer = null, startX = 0, startY = 0, moved = false, swiping = false;
+
+    const clearPress = () => { if (pressTimer) { clearTimeout(pressTimer); pressTimer = null; } };
+
+    el.addEventListener('touchstart', e => {
+      const t = e.touches[0];
+      startX = t.clientX; startY = t.clientY; moved = false; swiping = false;
+      el.style.transition = 'none';
+      pressTimer = setTimeout(() => {
+        if (!moved) { openMsgMenu(el, startX, startY); }
+      }, 480);
+    }, { passive: true });
+
+    el.addEventListener('touchmove', e => {
+      const t = e.touches[0];
+      const dx = t.clientX - startX, dy = t.clientY - startY;
+      if (Math.abs(dx) > 10 || Math.abs(dy) > 10) { moved = true; clearPress(); }
+      // 只允许向左滑（dx<0），且横向位移明显大于纵向
+      if (dx < -8 && Math.abs(dx) > Math.abs(dy) * 1.4) {
+        swiping = true;
+        el.style.transform = 'translateX(' + Math.max(-72, dx) + 'px)';
+      }
+    }, { passive: true });
+
+    el.addEventListener('touchend', () => {
+      clearPress();
+      el.style.transition = 'transform .18s ease, opacity .18s';
+      if (swiping) {
+        el.style.transform = 'translateX(0)';
+        if (!moved || true) { setQuote(el); }
+      }
+      swiping = false;
+    });
+
+    // 桌面/鼠标也能用：右键菜单
+    el.addEventListener('contextmenu', e => {
+      e.preventDefault();
+      openMsgMenu(el, e.clientX, e.clientY);
+    });
+    // 双击也能引用（手机上更稳）
+    el.addEventListener('dblclick', () => setQuote(el));
+  }
+
+  let menuTargetEl = null;
+  function openMsgMenu(el, x, y) {
+    const menu = document.getElementById('msgMenu');
+    if (!menu) return;
+    menuTargetEl = el;
+    menu.style.display = 'block';
+    // 防止超出屏幕
+    const mw = 140, mh = 190;
+    const left = Math.min(x, window.innerWidth - mw - 8);
+    const top = Math.min(y, window.innerHeight - mh - 8);
+    menu.style.left = Math.max(8, left) + 'px';
+    menu.style.top = Math.max(8, top) + 'px';
+  }
+
+  function hideMsgMenu() {
+    const menu = document.getElementById('msgMenu');
+    if (menu) menu.style.display = 'none';
+    menuTargetEl = null;
+  }
+
+  // 设置引用
+  function setQuote(el) {
+    if (!el) return;
+    const role = el.dataset.role === 'user' ? '你' : 'AI';
+    const text = el.dataset.text || '';
+    quotedMsg = { role: el.dataset.role, text: text, id: el.dataset.msgId };
+    const bar = document.getElementById('quoteBar');
+    const who = document.getElementById('quoteWho');
+    const qt = document.getElementById('quoteText');
+    if (who) who.textContent = '引用 ' + role + ' 的消息';
+    if (qt) qt.textContent = text.length > 160 ? text.slice(0, 160) + '…' : text;
+    if (bar) bar.style.display = 'block';
+    toast('已引用，可直接提问或下指令');
+    if (userConceptInput) userConceptInput.focus();
+  }
+
+  function clearQuote() {
+    quotedMsg = null;
+    const bar = document.getElementById('quoteBar');
+    if (bar) bar.style.display = 'none';
   }
 
   function showThinking() {
@@ -1037,6 +1136,7 @@ label 只能是 "object" | "character" | "text"。Layout 输出请用 \`\`\`json
 - 「优化提示词」「扩写细节」→ 在用户原意基础上补全，不幻觉重写，并说明改了什么。
 - 「自检问题」→ 列出针对当前提示词的具体检查问题与缺口，逐条给建议。
 - 「翻译成英文」→ 只输出英文版本。
+- 当用户消息以「【引用上一条用户/助手消息】」开头时，那个三引号块里的内容就是用户所指的"上面那个/这段"，必须直接针对它回答或修改，禁止说"请把内容粘贴过来"。
 - 保持简洁，直接给可用结果，不要客套。`;
 
   async function callChatLLM(messages) {
@@ -1078,8 +1178,17 @@ label 只能是 "object" | "character" | "text"。Layout 输出请用 \`\`\`json
     }
     text = String(text || '').trim();
     if (!text) { toast('先写点什么吧'); return; }
-    appendChatMessage('user', (presetCmd ? '【' + presetCmd + '】' : '') + text);
-    chatHistory.push({ role: 'user', content: text });
+    // 引用：界面上显示引用块，实际发给模型时把引用内容一并带上
+    const quoted = quotedMsg;
+    const displayPrefix = quoted
+      ? ('〔引用' + (quoted.role === 'user' ? '你' : 'AI') + '〕' + (quoted.text.length > 80 ? quoted.text.slice(0, 80) + '…' : quoted.text) + '\n——\n')
+      : '';
+    appendChatMessage('user', (presetCmd ? '【' + presetCmd + '】' : '') + displayPrefix + text);
+    const forModel = quoted
+      ? ('【引用上一条' + (quoted.role === 'user' ? '用户' : '助手') + '消息】\n"""\n' + quoted.text + '\n"""\n\n【我的要求】\n' + text)
+      : text;
+    chatHistory.push({ role: 'user', content: forModel });
+    if (quoted) clearQuote();
     if (chatHistory.length > 20) chatHistory = chatHistory.slice(-20);
     if (userConceptInput) { userConceptInput.value = ''; userConceptInput.style.height = 'auto'; }
 
@@ -1255,6 +1364,39 @@ label 只能是 "object" | "character" | "text"。Layout 输出请用 \`\`\`json
       renderDiff(prev, cur);
       toast('已生成块级 Diff');
     });
+
+    // 长按菜单按钮
+    document.getElementById('msgMenuQuote')?.addEventListener('click', () => {
+      const el = menuTargetEl; hideMsgMenu(); if (el) setQuote(el);
+    });
+    document.getElementById('msgMenuCopy')?.addEventListener('click', () => {
+      const el = menuTargetEl; hideMsgMenu();
+      if (el) { copyText(el.dataset.text || ''); toast('已复制'); }
+    });
+    document.getElementById('msgMenuSend')?.addEventListener('click', () => {
+      const el = menuTargetEl; hideMsgMenu();
+      if (!el) return;
+      const t = extractPromptText(el.dataset.text || '').trim();
+      if (!t) { toast('这条没有内容'); return; }
+      mosiPrompt.value = t;
+      switchTab('gen');
+      toast('已送去生图');
+    });
+    document.getElementById('msgMenuEdit')?.addEventListener('click', () => {
+      const el = menuTargetEl; hideMsgMenu();
+      if (!el) return;
+      if (userConceptInput) {
+        userConceptInput.value = el.dataset.text || '';
+        userConceptInput.focus();
+        userConceptInput.style.height = 'auto';
+        userConceptInput.style.height = Math.min(userConceptInput.scrollHeight, 110) + 'px';
+      }
+    });
+    document.addEventListener('click', e => {
+      const menu = document.getElementById('msgMenu');
+      if (menu && menu.style.display === 'block' && !menu.contains(e.target)) hideMsgMenu();
+    });
+    document.getElementById('quoteCancel')?.addEventListener('click', clearQuote);
 
     const ruleEl = document.getElementById('chatCustomRule');
     if (ruleEl) {
