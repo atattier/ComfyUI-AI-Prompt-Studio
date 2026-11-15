@@ -20,6 +20,7 @@ import time
 from dataclasses import dataclass, field, replace
 from typing import Any
 
+from . import budget
 from .client import ChatClient, data_url
 from .errors import InvalidRequestError, StudioError
 from .png import make_rgb_png
@@ -184,7 +185,7 @@ class CapabilityProber:
                 [{"role": "user", "content": "Reply with the single word OK."}],
                 model=model,
                 temperature=0,
-                max_tokens=128,  # reasoning models may spend budget before content
+                max_tokens=budget.PROBE_BUDGET,
                 timeout=min(self.client.settings.timeout_s, 30.0),
             )
         except StudioError as err:
@@ -233,7 +234,7 @@ class CapabilityProber:
                     messages,
                     model=model,
                     temperature=0,
-                    max_tokens=128,
+                    max_tokens=budget.PROBE_BUDGET,
                     timeout=min(self.client.settings.timeout_s, 45.0),
                 )
             except InvalidRequestError as err:
@@ -312,7 +313,7 @@ class CapabilityProber:
                 [{"role": "user", "content": "Count from one to three."}],
                 model=model,
                 temperature=0,
-                max_tokens=256,
+                max_tokens=budget.PROBE_BUDGET,
                 timeout=min(self.client.settings.timeout_s, 45.0),
             )
             deltas = 0

@@ -141,6 +141,43 @@ def _error_message_from_body(body: str) -> str:
     return body[:500]
 
 
+_CEILING_BUDGET = 32768
+
+
+def _clean_model_name(name: str) -> str:
+    """把人手填的模型名整理成上游能接受的 ID。
+
+    Google 的 OpenAI 兼容层会直接 400「unexpected model name format」，
+    只要名字里有空格或大写（例如「Gemini 3.8 Flash」）。模型 ID 的字符集本来
+    就是 a-z 0-9 . - _ /，所以：去引号、空格转连字符、全小写。
+    中文/其他字符不做猜测，原样送出去让上游报错，报错会翻成中文提示。
+    """
+    raw = str(name or "").strip().strip("\"'").strip()
+    if not raw:
+        return raw
+    if all(ch.isascii() and (ch.isalnum() or ch in " .-_/") for ch in raw):
+        # 只有「看起来像人念的显示名」才动它；已经是合法 ID 的保持原样，别改别人的大小写
+        if " " in raw:
+            return raw.replace(" ", "-").lower()
+    return raw
+
+
+def _budget_exhausted(message: str) -> bool:
+    """上游说明“输出额度被思考吃光”，重发同一请求不会变好。"""
+    low = (message or "").lower()
+    return any(
+        s in low
+        for s in (
+            "cut at its length",
+            "empty reply",
+            "spent on reasoning",
+            "max_tokens",
+            "ask for less reasoning",
+            "输出额度",
+        )
+    )
+
+
 class ChatClient:
     def __init__(
         self,
@@ -224,13 +261,34 @@ class ChatClient:
             err.retry_after = retry_after
             return err
         if exc.code in RETRYABLE_STATUS:
-            return UpstreamError(
+            err = UpstreamError(
                 f"Upstream server error (HTTP {exc.code})." + (f" {upstream_message}" if upstream_message else ""),
                 **common,
             )
+            # 「思考把 max_tokens 吃光、一个字没吐」不是网络抖动：同一请求重发多少次
+            # 都是同一个结果，重试只会让人白等三个超时周期。
+            if _budget_exhausted(upstream_message):
+                err.retryable = False
+            low_upstream = (upstream_message or "").lower()
+            if exc.code == 503 and "high demand" in low_upstream:
+                # Google 3.8 这类新模型会回「排队人多，稍后再试」——等它自己好没意义，
+                # 直接告诉用户换一个模型，别让他盯着进度条等三个超时。
+                err.retryable = False
+                err.message = (
+                    f"模型当前排队过多（上游 503 UNAVAILABLE）：{detail or 'high demand'}。"
+                    "这不是没权限，是 Google 那边此刻挤爆了；换 gemini-3.6-flash 立刻可用，或过一会儿再试。"
+                    f"（请求 ID {request_id}）"
+                )
+            return err
         if exc.code in (400, 413, 422):
+            hint = ""
+            if "unexpected model name format" in upstream_message:
+                hint = (
+                    "（模型名只能是小写字母 / 数字 / 点 / 横线，例如 gemini-3.6-flash；"
+                    "请清空「节点专属模型覆盖」，或在设置里从联想列表里选一个模型。）"
+                )
             return InvalidRequestError(
-                f"Provider rejected the request (HTTP {exc.code})."
+                f"请求参数被上游拒绝 (HTTP {exc.code})。{hint}"
                 + (f" {upstream_message}" if upstream_message else ""),
                 **common,
             )
@@ -285,7 +343,7 @@ class ChatClient:
                     f"Upstream did not respond within {timeout:g}s.",
                     request_id=request_id,
                     attempts=attempt,
-                    detail=self.redactor.scrub_text(str(exc)),
+                    detail=self.redactor.scrub_text(f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__),
                 )
                 if attempt <= max_retries:
                     self._log(
@@ -306,14 +364,21 @@ class ChatClient:
                         f"Upstream did not respond within {timeout:g}s.",
                         request_id=request_id,
                         attempts=attempt,
-                        detail=self.redactor.scrub_text(str(reason)),
+                        detail=self.redactor.scrub_text(
+                            f"{type(reason).__name__}: {reason}" if str(reason) else type(reason).__name__
+                        ),
                     )
                 else:
+                    reason_detail = (
+                        f"{type(reason).__name__}: {reason}"
+                        if isinstance(reason, BaseException)
+                        else str(reason)
+                    )
                     err = NetworkError(
                         "Cannot reach the API endpoint. Check Base URL and network connectivity.",
                         request_id=request_id,
                         attempts=attempt,
-                        detail=self.redactor.scrub_text(str(reason)),
+                        detail=self.redactor.scrub_text(reason_detail),
                     )
                 if attempt <= max_retries:
                     self._log(
@@ -332,7 +397,7 @@ class ChatClient:
                     "Cannot reach the API endpoint. Check Base URL and network connectivity.",
                     request_id=request_id,
                     attempts=attempt,
-                    detail=self.redactor.scrub_text(str(exc)),
+                    detail=self.redactor.scrub_text(f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__),
                 )
                 if attempt <= max_retries:
                     self._sleep(self._backoff(attempt))
@@ -363,6 +428,47 @@ class ChatClient:
         operation as ``stream`` (the wire truth) with the aggregated usage.
         """
         request_id = request_id or self.new_request_id()
+        try:
+            result = self._stream_once(
+                messages, model=model, temperature=temperature,
+                max_tokens=max_tokens, timeout=timeout, request_id=request_id,
+            )
+            # 思考模型常见的第二种形态：HTTP 200、finish=stop、正文一个字没有，
+            # 因为额度全花在 reasoning 上。这不是成功，重发同额度也没用，只能抬额度。
+            if (
+                not result.text.strip()
+                and (result.finish_reason or "") not in ("content_filter", "content_filtered")
+                and max_tokens
+                and max_tokens < _CEILING_BUDGET
+            ):
+                result = self._stream_once(
+                    messages, model=model, temperature=temperature,
+                    max_tokens=_CEILING_BUDGET, timeout=timeout,
+                    request_id=self.new_request_id(),
+                )
+            return result
+        except UpstreamError as err:
+            # 上游明确说“思考把输出额度吃光了”：同一额度重发必然还是空。
+            # 唯一有用的动作是把额度翻上去再发一次（网关自己也是这么建议的）。
+            raised = max_tokens or 0
+            if _budget_exhausted(str(err)) and raised and raised < _CEILING_BUDGET:
+                return self._stream_once(
+                    messages, model=model, temperature=temperature,
+                    max_tokens=_CEILING_BUDGET, timeout=timeout,
+                    request_id=self.new_request_id(),
+                )
+            raise
+
+    def _stream_once(
+        self,
+        messages: Sequence[dict[str, Any]],
+        *,
+        model: str | None,
+        temperature: float | None,
+        max_tokens: int | None,
+        timeout: float | None,
+        request_id: str,
+    ) -> ChatResult:
         events = self.stream_chat(
             messages,
             model=model,
@@ -407,7 +513,7 @@ class ChatClient:
         request_id: str | None = None,
     ) -> ChatResult:
         request_id = request_id or self.new_request_id()
-        model_name = str(model or self.settings.model).strip()
+        model_name = _clean_model_name(model or self.settings.model)
         if model and self.settings.model and "/" in self.settings.model and "/" not in model:
             candidate = f"{self.settings.model.split('/', 1)[0]}/{model.strip()}"
             if candidate == self.settings.model:
@@ -494,7 +600,7 @@ class ChatClient:
         request_id: str | None = None,
     ) -> Iterator[StreamEvent]:
         request_id = request_id or self.new_request_id()
-        model_name = str(model or self.settings.model).strip()
+        model_name = _clean_model_name(model or self.settings.model)
         # Smart prefix fallback: if node provides a model name without prefix but default model has prefix
         if model and self.settings.model and "/" in self.settings.model and "/" not in model:
             candidate = f"{self.settings.model.split('/', 1)[0]}/{model.strip()}"
@@ -512,7 +618,10 @@ class ChatClient:
             body["stream_options"] = {"include_usage": True}
 
         timeout = self.settings.timeout_s if timeout is None else timeout
-        deadline = time.monotonic() + timeout
+        open_timeout = float(timeout)
+        stream_budget = (
+            max(open_timeout * 3.0, 180.0) if open_timeout >= 10.0 else open_timeout
+        )
         started = time.perf_counter()
         self._log(
             "request",
@@ -597,10 +706,11 @@ class ChatClient:
                         )
                     break
 
+                attempt_deadline = time.monotonic() + stream_budget
                 for raw_line in resp:
-                    if time.monotonic() > deadline:
+                    if time.monotonic() > attempt_deadline:
                         raise UpstreamTimeoutError(
-                            f"Streaming exceeded the {timeout:g}s budget.",
+                            f"Streaming exceeded the {stream_budget:g}s budget.",
                             request_id=request_id,
                             attempts=attempts,
                         )
@@ -627,6 +737,7 @@ class ChatClient:
                             + self.redactor.scrub_text(_error_message_from_body(payload)),
                             request_id=request_id,
                             attempts=attempts,
+                            detail=self.redactor.scrub_text(payload[:800]),
                         )
                     if isinstance(obj.get("usage"), dict):
                         usage = obj["usage"]
@@ -665,6 +776,7 @@ class ChatClient:
                         "The stream ended before any content arrived.",
                         request_id=request_id,
                         attempts=attempts,
+                        detail=f"http_status={getattr(resp, 'status', 200)}, chunks=0, saw_done=False",
                     )
             except StudioError as err:
                 err.attempts = attempts
@@ -686,12 +798,22 @@ class ChatClient:
                 if not emitted and attempts <= self.settings.max_retries:
                     self._sleep(self._backoff(attempts))
                     continue
+                timeout_detail = self.redactor.scrub_text(
+                    f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__
+                )
+                if not emitted and not parts:
+                    raise UpstreamTimeoutError(
+                        f"Upstream did not respond within {open_timeout:g}s.",
+                        request_id=request_id,
+                        attempts=attempts,
+                        detail=timeout_detail,
+                    ) from exc
                 raise StreamInterruptedError(
                     "The stream timed out before completion.",
                     partial_text="".join(parts),
                     request_id=request_id,
                     attempts=attempts,
-                    detail=self.redactor.scrub_text(str(exc)),
+                    detail=timeout_detail,
                 ) from exc
             except (http.client.HTTPException, OSError, ValueError) as exc:
                 if not emitted and attempts <= self.settings.max_retries:
@@ -705,12 +827,20 @@ class ChatClient:
                     )
                     self._sleep(self._backoff(attempts))
                     continue
+                partial_joined = "".join(parts)
+                drop_msg = (
+                    "The connection dropped mid-stream."
+                    if partial_joined
+                    else "The connection dropped before any content arrived."
+                )
                 raise StreamInterruptedError(
-                    "The connection dropped mid-stream.",
-                    partial_text="".join(parts),
+                    drop_msg,
+                    partial_text=partial_joined,
                     request_id=request_id,
                     attempts=attempts,
-                    detail=self.redactor.scrub_text(f"{type(exc).__name__}: {exc}"),
+                    detail=self.redactor.scrub_text(
+                        f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__
+                    ),
                 ) from exc
             finally:
                 try:

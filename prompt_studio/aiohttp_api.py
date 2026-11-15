@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import json
 import threading
+from pathlib import Path
 from typing import Any, AsyncIterator, Iterator
 
 from aiohttp import web
@@ -31,8 +32,25 @@ from .config import (
     load_settings,
     save_preferences,
 )
+from .credentials import (
+    Credentials,
+    add_key,
+    activate_key,
+    default_home,
+    delete_key,
+    key_list,
+    save_credentials,
+    update_metadata,
+)
 from .diff import EditValidationError, preview_ops
 from .edit_agent import build_chat_messages, request_edit
+from .gateways import (
+    activate_gateway,
+    delete_gateway,
+    list_gateways,
+    save_gateway,
+    sync_active_gateway,
+)
 from .errors import (
     CapabilityError,
     ConfigError,
@@ -41,9 +59,10 @@ from .errors import (
     StudioError,
 )
 from .images import image_to_part, to_api_part
-from .redaction import Redactor
+from .redaction import Redactor, mask_secret
 from .sessions import MediaStore, SessionStore
 from .versions import VersionStore
+from .presets import PresetStore
 
 MAX_BODY = 25 * 1024 * 1024
 
@@ -60,12 +79,16 @@ class StudioBackend:
         self.prober = CapabilityProber(self.client)
         self.sessions = SessionStore(self.settings.db_path, media=self.media)
         self.versions = VersionStore(self.settings.home / "versions.sqlite3")
+        self.presets = PresetStore(self.settings.home / "presets.sqlite3")
 
     def close(self) -> None:
         try:
             self.sessions.close()
         finally:
-            self.versions.close()
+            try:
+                self.versions.close()
+            finally:
+                self.presets.close()
 
     # ------------------------------------------------------------------ info
     def status(self) -> dict[str, Any]:
@@ -225,7 +248,11 @@ class StudioBackend:
         session_id = self._optional_session(body, message.strip())
         history = self.sessions.messages_for_api(session_id) if session_id else None
         req_model = clean_widget_str(body.get("model")) or None
-        effective_instruction = message + build_rule_suffix(self.settings, "")
+        edit_mode = clean_widget_str(body.get("mode")).lower()
+        canvas = _canvas_from_body(body.get("canvas"))
+        effective_instruction = message + build_rule_suffix(
+            self.settings, "", mode=edit_mode or None
+        )
         proposal = request_edit(
             self.client,
             current_text=target["text"],
@@ -235,6 +262,8 @@ class StudioBackend:
             history=history,
             model=req_model,
             allow_empty=allow_empty,
+            mode=edit_mode,
+            canvas=canvas,
         )
         if session_id:
             user_content: Any = message
@@ -273,7 +302,8 @@ class StudioBackend:
                 detail=str((cached.details.get("vision") or {}).get("reason") or ""),
             )
         extra_instruction = clean_widget_str(body.get("instruction"))
-        combined_extra = build_rule_suffix(self.settings, extra_instruction).strip()
+        cap_mode = "danbooru" if (len(formats) == 1 and formats[0] in ("tags", "danbooru")) else "caption"
+        combined_extra = build_rule_suffix(self.settings, extra_instruction, mode=cap_mode).strip()
         req_model = clean_widget_str(body.get("model")) or None
         try:
             result = caption_image(
@@ -323,7 +353,7 @@ class StudioBackend:
                 theme=str(body.get("theme") or "random"),
                 style=str(body.get("style") or "auto"),
                 count=int(body.get("count") or 3),
-                rule_suffix=build_rule_suffix(self.settings, extra),
+                rule_suffix=build_rule_suffix(self.settings, extra, mode="caption"),
             )
         except (TypeError, ValueError) as exc:
             raise InvalidRequestError(str(exc)) from exc
@@ -343,7 +373,7 @@ class StudioBackend:
                 count=int(body.get("count") or 3),
                 style=str(body.get("style") or "auto"),
                 aspect=str(body.get("aspect") or "auto"),
-                rule_suffix=build_rule_suffix(self.settings, extra),
+                rule_suffix=build_rule_suffix(self.settings, extra, mode="caption"),
             )
         except (TypeError, ValueError) as exc:
             raise InvalidRequestError(str(exc)) from exc
@@ -365,12 +395,106 @@ class StudioBackend:
                 width=int(body.get("width") or 1024),
                 height=int(body.get("height") or 1024),
                 max_regions=int(self.settings.max_regions or 8),
-                rule_suffix=build_rule_suffix(self.settings, extra),
-                layout_rule_suffix=build_rule_suffix(self.settings, extra, for_json_layout=True),
+                rule_suffix=build_rule_suffix(self.settings, extra, mode="danbooru"),
+                layout_rule_suffix=build_rule_suffix(self.settings, extra, mode="layout", for_json_layout=True),
             )
         except (TypeError, ValueError) as exc:
             raise InvalidRequestError(str(exc)) from exc
         return {"payload": payload, "width": payload["width"], "height": payload["height"], "modes": payload["modes"]}
+
+    def complete_from_prompt(self, body: dict[str, Any]) -> dict[str, Any]:
+        """Accept a finished prompt (layout JSON, prose caption, or Danbooru tags) and complete selected modes."""
+        from .caption_node import MODES, build_prompt_outputs, clean_widget_str, normalize_modes
+        from .imagine import complete_from_finished_prompt
+
+        prompt = body.get("prompt")
+        if not isinstance(prompt, str) or not prompt.strip():
+            raise InvalidRequestError("请先填入成品提示词。")
+
+        source_mode = str(body.get("source_mode") or "auto").strip().lower()
+        if source_mode not in ("auto", "caption", "layout", "danbooru"):
+            raise InvalidRequestError("source_mode must be auto, caption, layout, or danbooru.")
+
+        raw_modes = body.get("modes")
+        req_mode = clean_widget_str(body.get("mode")).lower()
+        if isinstance(raw_modes, list) and len(raw_modes) > 0:
+            base_mode = req_mode if req_mode in MODES else str(raw_modes[0] or "caption").strip().lower()
+            if base_mode not in MODES:
+                base_mode = "caption"
+            try:
+                active_modes = normalize_modes(base_mode, [str(m).strip().lower() for m in raw_modes])
+            except ValueError as exc:
+                raise InvalidRequestError(str(exc)) from exc
+        else:
+            base_mode = req_mode if req_mode in MODES else "caption"
+            active_modes = [base_mode]
+
+        raw_w = body.get("width")
+        raw_h = body.get("height")
+        try:
+            if isinstance(raw_w, bool) or isinstance(raw_h, bool):
+                raise ValueError("bool is not valid dimension")
+            width = 1024 if raw_w is None or raw_w == "" else int(raw_w)
+            height = 1024 if raw_h is None or raw_h == "" else int(raw_h)
+        except (TypeError, ValueError) as exc:
+            raise InvalidRequestError("width and height must be positive integers.") from exc
+        if width <= 0 or height <= 0:
+            raise InvalidRequestError("width and height must be positive integers.")
+
+        max_regions = int(self.settings.max_regions or 8)
+        if body.get("max_regions") not in (None, ""):
+            try:
+                max_regions = max(1, min(16, int(body["max_regions"])))
+            except (TypeError, ValueError):
+                pass
+
+        force_size = str(body.get("size_mode") or "auto").strip().lower() == "explicit"
+        model = clean_widget_str(body.get("model")) or None
+        extra = clean_widget_str(body.get("extra_instruction"))
+
+        try:
+            payload = complete_from_finished_prompt(
+                self._text_call(model),
+                prompt,
+                source_mode=source_mode,
+                modes=active_modes,
+                width=width,
+                height=height,
+                max_regions=max_regions,
+                rule_suffix=build_rule_suffix(self.settings, extra, mode="caption"),
+                danbooru_rule_suffix=build_rule_suffix(self.settings, extra, mode="danbooru"),
+                layout_rule_suffix=build_rule_suffix(self.settings, extra, mode="layout", for_json_layout=True),
+                force_size=force_size,
+            )
+        except (TypeError, ValueError) as exc:
+            raise InvalidRequestError(str(exc)) from exc
+
+        caption_prompt, layout_prompt, dan_out = build_prompt_outputs(
+            payload,
+            mode=payload["mode"],
+            width=payload["width"],
+            height=payload["height"],
+            synthesize_missing_draft=True,
+        )
+        if hasattr(self, "audit") and self.audit is not None:
+            self.audit.log(
+                "complete_from_prompt",
+                source_type=payload.get("detected_source", source_mode),
+                modes=",".join(payload["modes"]),
+                canvas=f"{payload['width']}x{payload['height']}",
+            )
+        return {
+            "payload": payload,
+            "detected_source": payload.get("detected_source", source_mode),
+            "width": payload["width"],
+            "height": payload["height"],
+            "modes": payload["modes"],
+            "outputs": {
+                "caption_prompt": caption_prompt,
+                "layout_prompt": layout_prompt,
+                "danbooru_prompt": dan_out,
+            },
+        }
 
     def caption_node(self, body: dict[str, Any]) -> dict[str, Any]:
         """One model call for the graph node: image bytes → prompt+canvas+draft.
@@ -381,10 +505,11 @@ class StudioBackend:
         from a local file on the server; the API key never reaches the browser.
         """
         import copy
+        from . import budget
         from .caption import SAFETY_PREFIX, _INSTRUCTIONS, _clean
         from .client import ChatResult
         from .layout import (
-            draft_json, layout_instruction, match_canvas_size, parse_model_layout,
+            compile_layout_prompt, draft_json, grid_overlay_data_url, layout_instruction, match_canvas_size,
         )
         from .caption_node import (
             MODES,
@@ -393,6 +518,7 @@ class StudioBackend:
             clean_widget_str,
             image_dimensions,
             normalize_modes,
+            resolve_layout_output,
         )
         from .images import image_to_part
         from .sessions import decode_data_url
@@ -441,6 +567,7 @@ class StudioBackend:
             self.media, {"base64": __import__("base64").b64encode(raw).decode("ascii"), "mime": mime}
         )
         part = to_api_part(self.media, stored_part)
+        part = _shrunk_part(part)
         extra_instruction = clean_widget_str(body.get("extra_instruction"))
         req_model = clean_widget_str(body.get("model")) or None
         max_regions = self.settings.max_regions
@@ -460,85 +587,134 @@ class StudioBackend:
         }
         last_request_id = ""
 
-        if "caption" in active_modes:
-            base_fmt = "tags" if self.settings.rule_preset == "tags" else "prose"
+        effective_model = req_model or self.settings.model
+        is_mock_model = effective_model in ("vision-pro", "demo-model", "caption-model", "empty-model")
+        want_layout = ("layout" in active_modes) or ("hybrid" in active_modes)
+        warnings: list[str] = []
+        # 布局反推先用纯自然语言（prose）反推一次并合并进 layout 的 caption_hint
+        if "caption" in active_modes or (want_layout and not is_mock_model):
+            base_fmt = "prose"
             cap_text_prompt = (
                 SAFETY_PREFIX
                 + _INSTRUCTIONS[base_fmt]
-                + build_rule_suffix(self.settings, extra_instruction)
+                + build_rule_suffix(self.settings, extra_instruction, mode="caption")
             )
-            cap_res: ChatResult = self.client.complete_via_stream(
+            cap_res: ChatResult = budget.call(
+                self.client,
                 [{"role": "user", "content": [{"type": "text", "text": cap_text_prompt}, part]}],
                 model=req_model,
                 temperature=0.3,
-                max_tokens=500,
+                retry_when=budget.truncated,
             )
             last_request_id = cap_res.request_id
             cleaned_cap = _clean(cap_res.text, base_fmt)
-            if not cleaned_cap:
-                raise InvalidRequestError("The model returned an empty caption.")
-            state["caption"] = cleaned_cap
-            state["caption_text"] = cleaned_cap
+            if not cleaned_cap and "caption" in active_modes:
+                if cap_res.finish_reason == "content_filter":
+                    if not want_layout:
+                        raise InvalidRequestError(
+                            "散文反推触发上游安全策略拦截 (content_filter)，未生成内容。请更换视觉模型后重试。"
+                        )
+                    warnings.append("⚠️ 散文反推被上游安全策略拦截，已改用布局摘要作为描述。")
+                elif want_layout:
+                    # 布局还要跑：散文空返回不该打断整次反推，最后用布局摘要兜底
+                    warnings.append("⚠️ 散文反推这次没返回文字（模型空回），已改用布局摘要作为描述。")
+                else:
+                    raise InvalidRequestError(
+                        "散文反推返回为空：模型这次没吐文字，重试或换一个视觉模型。"
+                    )
+            if cleaned_cap:
+                state["caption"] = cleaned_cap
+                state["caption_text"] = cleaned_cap
 
-        if "layout" in active_modes or "hybrid" in active_modes:
+        if want_layout:
             target_layout_mode = "hybrid" if "hybrid" in active_modes else "layout"
-            lay_extra = build_rule_suffix(self.settings, extra_instruction, for_json_layout=True).strip()
+            lay_extra = build_rule_suffix(
+                self.settings, extra_instruction, mode="layout", for_json_layout=True
+            ).strip()
+            ref_cap = str(state.get("caption") or state.get("caption_text") or "").strip()
             lay_text_prompt = SAFETY_PREFIX + layout_instruction(
-                target_layout_mode, width, height, lay_extra, max_regions=max_regions
+                target_layout_mode,
+                width,
+                height,
+                lay_extra,
+                max_regions=max_regions,
+                model=effective_model,
+                caption_hint=ref_cap,
             )
-            lay_res: ChatResult = self.client.complete_via_stream(
-                [{"role": "user", "content": [{"type": "text", "text": lay_text_prompt}, part]}],
+            lay_res: ChatResult = budget.call(
+                self.client,
+                [{"role": "user", "content": [{"type": "text", "text": lay_text_prompt}, _gridded_part(part)]}],
                 model=req_model,
                 temperature=0.3,
-                max_tokens=3000,
+                retry_when=budget.truncated,
             )
             last_request_id = lay_res.request_id
             try:
-                draft = parse_model_layout(lay_res.text, width, height, max_items=max_regions)
+                draft, lay_warning = resolve_layout_output(
+                    raw_text=lay_res.text,
+                    finish_reason=lay_res.finish_reason,
+                    width=width,
+                    height=height,
+                    max_regions=max_regions,
+                    active_modes=active_modes,
+                    existing_caption=ref_cap,
+                )
             except ValueError as exc:
-                raise InvalidRequestError(
-                    f"布局反推失败（模型输出不是完整 JSON，通常是被长度截断）：{exc}。"
-                    "请点「反推」重试；仍失败可换模型或减少画面文字。"
-                ) from exc
-            full_caption = str(state.get("caption_text") or draft["summary"]["caption"]).strip()
-            short_caption = (
-                str(draft["summary"]["caption"]).strip()
-                if target_layout_mode == "layout"
-                else _concise_summary(draft["summary"]["caption"])
-            )
+                raise InvalidRequestError(str(exc)) from exc
+            if lay_warning:
+                warnings.append(lay_warning)
+            draft_caption = str(draft["summary"]["caption"]).strip()
+            full_caption = str(state.get("caption_text") or draft_caption).strip()
             layout_draft = copy.deepcopy(draft)
-            layout_draft["summary"]["caption"] = short_caption or full_caption
+            layout_draft["summary"]["caption"] = draft_caption or full_caption
             hybrid_draft = copy.deepcopy(draft)
-            hybrid_draft["summary"]["caption"] = full_caption or short_caption
+            hybrid_draft["summary"]["caption"] = full_caption or draft_caption
 
             state["layout_draft"] = layout_draft
             state["hybrid_draft"] = hybrid_draft
-            state["draft"] = hybrid_draft if mode == "hybrid" else (layout_draft if mode == "layout" else hybrid_draft)
+            state["draft"] = hybrid_draft if mode in ("hybrid", "danbooru") else (layout_draft if mode == "layout" else hybrid_draft)
+            state["compiled_layout_prompt"] = compile_layout_prompt(state["draft"])
             if not state.get("caption"):
                 state["caption"] = str(state["draft"]["summary"]["caption"])
 
         if "danbooru" in active_modes:
-            dan_instr = SAFETY_PREFIX + _INSTRUCTIONS["danbooru"] + build_rule_suffix(self.settings, extra_instruction)
-            dan_res: ChatResult = self.client.complete_via_stream(
+            dan_instr = (
+                SAFETY_PREFIX
+                + _INSTRUCTIONS["danbooru"]
+                + build_rule_suffix(self.settings, extra_instruction, mode="danbooru")
+            )
+            dan_res: ChatResult = budget.call(
+                self.client,
                 [{"role": "user", "content": [{"type": "text", "text": dan_instr}, part]}],
                 model=req_model,
                 temperature=0.3,
-                max_tokens=600,
+                budget=budget.TAG_BUDGET,
+                retry_when=budget.truncated,
             )
             last_request_id = dan_res.request_id
             dan_text = _clean(dan_res.text, "danbooru")
+            if not dan_text and dan_res.finish_reason == "content_filter":
+                if state.get("caption") or state.get("draft"):
+                    warnings.append("⚠️ Danbooru 标签反推触发上游安全策略拦截 (content_filter)，暂未生成标签。")
+                else:
+                    raise InvalidRequestError(
+                        "Danbooru 反推触发上游安全策略拦截 (content_filter)，未返回标签。可切换视觉模型重试。"
+                    )
             state["danbooru_prompt"] = dan_text
             state["danbooru_text"] = dan_text
             state["tags"] = dan_text
 
+        if warnings:
+            state["warning"] = " ".join(warnings)
+        state.setdefault("caption", "")
         state["request_id"] = last_request_id
         caption_prompt, layout_prompt, dan_out = build_prompt_outputs(
             state, mode=mode, width=width, height=height, synthesize_missing_draft=True
         )
         hybrid_prompt = (
-            json.dumps(state.get("hybrid_draft") or state.get("draft") or {}, ensure_ascii=False)
+            compile_layout_prompt(state.get("hybrid_draft") or state.get("draft"))
             if (state.get("hybrid_draft") or state.get("draft"))
-            else dan_out
+            else layout_prompt
         )
         self.audit.log(
             "node_caption", request_id=last_request_id, mode=",".join(active_modes),
@@ -552,7 +728,7 @@ class StudioBackend:
             "height": height,
             "source_width": src_w,
             "source_height": src_h,
-            "caption": state["caption"],
+            "caption": state.get("caption") or "",
             "draft": state.get("draft"),
             "outputs": {
                 "caption_prompt": caption_prompt,
@@ -563,20 +739,25 @@ class StudioBackend:
             "payload": state,
             "request_id": last_request_id,
         }
+        if warnings:
+            out["warning"] = state["warning"]
         session_id = self._optional_session(body, f"节点反推 ({','.join(active_modes)})")
         if session_id:
             user_note = f"[节点图像反推 · 模式: {','.join(active_modes)} · 画布: {width}×{height}]"
             if extra_instruction.strip():
                 user_note += f" 补充要求：{extra_instruction.strip()}"
             self.sessions.append(session_id, "user", [{"type": "text", "text": user_note}, stored_part])
-            summary_note = state["caption"]
+            summary_note = state.get("caption") or state.get("danbooru_prompt") or ""
             if state.get("draft") and isinstance(state["draft"].get("items"), list):
                 items_desc = "; ".join(
                     f"#{idx + 1} {it.get('label')}: {it.get('caption')}"
                     for idx, it in enumerate(state["draft"]["items"])
                 )
-                summary_note = f"{state['caption']}\n[布局区域 ({len(state['draft']['items'])}): {items_desc}]"
-            self.sessions.append(session_id, "assistant", summary_note)
+                summary_note = f"{summary_note}\n[布局区域 ({len(state['draft']['items'])}): {items_desc}]".strip()
+            if state.get("warning"):
+                summary_note = f"{summary_note}\n{state['warning']}".strip()
+            if summary_note:
+                self.sessions.append(session_id, "assistant", summary_note)
             out["session_id"] = session_id
         return out
 
@@ -606,8 +787,231 @@ class StudioBackend:
             meta=meta,
         )
 
+    # -------------------------------------------------------------- presets
+    def list_presets(self, *, category: str | None = None, search: str | None = None) -> list[dict[str, Any]]:
+        return self.presets.list(category=category, search=search)
+
+    def get_preset(self, preset_id: str) -> dict[str, Any]:
+        p = self.presets.get(preset_id)
+        if not p:
+            raise NotFoundError(f"Preset {preset_id} not found.")
+        return p
+
+    def save_preset(self, body: dict[str, Any]) -> dict[str, Any]:
+        if not isinstance(body, dict):
+            raise InvalidRequestError("Preset data must be an object.")
+        try:
+            return self.presets.save(body)
+        except ValueError as err:
+            raise InvalidRequestError(str(err)) from err
+
+    def delete_preset(self, preset_id: str) -> dict[str, Any]:
+        try:
+            ok = self.presets.delete(preset_id)
+        except ValueError as err:
+            raise InvalidRequestError(str(err)) from err
+        if not ok:
+            raise NotFoundError(f"Preset {preset_id} not found.")
+        return {"status": "ok", "deleted_id": preset_id}
+
+    def list_preset_categories(self) -> list[str]:
+        return self.presets.categories()
+
+    def preset_category_info(self) -> dict[str, Any]:
+        return {
+            "categories": self.presets.categories(),
+            "custom": self.presets.custom_categories(),
+        }
+
+    def add_preset_category(self, body: dict[str, Any]) -> dict[str, Any]:
+        name = body.get("name") if isinstance(body, dict) else None
+        try:
+            self.presets.add_category(name)
+        except ValueError as err:
+            raise InvalidRequestError(str(err)) from err
+        return self.preset_category_info()
+
+    def delete_preset_category(self, name: str) -> dict[str, Any]:
+        try:
+            result = self.presets.delete_category(name)
+        except KeyError as err:
+            raise NotFoundError(f"目录「{name}」不存在。") from err
+        except ValueError as err:
+            raise InvalidRequestError(str(err)) from err
+        return {**result, **self.preset_category_info()}
+
+    def rename_preset_category(self, old_name: str, body: dict[str, Any]) -> dict[str, Any]:
+        new_name = body.get("new_name") if isinstance(body, dict) else None
+        try:
+            result = self.presets.rename_category(old_name, new_name)
+        except ValueError as err:
+            raise InvalidRequestError(str(err)) from err
+        return {**result, **self.preset_category_info()}
+
+    def import_preset_image(self, body: dict[str, Any]) -> dict[str, Any]:
+        from .presets import _decode_image_payload
+
+        image_data = body.get("image_data") if isinstance(body, dict) else None
+        if not image_data:
+            raise InvalidRequestError("image_data is required.")
+        filename = str(body.get("filename") or "imported_preset.png")
+        category = str(body.get("category") or "通用")
+        try:
+            raw = _decode_image_payload(image_data)
+            saved = self.presets.import_from_image(raw, filename=filename, category=category)
+        except (ValueError, KeyError) as err:
+            raise InvalidRequestError(str(err)) from err
+        return saved
+
+    def inspect_image(self, body: dict[str, Any]) -> dict[str, Any]:
+        """Read prompt & layout metadata out of an image without saving a preset."""
+        from .presets import _decode_image_payload, extract_metadata_from_image
+
+        image_data = body.get("image_data") if isinstance(body, dict) else None
+        if not image_data:
+            raise InvalidRequestError("image_data is required.")
+        filename = str(body.get("filename") or "")
+        try:
+            raw = _decode_image_payload(image_data)
+            meta = extract_metadata_from_image(raw, filename)
+        except (ValueError, KeyError, OSError) as err:
+            raise InvalidRequestError(str(err)) from err
+
+        prompts = meta.get("prompts") if isinstance(meta.get("prompts"), dict) else {}
+        draft = meta.get("draft") if isinstance(meta.get("draft"), dict) else {}
+        width = _as_int(meta.get("width"), 0)
+        height = _as_int(meta.get("height"), 0)
+        caption = str(prompts.get("caption") or "")
+        layout = str(prompts.get("layout") or "")
+        danbooru = str(prompts.get("danbooru") or "")
+        items = draft.get("items") if isinstance(draft.get("items"), list) else []
+        summary = draft.get("summary") if isinstance(draft.get("summary"), dict) else {}
+        return {
+            "found": bool(caption or layout or danbooru or items),
+            "name": str(meta.get("name") or ""),
+            "width": width,
+            "height": height,
+            "prompts": {"caption": caption, "layout": layout, "danbooru": danbooru},
+            "draft": {
+                "width": _as_int(draft.get("width"), width),
+                "height": _as_int(draft.get("height"), height),
+                "summary": summary,
+                "items": items,
+            },
+        }
+
+    def reset_builtin_presets(self) -> dict[str, Any]:
+        count = self.presets.reset_builtins()
+        return {"status": "ok", "reset_count": count}
+
+    def summarize_preset_title(self, body: dict[str, Any]) -> dict[str, Any]:
+        preset_id = str(body.get("preset_id") or "").strip()
+        model = str(body.get("model") or "").strip() or None
+        if preset_id:
+            try:
+                preset = self.presets.summarize_preset_title(preset_id, client=self.client, model=model)
+                return {"status": "ok", "preset": preset, "title": preset["name"]}
+            except KeyError as err:
+                raise NotFoundError(str(err)) from err
+
+        prompt = str(body.get("prompt") or "").strip()
+        draft = body.get("draft") if isinstance(body.get("draft"), dict) else None
+        from .presets import summarize_title_from_prompt
+
+        title = summarize_title_from_prompt(self.client, prompt, draft=draft, model=model)
+        return {"status": "ok", "title": title}
+
+    def re_caption_preset(self, preset_id: str, body: dict[str, Any]) -> dict[str, Any]:
+        model = str(body.get("model") or "").strip() or None
+        try:
+            updated = self.presets.re_caption_preset(preset_id, self, model=model)
+            return {"status": "ok", "preset": updated}
+        except KeyError as err:
+            raise NotFoundError(str(err)) from err
+        except ValueError as err:
+            raise InvalidRequestError(str(err)) from err
+
+    def reload_preset_metadata(self, preset_id: str) -> dict[str, Any]:
+        try:
+            updated = self.presets.reload_preset_metadata(preset_id)
+            return {"status": "ok", "preset": updated}
+        except KeyError as err:
+            raise NotFoundError(str(err)) from err
+        except ValueError as err:
+            raise InvalidRequestError(str(err)) from err
+
+    def get_preset_image(self, preset_id: str) -> tuple[bytes, str, str]:
+        found = self.presets.get_image(preset_id)
+        if found is None:
+            raise NotFoundError("该预设没有附带原图。")
+        return found
+
+    def import_presets(self, body: dict[str, Any]) -> dict[str, Any]:
+        items = body.get("presets") if isinstance(body, dict) else None
+        if not isinstance(items, list):
+            raise InvalidRequestError("presets must be an array.")
+        count = self.presets.import_presets(items)
+        return {"status": "ok", "imported": count}
+
+    def export_presets(self) -> list[dict[str, Any]]:
+        return self.presets.export_all()
+
 
 # ----------------------------------------------------------------- aiohttp
+def _as_int(value: Any, default: int = 0) -> int:
+    """Best-effort integer coercion for metadata fields that may arrive as text."""
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return default
+
+
+def _canvas_from_body(value: Any) -> tuple[int, int] | None:
+    """画布尺寸由前端上报，用于把模型给的绝对像素 bbox 换算成文档坐标系。"""
+    if not isinstance(value, dict):
+        return None
+    try:
+        w = int(float(value.get("width")))
+        h = int(float(value.get("height")))
+    except (TypeError, ValueError):
+        return None
+    if w <= 0 or h <= 0:
+        return None
+    return (w, h)
+
+
+def _shrunk_part(part: Any) -> Any:
+    """送给模型的图统一缩到长边 1280：原图 4000 像素会让请求又大又慢。"""
+    url = (part.get("image_url") or {}).get("url") if isinstance(part, dict) else None
+    if not isinstance(url, str):
+        return part
+    try:
+        from .layout import shrink_data_url
+
+        small = shrink_data_url(url)
+    except Exception:
+        return part
+    if not small or small == url:
+        return part
+    return {"type": "image_url", "image_url": {"url": small}}
+
+
+def _gridded_part(part: Any) -> Any:
+    """布局反推送一张叠了像素刻度的图，失败就退回原图。"""
+    url = (part.get("image_url") or {}).get("url") if isinstance(part, dict) else None
+    if not isinstance(url, str):
+        return part
+    try:
+        from .layout import grid_overlay_data_url
+
+        gridded = grid_overlay_data_url(url)
+    except Exception:
+        return part
+    if not gridded or gridded == url:
+        return part
+    return {"type": "image_url", "image_url": {"url": gridded}}
+
+
 def _error_response(err: StudioError, *, status: int | None = None) -> web.Response:
     return web.json_response(
         {"error": err.to_dict()}, status=status or err.http_status, dumps=lambda v: json.dumps(v, ensure_ascii=False)
@@ -655,10 +1059,23 @@ def _chain_first(first: Any, rest: Iterator[Any]) -> Iterator[Any]:
     yield from rest
 
 
-def install_routes(routes: Any, backend: StudioBackend | None) -> None:
-    """Register handlers on a RouteTableDef (ComfyUI server or test app)."""
+def install_routes(
+    routes: Any,
+    backend: StudioBackend | None,
+    backend_getter: Any = None,
+) -> None:
+    """Register handlers on a RouteTableDef (ComfyUI server or test app).
+
+    ``backend_getter`` lets the ComfyUI side rebuild the backend on demand: if
+    the plugin started before an API key existed, every route would otherwise
+    stay dead until the next full restart (including the very route that saves
+    the key).
+    """
 
     def require() -> StudioBackend:
+        nonlocal backend
+        if backend is None and backend_getter is not None:
+            backend = backend_getter()
         if backend is None:
             raise ConfigError("ComfyUI AI Prompt Studio is not configured. Run prompt_studio.credentials set.")
         return backend
@@ -708,7 +1125,6 @@ def install_routes(routes: Any, backend: StudioBackend | None) -> None:
         """
         body = await _json_body(request)
         from .config import normalize_base_url
-        from .credentials import default_home, save_credentials
         from .errors import ConfigError
 
         service = require()
@@ -750,6 +1166,21 @@ def install_routes(routes: Any, backend: StudioBackend | None) -> None:
             if "user_custom_rules" in body and body["user_custom_rules"] is not None
             else service.settings.user_custom_rules
         )
+        caption_rules = (
+            str(body["caption_rules"]).strip()
+            if "caption_rules" in body and body["caption_rules"] is not None
+            else service.settings.caption_rules
+        )
+        layout_rules = (
+            str(body["layout_rules"]).strip()
+            if "layout_rules" in body and body["layout_rules"] is not None
+            else service.settings.layout_rules
+        )
+        danbooru_rules = (
+            str(body["danbooru_rules"]).strip()
+            if "danbooru_rules" in body and body["danbooru_rules"] is not None
+            else service.settings.danbooru_rules
+        )
         max_regions_raw = body.get("max_regions")
         try:
             max_regions = int(max_regions_raw) if max_regions_raw not in (None, "") else service.settings.max_regions
@@ -761,16 +1192,25 @@ def install_routes(routes: Any, backend: StudioBackend | None) -> None:
         supplied_key = body.get("api_key")
         if supplied_key is not None and not isinstance(supplied_key, str):
             raise InvalidRequestError("api_key must be a string.")
-        api_key = (supplied_key or "").strip() or service.settings.api_key
-        if not api_key:
+        api_key = (supplied_key or "").strip()
+        if not api_key and not service.settings.api_key:
             raise InvalidRequestError("api_key is required when no key is configured.")
 
         is_default_home = service.settings.home.resolve() == default_home().resolve()
         cred_path = None if is_default_home else (service.settings.home / "credentials.json")
         cred_target = "default" if is_default_home else f"test-{service.settings.home.name}"
-        await asyncio.to_thread(
-            save_credentials, base_url, api_key, model, cred_path, target=cred_target
-        )
+        if api_key:
+            # An explicit key written here replaces the primary entry and becomes
+            # active; keys added through /keys are left alone.
+            await asyncio.to_thread(
+                save_credentials, base_url, api_key, model, cred_path, target=cred_target
+            )
+        else:
+            # Nothing typed: keep every stored secret exactly as it is.
+            await asyncio.to_thread(
+                update_metadata, base_url, model, cred_path, target=cred_target
+            )
+        creds = await asyncio.to_thread(Credentials.load, cred_path)
         await asyncio.to_thread(
             save_preferences,
             service.settings.home,
@@ -781,29 +1221,250 @@ def install_routes(routes: Any, backend: StudioBackend | None) -> None:
                 "output_language": output_language,
                 "prompt_rules": prompt_rules,
                 "user_custom_rules": user_custom_rules,
+                "caption_rules": caption_rules,
+                "layout_rules": layout_rules,
+                "danbooru_rules": danbooru_rules,
                 "max_regions": max_regions,
             },
         )
         service.settings.base_url = base_url
         service.settings.model = model
-        service.settings.api_key = api_key
+        active_key = api_key or (creds.api_key if creds else service.settings.api_key)
+        service.settings.api_key = active_key
+        if creds is not None:
+            service.settings.active_key_id = creds.active_key_id
+        service.settings.api_keys = await asyncio.to_thread(key_list, cred_path)
         service.settings.timeout_s = timeout_s
         service.settings.max_retries = max_retries
         service.settings.rule_preset = rule_preset
         service.settings.output_language = output_language
         service.settings.prompt_rules = prompt_rules
         service.settings.user_custom_rules = user_custom_rules
+        service.settings.caption_rules = caption_rules
+        service.settings.layout_rules = layout_rules
+        service.settings.danbooru_rules = danbooru_rules
         service.settings.max_regions = max_regions
         service.client.settings = service.settings
-        service.redactor = Redactor([api_key])
+        service.redactor = Redactor([active_key])
         service.audit = AuditLogger(service.settings.audit_path, service.redactor)
         service.client.audit = service.audit
         service.client.redactor = service.redactor
         service.prober._cache.clear()
+        # A hand-edited URL may no longer match any saved gateway; keep the
+        # profile list honest about what is actually in effect.
+        active_gateway = await asyncio.to_thread(
+            sync_active_gateway, service.settings.home, base_url, model
+        )
         return web.json_response({
             "config": service.settings.public_dict(),
+            "active_gateway_id": active_gateway,
             "message": "配置与提示词规则已保存并立即生效。",
         })
+
+    # ------------------------------------------------------------ API keys
+    def _cred_store() -> tuple[Path | None, str]:
+        """Credential file and vault target prefix for this backend's home."""
+        service = require()
+        is_default_home = service.settings.home.resolve() == default_home().resolve()
+        cred_path = None if is_default_home else (service.settings.home / "credentials.json")
+        prefix = "default" if is_default_home else f"test-{service.settings.home.name}"
+        return cred_path, prefix
+
+    def _publish_keys(service: StudioBackend, creds: Credentials, cred_path: Path | None) -> dict[str, Any]:
+        """Point the live backend at the active key and republish the list."""
+        service.settings.api_key = creds.api_key
+        service.settings.active_key_id = creds.active_key_id
+        service.settings.api_keys = key_list(cred_path)
+        service.redactor = Redactor([creds.api_key])
+        service.audit = AuditLogger(service.settings.audit_path, service.redactor)
+        service.client.settings = service.settings
+        service.client.redactor = service.redactor
+        service.client.audit = service.audit
+        service.prober._cache.clear()
+        return {
+            "keys": service.settings.api_keys,
+            "active_key_id": service.settings.active_key_id,
+            "api_key_masked": mask_secret(creds.api_key),
+        }
+
+    @routes.get("/ai_prompt_studio/keys")
+    @guarded
+    async def list_keys_route(_request: web.Request) -> web.Response:
+        cred_path, _prefix = _cred_store()
+        service = require()
+        keys = await asyncio.to_thread(key_list, cred_path)
+        return web.json_response({"keys": keys, "active_key_id": service.settings.active_key_id})
+
+    @routes.post("/ai_prompt_studio/keys")
+    @guarded
+    async def create_key(request: web.Request) -> web.Response:
+        body = await _json_body(request)
+        secret = body.get("api_key")
+        if not isinstance(secret, str) or not secret.strip():
+            raise InvalidRequestError("api_key must be a non-empty string.")
+        label = str(body.get("label") or "").strip()[:40]
+        activate = body.get("activate")
+        activate = True if activate is None else bool(activate)
+        cred_path, prefix = _cred_store()
+        service = require()
+        try:
+            creds = await asyncio.to_thread(
+                add_key,
+                secret,
+                label,
+                cred_path,
+                target_prefix=prefix,
+                activate=activate,
+            )
+        except ValueError as exc:
+            raise InvalidRequestError(str(exc)) from exc
+        return web.json_response(_publish_keys(service, creds, cred_path))
+
+    @routes.post("/ai_prompt_studio/keys/{key_id}/activate")
+    @guarded
+    async def activate_key_route(request: web.Request) -> web.Response:
+        key_id = str(request.match_info.get("key_id") or "").strip()
+        if not key_id:
+            raise InvalidRequestError("key_id is required.")
+        cred_path, _prefix = _cred_store()
+        service = require()
+        try:
+            creds = await asyncio.to_thread(activate_key, key_id, cred_path)
+        except ValueError as exc:
+            raise InvalidRequestError(str(exc)) from exc
+        return web.json_response(_publish_keys(service, creds, cred_path))
+
+    @routes.delete("/ai_prompt_studio/keys/{key_id}")
+    @guarded
+    async def delete_key_route(request: web.Request) -> web.Response:
+        key_id = str(request.match_info.get("key_id") or "").strip()
+        if not key_id:
+            raise InvalidRequestError("key_id is required.")
+        cred_path, _prefix = _cred_store()
+        service = require()
+        try:
+            creds = await asyncio.to_thread(delete_key, key_id, cred_path)
+        except ValueError as exc:
+            raise InvalidRequestError(str(exc)) from exc
+        return web.json_response(_publish_keys(service, creds, cred_path))
+
+    # --------------------------------------------------------- gateways
+    def _gateway_state(service: StudioBackend, cred_path: Path | None) -> dict[str, Any]:
+        listing = list_gateways(
+            service.settings.home,
+            credential_path=cred_path,
+            current_base_url=service.settings.base_url,
+            current_model=service.settings.model,
+        )
+        return {
+            "config": service.settings.public_dict(),
+            "keys": service.settings.api_keys,
+            "active_key_id": service.settings.active_key_id,
+            "api_key_masked": mask_secret(service.settings.api_key),
+            **listing,
+        }
+
+    def _apply_gateway(service: StudioBackend, cred_path: Path | None) -> None:
+        """Point the live backend at the gateway now stored in credentials."""
+        creds = Credentials.load(cred_path)
+        if creds is None:
+            return
+        service.settings.base_url = creds.base_url
+        service.settings.model = creds.model
+        service.settings.api_key = creds.api_key
+        service.settings.active_key_id = creds.active_key_id
+        service.settings.api_keys = key_list(cred_path)
+        service.redactor = Redactor([creds.api_key])
+        service.audit = AuditLogger(service.settings.audit_path, service.redactor)
+        service.client.settings = service.settings
+        service.client.redactor = service.redactor
+        service.client.audit = service.audit
+        service.prober._cache.clear()
+
+    @routes.get("/ai_prompt_studio/gateways")
+    @guarded
+    async def list_gateways_route(_request: web.Request) -> web.Response:
+        cred_path, _prefix = _cred_store()
+        service = require()
+        return web.json_response(await asyncio.to_thread(_gateway_state, service, cred_path))
+
+    @routes.post("/ai_prompt_studio/gateways")
+    @guarded
+    async def save_gateway_route(request: web.Request) -> web.Response:
+        body = await _json_body(request)
+        service = require()
+        from .config import normalize_base_url
+
+        raw_base_url = body.get("base_url") or service.settings.base_url
+        try:
+            base_url = normalize_base_url(str(raw_base_url or ""))
+        except ConfigError as exc:
+            raise InvalidRequestError(str(exc)) from exc
+        model = str(body.get("model") or service.settings.model or "").strip()
+        if not model:
+            raise InvalidRequestError("model is required.")
+        label = str(body.get("label") or "").strip()
+        key_id = body.get("key_id")
+        if key_id is None:
+            key_id = service.settings.active_key_id
+        activate = body.get("activate")
+        activate = True if activate is None else bool(activate)
+        cred_path, _prefix = _cred_store()
+        try:
+            profile = await asyncio.to_thread(
+                save_gateway,
+                service.settings.home,
+                base_url=base_url,
+                model=model,
+                label=label,
+                key_id=str(key_id or ""),
+                activate=False,
+                credential_path=cred_path,
+            )
+            if activate:
+                profile = await asyncio.to_thread(
+                    activate_gateway,
+                    service.settings.home,
+                    profile["id"],
+                    credential_path=cred_path,
+                )
+        except (ConfigError, ValueError) as exc:
+            raise InvalidRequestError(str(exc)) from exc
+        if activate:
+            _apply_gateway(service, cred_path)
+        return web.json_response({"gateway": profile, **_gateway_state(service, cred_path)})
+
+    @routes.post("/ai_prompt_studio/gateways/{gateway_id}/activate")
+    @guarded
+    async def activate_gateway_route(request: web.Request) -> web.Response:
+        gateway_id = str(request.match_info.get("gateway_id") or "").strip()
+        if not gateway_id:
+            raise InvalidRequestError("gateway_id is required.")
+        service = require()
+        cred_path, _prefix = _cred_store()
+        try:
+            profile = await asyncio.to_thread(
+                activate_gateway, service.settings.home, gateway_id, credential_path=cred_path
+            )
+        except KeyError as exc:
+            raise InvalidRequestError(str(exc)) from exc
+        except ValueError as exc:
+            raise InvalidRequestError(str(exc)) from exc
+        _apply_gateway(service, cred_path)
+        return web.json_response({"gateway": profile, **_gateway_state(service, cred_path)})
+
+    @routes.delete("/ai_prompt_studio/gateways/{gateway_id}")
+    @guarded
+    async def delete_gateway_route(request: web.Request) -> web.Response:
+        gateway_id = str(request.match_info.get("gateway_id") or "").strip()
+        if not gateway_id:
+            raise InvalidRequestError("gateway_id is required.")
+        service = require()
+        cred_path, _prefix = _cred_store()
+        removed = await asyncio.to_thread(delete_gateway, service.settings.home, gateway_id)
+        if not removed:
+            raise InvalidRequestError(f"未知的网关 id：{gateway_id}")
+        return web.json_response(_gateway_state(service, cred_path))
 
     @routes.get("/ai_prompt_studio/capabilities")
     @guarded
@@ -891,6 +1552,13 @@ def install_routes(routes: Any, backend: StudioBackend | None) -> None:
     async def imagine_expand(request: web.Request) -> web.Response:
         body = await _json_body(request)
         result = await asyncio.to_thread(require().imagine_expand, body)
+        return web.json_response(result)
+
+    @routes.post("/ai_prompt_studio/complete_from_prompt")
+    @guarded
+    async def complete_from_prompt_route(request: web.Request) -> web.Response:
+        body = await _json_body(request)
+        result = await asyncio.to_thread(require().complete_from_prompt, body)
         return web.json_response(result)
 
     @routes.post("/ai_prompt_studio/cloud_generate")
@@ -986,6 +1654,132 @@ def install_routes(routes: Any, backend: StudioBackend | None) -> None:
         if not require().sessions.delete(request.match_info["session_id"]):
             raise NotFoundError("Session not found.")
         return web.json_response({"deleted": True})
+
+    @routes.get("/ai_prompt_studio/presets")
+    @guarded
+    async def list_presets_route(request: web.Request) -> web.Response:
+        category = request.query.get("category")
+        search = request.query.get("search")
+        presets = await asyncio.to_thread(require().list_presets, category=category, search=search)
+        return web.json_response({"presets": presets})
+
+    @routes.get("/ai_prompt_studio/presets/categories")
+    @guarded
+    async def list_preset_categories_route(_request: web.Request) -> web.Response:
+        info = await asyncio.to_thread(require().preset_category_info)
+        return web.json_response(info)
+
+    @routes.post("/ai_prompt_studio/presets/categories")
+    @guarded
+    async def add_preset_category_route(request: web.Request) -> web.Response:
+        body = await _json_body(request)
+        info = await asyncio.to_thread(require().add_preset_category, body)
+        return web.json_response(info)
+
+    @routes.delete("/ai_prompt_studio/presets/categories/{name}")
+    @guarded
+    async def delete_preset_category_route(request: web.Request) -> web.Response:
+        name = request.match_info["name"]
+        info = await asyncio.to_thread(require().delete_preset_category, name)
+        return web.json_response(info)
+
+    @routes.put("/ai_prompt_studio/presets/categories/{name}")
+    @guarded
+    async def rename_preset_category_route(request: web.Request) -> web.Response:
+        name = request.match_info["name"]
+        body = await _json_body(request)
+        info = await asyncio.to_thread(require().rename_preset_category, name, body)
+        return web.json_response(info)
+
+    @routes.post("/ai_prompt_studio/presets/import_image")
+    @guarded
+    async def import_preset_image_route(request: web.Request) -> web.Response:
+        body = await _json_body(request)
+        saved = await asyncio.to_thread(require().import_preset_image, body)
+        return web.json_response(saved, status=201)
+
+    @routes.post("/ai_prompt_studio/inspect_image")
+    @guarded
+    async def inspect_image_route(request: web.Request) -> web.Response:
+        body = await _json_body(request)
+        res = await asyncio.to_thread(require().inspect_image, body)
+        return web.json_response(res)
+
+    @routes.post("/ai_prompt_studio/presets/reset_builtins")
+    @guarded
+    async def reset_builtins_route(_request: web.Request) -> web.Response:
+        res = await asyncio.to_thread(require().reset_builtin_presets)
+        return web.json_response(res)
+
+    @routes.post("/ai_prompt_studio/presets/summarize_title")
+    @guarded
+    async def summarize_title_route(request: web.Request) -> web.Response:
+        body = await _json_body(request)
+        res = await asyncio.to_thread(require().summarize_preset_title, body)
+        return web.json_response(res)
+
+    @routes.post("/ai_prompt_studio/presets/{preset_id}/re_caption")
+    @guarded
+    async def re_caption_preset_route(request: web.Request) -> web.Response:
+        preset_id = request.match_info["preset_id"]
+        body = await _json_body(request)
+        res = await asyncio.to_thread(require().re_caption_preset, preset_id, body)
+        return web.json_response(res)
+
+    @routes.post("/ai_prompt_studio/presets/{preset_id}/reload_metadata")
+    @guarded
+    async def reload_preset_metadata_route(request: web.Request) -> web.Response:
+        preset_id = request.match_info["preset_id"]
+        res = await asyncio.to_thread(require().reload_preset_metadata, preset_id)
+        return web.json_response(res)
+
+    @routes.get("/ai_prompt_studio/presets/{preset_id}/image")
+    @guarded
+    async def get_preset_image_route(request: web.Request) -> web.Response:
+        raw, mime, filename = await asyncio.to_thread(require().get_preset_image, request.match_info["preset_id"])
+        return web.Response(
+            body=raw,
+            content_type=mime,
+            headers={
+                "Content-Disposition": f'inline; filename="{filename}"',
+                "Cache-Control": "private, max-age=300",
+                "X-Content-Type-Options": "nosniff",
+            },
+        )
+
+    @routes.get("/ai_prompt_studio/presets/export")
+    @guarded
+    async def export_presets_route(_request: web.Request) -> web.Response:
+        data = await asyncio.to_thread(require().export_presets)
+        return web.json_response({"presets": data})
+
+    @routes.get("/ai_prompt_studio/presets/{preset_id}")
+    @guarded
+    async def get_preset_route(request: web.Request) -> web.Response:
+        preset_id = request.match_info["preset_id"]
+        preset = await asyncio.to_thread(require().get_preset, preset_id)
+        return web.json_response(preset)
+
+    @routes.post("/ai_prompt_studio/presets")
+    @guarded
+    async def save_preset_route(request: web.Request) -> web.Response:
+        body = await _json_body(request)
+        saved = await asyncio.to_thread(require().save_preset, body)
+        return web.json_response(saved, status=200)
+
+    @routes.delete("/ai_prompt_studio/presets/{preset_id}")
+    @guarded
+    async def delete_preset_route(request: web.Request) -> web.Response:
+        preset_id = request.match_info["preset_id"]
+        res = await asyncio.to_thread(require().delete_preset, preset_id)
+        return web.json_response(res)
+
+    @routes.post("/ai_prompt_studio/presets/import")
+    @guarded
+    async def import_presets_route(request: web.Request) -> web.Response:
+        body = await _json_body(request)
+        res = await asyncio.to_thread(require().import_presets, body)
+        return web.json_response(res)
 
 
 @web.middleware

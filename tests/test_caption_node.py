@@ -11,7 +11,9 @@ from pathlib import Path
 
 from aiohttp.test_utils import TestClient, TestServer
 
+from prompt_studio import budget
 from prompt_studio.aiohttp_api import StudioBackend, create_app
+from prompt_studio import aiohttp_api as aiohttp_api_module
 from prompt_studio import credentials as credentials_module
 from prompt_studio.caption_node import (
     AIPromptStudioCaptionNode,
@@ -121,7 +123,8 @@ class NodeExecutionTests(unittest.TestCase):
     def test_layout_mode_outputs_draft_json(self):
         prompt, w, h, _ = self.node.caption(mode="layout", payload=json.dumps(_payload("layout")))
         draft = json.loads(prompt)
-        self.assertEqual(draft["bbox_format"], "xyxy")
+        self.assertEqual(draft["bbox_coord_space"], "abs_centralized")
+        self.assertEqual(draft["bbox_format"], "yxyx")
         self.assertEqual(len(draft["items"]), 2)
         self.assertEqual((w, h), (1024, 1024))
 
@@ -210,8 +213,10 @@ class ExecutionFallbackTests(unittest.TestCase):
             call_model=self._model_reply,
         )
         draft = json.loads(prompt)
-        self.assertEqual(draft["items"][0]["bbox"], [0, 0, w // 2, h])
-        self.assertEqual(json.loads(new_payload)["draft"], draft)
+        self.assertEqual(draft["bbox_coord_space"], "abs_centralized")
+        self.assertEqual(draft["bbox_format"], "yxyx")
+        self.assertEqual(draft["items"][0]["bbox"], [-h // 2, -w // 2, h // 2, 0])
+        self.assertEqual(json.loads(new_payload)["draft"]["items"][0]["bbox"], [0, 0, w // 2, h])
 
     def test_hybrid_mode_generates_complete_caption_and_draft(self):
         prompt, _, _, new_payload = self.node.caption(
@@ -233,9 +238,10 @@ class ExecutionFallbackTests(unittest.TestCase):
         )
         self.assertIsNotNone(new_payload)
         draft = json.loads(prompt)
-        self.assertEqual(draft["items"][0]["bbox"], [0, 0, w // 2, h])
+        self.assertEqual(draft["items"][0]["bbox"], [-h // 2, -w // 2, h // 2, 0])
         updated_state = json.loads(new_payload)
         self.assertIn("draft", updated_state)
+        self.assertEqual(updated_state["draft"]["items"][0]["bbox"], [0, 0, w // 2, h])
 
     def test_execute_in_layout_mode_without_image_synthesizes_fallback_draft(self):
         """Even if no image is connected and payload only has caption text, ComfyUI
@@ -246,10 +252,9 @@ class ExecutionFallbackTests(unittest.TestCase):
         )
         self.assertEqual(cap_p, "A red and blue poster.")
         lay_draft = json.loads(lay_p)
-        hyb_draft = json.loads(hyb_p)
-        self.assertEqual(lay_draft["bbox_format"], "xyxy")
+        self.assertEqual(lay_draft["bbox_coord_space"], "abs_centralized")
+        self.assertEqual(lay_draft["bbox_format"], "yxyx")
         self.assertEqual(len(lay_draft["items"]), 1)
-        self.assertEqual(hyb_draft["summary"]["caption"], "A red and blue poster.")
         self.assertEqual((w, h), (1024, 1024))
 
     def test_multi_mode_simultaneous_generation_and_three_prompt_outputs(self):
@@ -268,7 +273,7 @@ class ExecutionFallbackTests(unittest.TestCase):
         self.assertEqual(cap_p, "A red and blue poster.")
         lay_draft = json.loads(lay_p)
         hyb_draft = json.loads(hyb_p)
-        self.assertEqual(lay_draft["items"][0]["bbox"], [0, 0, w // 2, h])
+        self.assertEqual(lay_draft["items"][0]["bbox"], [-h // 2, -w // 2, h // 2, 0])
         self.assertEqual(hyb_draft["summary"]["caption"], "A red and blue poster.")
         self.assertEqual((w, h), match_canvas_size(8, 8))
 
@@ -303,8 +308,7 @@ class ExecutionFallbackTests(unittest.TestCase):
         cap_p, lay_p, hyb_p, w, h, neg_p = result["result"]
         self.assertTrue(neg_p)
         self.assertEqual(cap_p, "A red and blue poster.")
-        self.assertEqual(json.loads(lay_p)["bbox_format"], "xyxy")
-        self.assertEqual(json.loads(hyb_p)["bbox_format"], "xyxy")
+        self.assertEqual(json.loads(lay_p)["bbox_format"], "yxyx")
         self.assertEqual((w, h), match_canvas_size(8, 8))
         self.assertEqual(len(result["ui"]["aps_payload"]), 1)
 
@@ -331,20 +335,71 @@ class ExecutionFallbackTests(unittest.TestCase):
                 model="vision-pro", call_model=timed_out,
             )
 
+    def test_node_execute_runs_prose_before_layout_and_isolates_rules(self):
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            fake_settings = Settings(
+                base_url="https://example.com",
+                model="gemini-2.5-flash",
+                api_key=VALID_KEY,
+                home=Path(tmp_dir),
+                caption_rules="NODE_CAPTION_ONLY",
+                layout_rules="NODE_LAYOUT_ONLY",
+                danbooru_rules="NODE_DANBOORU_ONLY",
+            )
+            calls: list[tuple[str, int]] = []
+
+            def fake_default_call(*, instruction: str, image_part: dict, model: str, max_tokens: int) -> str:
+                calls.append((instruction, max_tokens))
+                if len(calls) == 1:
+                    return "A crisp daylight portrait with soft directional studio light."
+                if len(calls) == 2:
+                    return json.dumps({
+                        "summary": {"caption": "A crisp daylight portrait.", "canvas": "single"},
+                        "items": [{"label": "character", "caption": "Portrait subject", "bbox": [100, 100, 900, 900]}],
+                    })
+                return "1girl, upper_body, studio_lighting"
+
+            with (
+                patch("prompt_studio.caption_node.load_settings", return_value=fake_settings),
+                patch("prompt_studio.caption_node._default_model_call", side_effect=fake_default_call),
+            ):
+                res = self.node.execute(
+                    mode="layout",
+                    payload="{}",
+                    enable_caption=False,
+                    enable_layout=True,
+                    enable_danbooru=True,
+                    image=self.image,
+                    model="gemini-2.5-flash",
+                )
+        cap_p, lay_p, dan_p, _w, _h, _neg = res["result"]
+        self.assertEqual(len(calls), 3)
+        self.assertIn("NODE_CAPTION_ONLY", calls[0][0])
+        self.assertNotIn("NODE_LAYOUT_ONLY", calls[0][0])
+        self.assertIn("NODE_LAYOUT_ONLY", calls[1][0])
+        self.assertIn("A crisp daylight portrait with soft directional studio light.", calls[1][0])
+        self.assertIn("NODE_DANBOORU_ONLY", calls[2][0])
+        self.assertNotIn("NODE_CAPTION_ONLY", calls[2][0])
+        self.assertEqual(cap_p, "A crisp daylight portrait with soft directional studio light.")
+        self.assertEqual(json.loads(lay_p)["bbox_format"], "yxyx")
+        self.assertIn("1girl", dan_p)
+
     @staticmethod
     def _model_reply(*, instruction: str, image_part: dict, model: str, max_tokens: int) -> str:
         assert "image_url" in image_part
-        assert "Describe the image" in instruction or ("AT MOST " in instruction and "regions" in instruction)
         assert model == "vision-pro"
-        assert max_tokens in (500, 3000)
-        if "summary.caption" in instruction:
-            caption = ("A complete description of the whole image."
-                       if "COMPLETE natural-language" in instruction
-                       else "A short description.")
-            bbox = [0, 0, 500, 1000]
-            return json.dumps({"summary": {"caption": caption}, "items": [
-                {"label": "object", "caption": "left half", "bbox": bbox},
-            ]})
+        assert max_tokens in (budget.OUTPUT_BUDGET, budget.ESCALATED_BUDGET)
+        if "看图反推" in instruction or "AT MOST" in instruction:
+            caption = "A complete description of the whole image."
+            bbox = [-500, -500, 500, 0]  # abs_centralized: [-H//2, -W//2, H//2, 0]
+            return json.dumps({
+                "summary": {"caption": caption, "canvas": "single"},
+                "items": [
+                    {"label": "object", "caption": "left half", "bbox": [0, 0, 500, 1000]},
+                ]
+            })
         return "A red and blue poster."
 
 
@@ -426,14 +481,14 @@ class CaptionNodeRouteTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsInstance(body["draft"], dict)
         outputs = body["outputs"]
         self.assertTrue(outputs["caption_prompt"])
-        self.assertEqual(json.loads(outputs["layout_prompt"])["bbox_format"], "xyxy")
-        self.assertEqual(json.loads(outputs["hybrid_prompt"])["bbox_format"], "xyxy")
+        self.assertEqual(json.loads(outputs["layout_prompt"])["bbox_format"], "yxyx")
+        self.assertEqual(json.loads(outputs["hybrid_prompt"])["bbox_format"], "yxyx")
 
     async def test_config_route_updates_settings_without_exposing_new_key(self):
         saved = []
-        original = credentials_module.save_credentials
-        credentials_module.save_credentials = lambda *args, **kwargs: saved.append((args, kwargs))
-        self.addCleanup(setattr, credentials_module, "save_credentials", original)
+        original = aiohttp_api_module.save_credentials
+        aiohttp_api_module.save_credentials = lambda *args, **kwargs: saved.append((args, kwargs))
+        self.addCleanup(setattr, aiohttp_api_module, "save_credentials", original)
         response = await self.client.post("/ai_prompt_studio/config", json={
             "base_url": "http://127.0.0.1:3425/v1",
             "model": "auto/glm-5.3-flash",
@@ -456,16 +511,18 @@ class CaptionNodeRouteTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_config_route_keeps_existing_key_when_field_is_blank(self):
         saved = []
-        original = credentials_module.save_credentials
-        credentials_module.save_credentials = lambda *args, **kwargs: saved.append((args, kwargs))
-        self.addCleanup(setattr, credentials_module, "save_credentials", original)
+        original = aiohttp_api_module.save_credentials
+        aiohttp_api_module.save_credentials = lambda *args, **kwargs: saved.append((args, kwargs))
+        self.addCleanup(setattr, aiohttp_api_module, "save_credentials", original)
         response = await self.client.post("/ai_prompt_studio/config", json={
             "base_url": "http://127.0.0.1:3425/v1",
             "model": "auto/glm-5.3-flash",
             "api_key": "",
         })
         self.assertEqual(response.status, 200)
-        self.assertEqual(saved[0][0][1], VALID_KEY)
+        # A blank field must not rewrite any stored secret: the key manager owns them.
+        self.assertEqual(saved, [])
+        self.assertEqual(self.backend.settings.api_key, VALID_KEY)
 
     async def test_config_route_validates_timeout_and_retries(self):
         response = await self.client.post("/ai_prompt_studio/config", json={
@@ -522,6 +579,398 @@ class CaptionNodeRouteTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response_cap.status, 200)
         body = await response_cap.json()
         self.assertEqual(body["caption"], "red blue")
+
+    async def test_layout_generation_runs_prose_first_and_isolates_per_mode_rules(self):
+        from unittest.mock import patch
+        from prompt_studio.client import ChatResult
+
+        self.backend.settings = replace(
+            self.backend.settings,
+            model="gemini-2.5-flash",
+            caption_rules="CAPTION_STAGE_RULE_ONLY",
+            layout_rules="LAYOUT_STAGE_RULE_ONLY",
+            danbooru_rules="DANBOORU_STAGE_RULE_ONLY",
+        )
+        seen_calls: list[tuple[str, int]] = []
+
+        def fake_stream(messages, **kwargs):
+            prompt_text = messages[0]["content"][0]["text"]
+            seen_calls.append((prompt_text, int(kwargs.get("max_tokens") or 0)))
+            if len(seen_calls) == 1:
+                reply = "A bright studio composition featuring crisp subject framing."
+            elif len(seen_calls) == 2:
+                reply = json.dumps({
+                    "summary": {"caption": "A bright studio composition.", "canvas": "single"},
+                    "items": [{"label": "object", "caption": "Main subject", "bbox": [0, 0, 500, 1000]}],
+                })
+            else:
+                reply = "1girl, studio_lighting, clean_background"
+            return ChatResult(
+                text=reply,
+                usage={},
+                finish_reason="stop",
+                model="gemini-2.5-flash",
+                request_id=f"req-{len(seen_calls)}",
+                latency_ms=5,
+                attempts=1,
+            )
+
+        image = {"data_url": data_url(make_split_probe_png(32))}
+        with patch.object(self.backend.client, "complete_via_stream", side_effect=fake_stream):
+            response = await self.client.post(
+                "/ai_prompt_studio/caption_node",
+                json={
+                    "mode": "layout",
+                    "modes": ["layout", "danbooru"],
+                    "image": image,
+                    "model": "gemini-2.5-flash",
+                },
+            )
+        self.assertEqual(response.status, 200)
+        body = await response.json()
+        self.assertEqual(len(seen_calls), 3)  # 1: prose, 2: layout, 3: danbooru
+        prose_instr, lay_instr, dan_instr = [c[0] for c in seen_calls]
+        self.assertIn("CAPTION_STAGE_RULE_ONLY", prose_instr)
+        self.assertNotIn("LAYOUT_STAGE_RULE_ONLY", prose_instr)
+        self.assertNotIn("DANBOORU_STAGE_RULE_ONLY", prose_instr)
+
+        self.assertIn("LAYOUT_STAGE_RULE_ONLY", lay_instr)
+        self.assertIn("A bright studio composition featuring crisp subject framing.", lay_instr)
+        self.assertNotIn("DANBOORU_STAGE_RULE_ONLY", lay_instr)
+
+        self.assertIn("DANBOORU_STAGE_RULE_ONLY", dan_instr)
+        self.assertNotIn("CAPTION_STAGE_RULE_ONLY", dan_instr)
+        self.assertNotIn("LAYOUT_STAGE_RULE_ONLY", dan_instr)
+        self.assertEqual(body["payload"]["caption_text"], "A bright studio composition featuring crisp subject framing.")
+
+    async def test_route_layout_content_filter_char22_preserves_prose_and_danbooru(self):
+        from unittest.mock import patch
+        from prompt_studio.client import ChatResult
+
+        self.backend.settings = replace(self.backend.settings, model="gemini-3-8-flash")
+        calls = 0
+
+        def fake_stream(messages, **kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                return ChatResult(
+                    text="A sunlit outdoor portrait with layered knitwear and soft stone arches.",
+                    usage={}, finish_reason="stop", model="gemini-3-8-flash",
+                    request_id="req-prose", latency_ms=10, attempts=1,
+                )
+            if calls == 2:
+                # Reproduces exact upstream content_filter cut at index 22 (`{"summary":{"caption":"`)
+                return ChatResult(
+                    text='{"summary":{"caption":"',
+                    usage={}, finish_reason="content_filter", model="gemini-3-8-flash",
+                    request_id="req-lay-cf", latency_ms=12, attempts=1,
+                )
+            return ChatResult(
+                text="1girl, solo, sunlight, cardigan, portrait",
+                usage={}, finish_reason="stop", model="gemini-3-8-flash",
+                request_id="req-dan", latency_ms=10, attempts=1,
+            )
+
+        image = {"data_url": data_url(make_split_probe_png(32))}
+        with patch.object(self.backend.client, "complete_via_stream", side_effect=fake_stream):
+            response = await self.client.post(
+                "/ai_prompt_studio/caption_node",
+                json={
+                    "mode": "caption",
+                    "modes": ["caption", "layout", "danbooru"],
+                    "image": image,
+                    "model": "gemini-3-8-flash",
+                },
+            )
+        self.assertEqual(response.status, 200)
+        body = await response.json()
+        self.assertEqual(calls, 3)
+        self.assertEqual(
+            body["outputs"]["caption_prompt"],
+            "A sunlit outdoor portrait with layered knitwear and soft stone arches.",
+        )
+        self.assertEqual(body["outputs"]["danbooru_prompt"], "1girl, solo, sunlight, cardigan, portrait")
+        self.assertIn("content_filter", body["warning"])
+        self.assertEqual(len(body["draft"]["items"]), 1)
+
+    async def test_route_layout_only_content_filter_reports_truthful_reason(self):
+        from unittest.mock import patch
+        from prompt_studio.client import ChatResult
+
+        self.backend.settings = replace(self.backend.settings, model="gemini-3-8-flash")
+        calls = 0
+
+        def fake_stream(messages, **kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                return ChatResult(
+                    text="", usage={}, finish_reason="content_filter",
+                    model="gemini-3-8-flash", request_id="req-cap-cf", latency_ms=5, attempts=1,
+                )
+            return ChatResult(
+                text='{"summary":{"caption":"',
+                usage={}, finish_reason="content_filter",
+                model="gemini-3-8-flash", request_id="req-lay-cf", latency_ms=5, attempts=1,
+            )
+
+        image = {"data_url": data_url(make_split_probe_png(32))}
+        with patch.object(self.backend.client, "complete_via_stream", side_effect=fake_stream):
+            response = await self.client.post(
+                "/ai_prompt_studio/caption_node",
+                json={
+                    "mode": "layout",
+                    "modes": ["layout"],
+                    "image": image,
+                    "model": "gemini-3-8-flash",
+                },
+            )
+        self.assertEqual(response.status, 400)
+        body = await response.json()
+        msg = body["error"]["message"]
+        self.assertIn("content_filter", msg)
+        self.assertNotIn("通常是被长度截断", msg)
+
+    async def test_route_layout_length_cutoff_salvages_completed_items(self):
+        from unittest.mock import patch
+        from prompt_studio.client import ChatResult
+
+        self.backend.settings = replace(self.backend.settings, model="gemini-3-8-flash")
+        calls = 0
+
+        def fake_stream(messages, **kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                return ChatResult(
+                    text="A studio portrait on a clean grey backdrop.",
+                    usage={}, finish_reason="stop", model="gemini-3-8-flash",
+                    request_id="req-1", latency_ms=5, attempts=1,
+                )
+            return ChatResult(
+                text=(
+                    '{"summary":{"caption":"Studio portrait."},'
+                    '"items":['
+                    '{"label":"object","name":"背景","caption":"Grey backdrop.","box_2d":[0,0,1000,1000]},'
+                    '{"label":"character","name":"人像","caption":"Standing woman.","box_2d":[120,250,920,740]},'
+                    '{"label":"object","name":"背包","caption":"Truncated halfw'
+                ),
+                usage={}, finish_reason="length", model="gemini-3-8-flash",
+                request_id="req-2", latency_ms=5, attempts=1,
+            )
+
+        image = {"data_url": data_url(make_split_probe_png(32))}
+        with patch.object(self.backend.client, "complete_via_stream", side_effect=fake_stream):
+            response = await self.client.post(
+                "/ai_prompt_studio/caption_node",
+                json={
+                    "mode": "layout",
+                    "modes": ["caption", "layout"],
+                    "image": image,
+                    "model": "gemini-3-8-flash",
+                },
+            )
+        self.assertEqual(response.status, 200)
+        body = await response.json()
+        self.assertEqual(len(body["draft"]["items"]), 2)
+        self.assertIn("2 个完整区域框", body["warning"])
+        self.assertIn("length", body["warning"])
+
+    async def test_route_layout_item_without_coordinates_warns(self):
+        from unittest.mock import patch
+        from prompt_studio.client import ChatResult
+
+        self.backend.settings = replace(self.backend.settings, model="gemini-3-8-flash")
+        calls = 0
+
+        def fake_stream(messages, **kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                return ChatResult(
+                    text="A studio portrait on a clean grey backdrop.",
+                    usage={}, finish_reason="stop", model="gemini-3-8-flash",
+                    request_id="req-1", latency_ms=5, attempts=1,
+                )
+            return ChatResult(
+                text=json.dumps({
+                    "summary": {"caption": "Studio portrait."},
+                    "items": [
+                        {"label": "object", "name": "背景", "caption": "Grey backdrop.",
+                         "box_1000": [0, 0, 1000, 1000]},
+                        {"label": "object", "name": "无坐标区域", "caption": "No coordinates at all."},
+                    ],
+                }),
+                usage={}, finish_reason="stop", model="gemini-3-8-flash",
+                request_id="req-2", latency_ms=5, attempts=1,
+            )
+
+        image = {"data_url": data_url(make_split_probe_png(32))}
+        with patch.object(self.backend.client, "complete_via_stream", side_effect=fake_stream):
+            response = await self.client.post(
+                "/ai_prompt_studio/caption_node",
+                json={
+                    "mode": "layout",
+                    "modes": ["caption", "layout"],
+                    "image": image,
+                    "model": "gemini-3-8-flash",
+                },
+            )
+        self.assertEqual(response.status, 200)
+        body = await response.json()
+        self.assertEqual(len(body["draft"]["items"]), 1)
+        self.assertIn("无坐标区域", body["warning"])
+
+    async def test_route_layout_wrong_schema_reports_what_the_model_sent(self):
+        from unittest.mock import patch
+        from prompt_studio.client import ChatResult
+
+        self.backend.settings = replace(self.backend.settings, model="deepseek-v4.1-flash")
+
+        def fake_stream(messages, **kwargs):
+            return ChatResult(
+                text=json.dumps({
+                    "task": "layout_draft",
+                    "canvas": {"orientation": "landscape", "aspect_ratio": "4:3"},
+                    "elements": [
+                        {"id": "subject", "label": "cosplayer", "bbox": [0.28, 0.18, 0.62, 0.92]},
+                    ],
+                }),
+                usage={}, finish_reason="stop", model="deepseek-v4.1-flash",
+                request_id="req-1", latency_ms=5, attempts=1,
+            )
+
+        image = {"data_url": data_url(make_split_probe_png(32))}
+        with patch.object(self.backend.client, "complete_via_stream", side_effect=fake_stream):
+            response = await self.client.post(
+                "/ai_prompt_studio/caption_node",
+                json={
+                    "mode": "layout",
+                    "modes": ["layout"],
+                    "image": image,
+                    "model": "deepseek-v4.1-flash",
+                },
+            )
+        self.assertEqual(response.status, 400)
+        body = await response.json()
+        message = body["error"]["message"]
+        self.assertIn("elements", message)
+        self.assertNotIn("不是完整 JSON", message)
+
+    async def test_route_danbooru_only_preserves_tags_without_keyerror(self):
+        from unittest.mock import patch
+        from prompt_studio.client import ChatResult
+
+        self.backend.settings = replace(self.backend.settings, model="gemini-3-8-flash")
+
+        def fake_stream(messages, **kwargs):
+            return ChatResult(
+                text="1girl, solo, studio_lighting, clean_background",
+                usage={}, finish_reason="stop", model="gemini-3-8-flash",
+                request_id="req-dan-only", latency_ms=5, attempts=1,
+            )
+
+        image = {"data_url": data_url(make_split_probe_png(32))}
+        with patch.object(self.backend.client, "complete_via_stream", side_effect=fake_stream):
+            response = await self.client.post(
+                "/ai_prompt_studio/caption_node",
+                json={
+                    "mode": "danbooru",
+                    "modes": ["danbooru"],
+                    "image": image,
+                    "model": "gemini-3-8-flash",
+                },
+            )
+        self.assertEqual(response.status, 200)
+        body = await response.json()
+        self.assertEqual(body["outputs"]["danbooru_prompt"], "1girl, solo, studio_lighting, clean_background")
+
+    async def test_prose_caption_strips_polluted_layout_json_tail(self):
+        from prompt_studio.caption_node import _extract_clean_caption_and_draft
+
+        polluted = (
+            'A full-body anime-style illustration of a cat-eared girl in a shopping cart.,\n'
+            '  "layout": [\n'
+            '    {"label": "text", "description": "Sharing happy moments", "bbox": [17, 19, 378, 42]}\n'
+            '  ]'
+        )
+        clean_text, extracted_draft = _extract_clean_caption_and_draft(polluted)
+        self.assertEqual(clean_text, "A full-body anime-style illustration of a cat-eared girl in a shopping cart.")
+        self.assertNotIn('"layout"', clean_text)
+        self.assertIsNotNone(extracted_draft)
+        self.assertEqual(extracted_draft["items"][0]["caption"], "Sharing happy moments")
+
+
+class EmptyProseButLayoutTests(unittest.TestCase):
+    """Regression: a vision model that answers the prose step with nothing used to
+    abort the whole run ("The model returned an empty caption") even when the layout
+    step still produced boxes.  Empty prose must degrade to the layout summary."""
+
+    def setUp(self):
+        self.node = AIPromptStudioCaptionNode()
+        self.image = _fake_tensor(make_split_probe_png(8))
+
+    def _run(self, *, mode: str, prose: str):
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            fake_settings = Settings(
+                base_url="https://example.com",
+                model="gemini-2.5-flash",
+                api_key=VALID_KEY,
+                home=Path(tmp_dir),
+            )
+            calls: list[str] = []
+
+            def fake_call(*, instruction: str, image_part: dict, model: str, max_tokens: int) -> str:
+                calls.append(instruction)
+                if len(calls) == 1:
+                    return prose
+                return json.dumps({
+                    "summary": {"caption": "A portrait interior with a desk and a window.", "canvas": "single"},
+                    "items": [
+                        {"label": "character", "caption": "Girl standing in the room", "bbox": [200, 200, 700, 900]},
+                        {"label": "object", "caption": "Desk with a lamp", "bbox": [0, 600, 300, 900]},
+                    ],
+                })
+
+            with patch("prompt_studio.caption_node._default_model_call", fake_call):
+                return self.node.caption(
+                    mode=mode, payload="{}", image=self.image,
+                    model="gemini-2.5-flash", call_model=fake_call,
+                )
+
+    def test_empty_prose_keeps_layout_result_and_warns(self):
+        prompt, _, _, new_payload = self._run(mode="hybrid", prose="")
+        state = json.loads(new_payload)
+        self.assertIn("draft", state)
+        self.assertEqual(len(state["draft"]["items"]), 2)
+        # 散文为空时用布局摘要兜底，而不是让整次反推失败
+        self.assertEqual(state["caption"], "A portrait interior with a desk and a window.")
+        self.assertIn("散文", state.get("warning", ""))
+
+    def test_caption_only_mode_still_reports_empty_answer(self):
+        # 纯散文模式下没有任何东西可兜底，仍然要给出明确报错
+        with self.assertRaisesRegex(ValueError, "空|重试|模型"):
+            self._run_caption_only()
+
+    def _run_caption_only(self):
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            fake_settings = Settings(
+                base_url="https://example.com",
+                model="gemini-2.5-flash",
+                api_key=VALID_KEY,
+                home=Path(tmp_dir),
+            )
+            with patch("prompt_studio.caption_node.load_settings", lambda: fake_settings):
+                return self.node.caption(
+                    mode="caption", payload="{}", image=self.image,
+                    model="gemini-2.5-flash",
+                    call_model=lambda **_kw: "",
+                )
 
 
 if __name__ == "__main__":

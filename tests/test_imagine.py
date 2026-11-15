@@ -8,6 +8,8 @@ from prompt_studio.imagine import (
     auto_imagine_pipeline,
     brainstorm_ideas,
     candidates_instruction,
+    complete_from_finished_prompt,
+    detect_prompt_source_type,
     expand_candidate,
     imagine_candidates,
     parse_brainstorm,
@@ -195,6 +197,141 @@ class ImagineBackendTests(unittest.TestCase):
         res = backend.imagine_expand({"prompt": "A cat.", "modes": ["caption"], "width": 1216, "height": 832})
         self.assertEqual(res["payload"]["caption"], "A cat.")
         self.assertEqual((res["width"], res["height"]), (1216, 832))
+
+
+class DetectPromptSourceTypeTests(unittest.TestCase):
+    def test_detects_layout_fenced_moss_cn_en_and_danbooru(self):
+        layout_raw = json.dumps({
+            "summary": {"caption": "Street cafe"},
+            "items": [{"label": "character", "caption": "Girl", "bbox": [-400, -200, 400, 200]}],
+            "bbox_coord_space": "abs_centralized",
+            "bbox_format": "yxyx",
+        })
+        self.assertEqual(detect_prompt_source_type(layout_raw), "layout")
+        self.assertEqual(detect_prompt_source_type(f"Here:\n```json\n{layout_raw}\n```"), "layout")
+        self.assertEqual(
+            detect_prompt_source_type("A candid 35mm film portrait, soft key light, warm wooden booth, film grain."),
+            "caption",
+        )
+        self.assertEqual(
+            detect_prompt_source_type("一位红发少女站在咖啡厅玻璃门前，门上贴着“OPEN”海报。"),
+            "caption",
+        )
+        self.assertEqual(
+            detect_prompt_source_type("<|主体|> A young woman with silver hair\n<|光影|> warm afternoon sunlight"),
+            "caption",
+        )
+        self.assertEqual(
+            detect_prompt_source_type("1girl, solo, silver_hair, blue_eyes, neon_city, rain"),
+            "danbooru",
+        )
+        self.assertEqual(
+            detect_prompt_source_type("custom weighted, (glowing_eyes:1.2), sharp_focus"),
+            "danbooru",
+        )
+        self.assertEqual(detect_prompt_source_type("anything at all", "layout"), "layout")
+        self.assertEqual(detect_prompt_source_type(layout_raw, "caption"), "caption")
+
+
+class CompleteFromFinishedPromptTests(unittest.TestCase):
+    MOSS_LAYOUT_PORTRAIT = json.dumps({
+        "summary": {"caption": "A girl holds a neon sign.", "canvas": "single"},
+        "items": [
+            {"label": "object", "caption": "Dark brick backdrop", "bbox": [-608, -416, 608, 416]},
+            {"label": "character", "caption": "Girl standing on viewer's left", "bbox": [-408, -316, 508, 184]},
+            {"label": "text", "caption": "Neon shop sign", "text": "OPEN", "bbox": [-508, -216, -308, 84]},
+        ],
+        "bbox_coord_space": "abs_centralized",
+        "bbox_format": "yxyx",
+    })
+
+    def test_layout_only_uses_zero_llm_calls_and_infers_832x1216(self):
+        call = fake_call([])
+        state = complete_from_finished_prompt(
+            call,
+            self.MOSS_LAYOUT_PORTRAIT,
+            modes=["layout"],
+            width=1024,
+            height=1024,
+        )
+        self.assertEqual(call.calls, [])
+        self.assertEqual(state["detected_source"], "layout")
+        self.assertEqual((state["width"], state["height"]), (832, 1216))
+        self.assertEqual(len(state["draft"]["items"]), 3)
+        self.assertEqual(state["draft"]["items"][0]["bbox"], [0, 0, 832, 1216])
+        self.assertIn("abs_centralized", state["compiled_layout_prompt"])
+
+    def test_layout_completes_caption_preserving_closing_quote_and_danbooru(self):
+        call = fake_call([
+            'A girl on the viewer\'s left stands under glowing streetlamp beside a neon sign reading "OPEN"',
+            "1girl, solo, neon_sign, brick_wall",
+        ])
+        state = complete_from_finished_prompt(
+            call,
+            self.MOSS_LAYOUT_PORTRAIT,
+            modes=["caption", "layout", "danbooru"],
+            width=1024,
+            height=1024,
+        )
+        self.assertEqual(len(call.calls), 2)
+        self.assertEqual((state["width"], state["height"]), (832, 1216))
+        self.assertTrue(state["caption"].endswith('reading "OPEN"'))
+        self.assertEqual(state["layout_draft"]["items"][2]["text"], "OPEN")
+        self.assertEqual(state["danbooru_prompt"], "1girl, solo, neon_sign, brick_wall")
+
+    def test_caption_only_uses_zero_llm_calls_and_preserves_quotes(self):
+        call = fake_call([])
+        prompt = 'A girl holds a glowing sign reading "OPEN".'
+        state = complete_from_finished_prompt(
+            call, prompt, modes=["caption"], width=832, height=1216,
+        )
+        self.assertEqual(call.calls, [])
+        self.assertEqual(state["detected_source"], "caption")
+        self.assertEqual(state["caption"], prompt)
+        self.assertEqual((state["width"], state["height"]), (832, 1216))
+
+    def test_caption_chinese_or_moss_completes_layout_and_danbooru(self):
+        moss_cn = "<|主体|> 一位银发少女站在雨夜霓虹街角\n<|构图|> 左侧招牌写着 \"OPEN\""
+        layout_reply = json.dumps({
+            "summary": {"caption": "A silver-haired girl on a rainy neon street corner."},
+            "items": [
+                {"name": "银发少女", "label": "character", "caption": "Silver-haired girl", "bbox": [100, 150, 600, 950]},
+                {"name": "霓虹招牌", "label": "text", "caption": "Neon sign", "text": "OPEN", "bbox": [620, 80, 920, 260]},
+            ],
+        })
+        call = fake_call([layout_reply, "1girl, silver_hair, rainy_night, neon_lights"])
+        state = complete_from_finished_prompt(
+            call, moss_cn, modes=["caption", "layout", "danbooru"], width=1024, height=1024,
+        )
+        self.assertEqual(len(call.calls), 2)
+        self.assertEqual(state["caption"], moss_cn)
+        self.assertEqual(len(state["layout_draft"]["items"]), 2)
+        self.assertEqual(state["hybrid_draft"]["summary"]["caption"], moss_cn)
+        self.assertEqual(state["danbooru_prompt"], "1girl, silver_hair, rainy_night, neon_lights")
+
+    def test_danbooru_same_only_zero_calls_and_full_completion(self):
+        raw_tags = "1girl,\nsolo, silver_hair, blue_eyes\n"
+        c0 = fake_call([])
+        s0 = complete_from_finished_prompt(c0, raw_tags, modes=["danbooru"])
+        self.assertEqual(c0.calls, [])
+        self.assertEqual(s0["detected_source"], "danbooru")
+        self.assertEqual(s0["danbooru_prompt"], "1girl, solo, silver_hair, blue_eyes")
+
+        c1 = fake_call([
+            "A portrait of a silver-haired girl with striking blue eyes in soft daylight.",
+            json.dumps({
+                "summary": {"caption": "A portrait of a silver-haired girl."},
+                "items": [{"name": "少女", "label": "character", "caption": "Silver-haired girl", "bbox": [200, 100, 800, 950]}],
+            }),
+        ])
+        s1 = complete_from_finished_prompt(
+            c1, raw_tags, modes=["caption", "layout", "danbooru"], width=896, height=1152,
+        )
+        self.assertEqual(len(c1.calls), 2)
+        self.assertEqual(s1["danbooru_prompt"], "1girl, solo, silver_hair, blue_eyes")
+        self.assertIn("silver-haired girl", s1["caption"])
+        self.assertEqual((s1["width"], s1["height"]), (896, 1152))
+        self.assertEqual(len(s1["layout_draft"]["items"]), 1)
 
 
 if __name__ == "__main__":

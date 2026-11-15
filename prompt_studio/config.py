@@ -20,8 +20,9 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping
+from urllib.parse import urlsplit
 
-from .credentials import Credentials, default_home
+from .credentials import Credentials, default_home, key_list
 from .errors import ConfigError
 from .redaction import mask_secret
 
@@ -35,15 +36,37 @@ _ENV_MODEL = "PROMPT_STUDIO_MODEL"
 DEFAULT_BASE_URL = "http://127.0.0.1:3425/v1"
 DEFAULT_MODEL = "gemini-3.8-flash"
 
+DEFAULT_MODE_RULES: dict[str, str] = {
+    "caption": (
+        "1. Shot Framing & Subject: start with shot scale and camera angle (e.g. close-up, waist-up, full-body), subject appearance, facial features, eye gaze, and exact hairstyle.\n"
+        "2. Attire, Objects & Actions: describe visible clothing layers, fabric textures, accessories, pose, and held objects faithfully.\n"
+        "3. Spatial Grounding: anchor asymmetrical subjects, hands, and foreground/background elements using viewer's left / viewer's right.\n"
+        "4. Objective Style Fidelity: describe visible lighting, color palette, and setting objectively without injecting extra photographic film/camera style assumptions—downstream LoRA controls rendering style.\n"
+        "5. Clean Plain Output: quote exact visible text inside double quotes \"text\"; do NOT wrap in JSON and do NOT use (word:1.2) weights or markdown fences."
+    ),
+    "layout": (
+        "1. Summary & Metadata: write a coherent global caption in summary.caption (reusing the prose description when supplied), plus canvas, meta tags, and color palette.\n"
+        "2. Depth-Ordered Regions: list visible regions in items ordered from background (furthest) to foreground (nearest).\n"
+        "3. Labels & Quoted Text: label must be character, object, or text; copy legible visible text verbatim inside text items' text field.\n"
+        "4. Tight Decoupled Boxes: separate background, characters, outer/inner garment layers, and held props into tight visible boxes.\n"
+        "5. Strict JSON Output: output a single valid JSON object only, without markdown code fences."
+    ),
+    "danbooru": (
+        "1. Clean Tags Format: output one lowercase English line of comma-separated Danbooru tags, using underscores inside multi-word tags.\n"
+        "2. Canonical Order: order by character count (e.g. 1girl, solo), distinctive features/hair/eyes, expression, layered clothing & accessories, pose/action, background/props, lighting/framing, medium.\n"
+        "3. Objective LoRA-Friendly Fidelity: record only genuinely visible attributes without adding unprompted style bias.\n"
+        "4. Text & Prohibitions: denote legible visible text cleanly; forbid narrative sentences, (word:1.2) weights, markdown, or numbering."
+    ),
+}
+
 RULE_PRESETS: dict[str, str] = {
     "moss": (
-        "Follow official MOSS-Image (Qwen3.5-9B TE + DiT) prompt compiler standards (Evidence Level A): "
-        "1. Causal Attention Order: place lighting, color temperature, and camera medium BEFORE subject and clothing nouns so directional and ambient light tints surfaces correctly. "
-        "2. Spatial Anchoring: explicitly specify whether offset subjects, gestures/hands, and key props are located on the viewer's left side or right side of the frame to prevent diffusion mirroring. "
-        "3. Multi-character Anti-fusion: place the primary character first; for subsequent characters, start their description with causal blocking clauses ('In sharp contrast, the person on the right has NO glasses, distinct hair color and different skin tone...') to prevent facial, hair, and clothing bleeding. "
-        "4. Limb & Garment Stability: describe garment adjustments as completed static states (e.g. 'shirt already pushed up, skirt hem already lifted') rather than active pulling verbs to prevent generating extra hands. "
-        "5. Low-key & Backlight Contrast: for dark rooms or backlight, explicitly describe deep shadows covering the front of the body ('front of face and torso submerged in deep dark shadows') and eliminate 'fair skin' to avoid overexposed flat white skin. "
-        "6. Concrete Optical Realism: describe tangible physical optics (harsh on-camera direct flash, hard drop shadows, razor-sharp focus, deep depth of field, micro-pores) rather than standalone brand names or weighted (word:1.2) syntax. Quote all visible text inside quotation marks."
+        "Follow official MOSS-Image (Qwen3.5-9B TE + DiT) natural prompt standards: "
+        "1. Shot Framing & Subject Identity: open with accurate shot framing (e.g. waist-up portrait, full-body shot), subject appearance, facial features, eye color, and exact hairstyle (e.g. half-up hair, loose waves, ponytail). "
+        "2. Layered Attire & Accessories: describe the overall fashion style (e.g. dark-academia attire, urban casual) and every visible garment layer, fabric texture, and accessory from outer to inner (e.g. oversized wool coat over a knit hoodie and pleated skirt, thin leather belt with silver buckle, folded tartan plaid scarf). "
+        "3. Natural Pose, Props & Spatial Grounding: describe held props (e.g. open paperback book) and bags (e.g. crossbody bag slung over shoulder) naturally; ground asymmetrical positions to viewer's left or right side. "
+        "4. Environment, Lighting & Palette: describe background architecture or scenery and faithful lighting quality (e.g. soft diffused overcast lighting, warm golden hour). "
+        "5. Clean Fidelity: describe only what is genuinely visible in the image without inventing harsh flash or absent props; quote visible text inside double quotes and avoid weighted (word:1.2) syntax."
     ),
     "moss_cinematic": (
         "MOSS-Image 12 Photographic & Cinema Film Still Presets (Evidence Level A): "
@@ -76,12 +99,11 @@ RULE_PRESETS: dict[str, str] = {
     ),
     "layout": (
         "Follow official MOSS-Image spatial layout planning conventions: "
-        "use summary for global visual composition and canvas metadata; "
-        "use flat items array with absolute pixel bounding boxes [x_min, y_min, x_max, y_max] from top-left origin (0,0); "
-        "canvas dimensions must be positive multiples of 16; "
+        "use summary for global visual composition, canvas metadata, meta tags, and color palette; "
+        "use items array ordered from background (furthest) to foreground (nearest); "
         "labels must be character, object, or text; "
-        "for text items, quote exact visible characters verbatim with intended line breaks; "
-        "establish clear visual reading order, prominence hierarchy, and natural spatial layering."
+        "for text items, quote exact visible characters verbatim; "
+        "decouple background, character, layered garments (coat, inner hoodie, skirt, scarf), and held props/bags into distinct regions."
     ),
     "pixel_fidelity": (
         "Role: Expert Vision Reverse-Engineering & Pixel-Level Prompt Engineer (High-Fidelity Grounding Standard). "
@@ -161,6 +183,9 @@ def save_preferences(home: Path, prefs: Mapping[str, Any]) -> Path:
     return path
 
 
+_GEMINI_HOST = "generativelanguage.googleapis.com"
+
+
 def normalize_base_url(url: str) -> str:
     url = (url or "").strip()
     if not url:
@@ -169,7 +194,28 @@ def normalize_base_url(url: str) -> str:
         raise ConfigError("Base URL must not contain whitespace.")
     if not re.match(r"^https?://", url, re.IGNORECASE):
         raise ConfigError("Base URL must start with http:// or https://")
-    return url.rstrip("/")
+    return _complete_known_path(url.rstrip("/"))
+
+
+def _complete_known_path(url: str) -> str:
+    """Finish a Gemini base URL the user may have pasted only halfway.
+
+    Gemini serves its OpenAI-compatible layer under ``/v1beta/openai``.  Pasting
+    just the host, or ``/v1beta``, would otherwise leave ``api_url()`` joining
+    paths onto Google's native REST root, which rejects OpenAI chat payloads.
+    """
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return url
+    if parts.netloc.lower() != _GEMINI_HOST:
+        return url
+    path = parts.path.rstrip("/")
+    if not path:
+        return url + "/v1beta/openai"
+    if path.lower().endswith("/v1beta"):
+        return url + "/openai"
+    return url
 
 
 def _as_float(value: Any, name: str, default: float) -> float:
@@ -199,7 +245,7 @@ class Settings:
     model: str
     api_key: str
     home: Path
-    timeout_s: float = 60.0
+    timeout_s: float = 120.0
     max_retries: int = 2
     backoff_s: float = 0.5
     max_backoff_s: float = 8.0
@@ -215,7 +261,12 @@ class Settings:
     output_language: str = "en"
     prompt_rules: str = ""
     user_custom_rules: str = ""
+    caption_rules: str = ""
+    layout_rules: str = ""
+    danbooru_rules: str = ""
     max_regions: int = 10
+    active_key_id: str = ""
+    api_keys: list[dict[str, Any]] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         self.base_url = normalize_base_url(self.base_url)
@@ -242,6 +293,9 @@ class Settings:
             self.output_language = "en"
         self.prompt_rules = str(self.prompt_rules or "").strip()
         self.user_custom_rules = str(self.user_custom_rules or "").strip()
+        self.caption_rules = str(self.caption_rules or "").strip()
+        self.layout_rules = str(self.layout_rules or "").strip()
+        self.danbooru_rules = str(self.danbooru_rules or "").strip()
         try:
             self.max_regions = max(1, min(16, int(self.max_regions or 10)))
         except (TypeError, ValueError):
@@ -262,6 +316,8 @@ class Settings:
             "model": self.model,
             "api_key_configured": bool(self.api_key),
             "api_key_masked": mask_secret(self.api_key),
+            "active_key_id": self.active_key_id,
+            "api_keys": [dict(item) for item in self.api_keys],
             "timeout_s": self.timeout_s,
             "max_retries": self.max_retries,
             "host": self.host,
@@ -270,6 +326,10 @@ class Settings:
             "output_language": self.output_language,
             "prompt_rules": self.prompt_rules,
             "user_custom_rules": self.user_custom_rules,
+            "caption_rules": self.caption_rules,
+            "layout_rules": self.layout_rules,
+            "danbooru_rules": self.danbooru_rules,
+            "default_mode_rules": dict(DEFAULT_MODE_RULES),
             "max_regions": self.max_regions,
         }
 
@@ -283,44 +343,77 @@ class Settings:
             )
 
 
+def _canonical_mode(mode: str, *, for_json_layout: bool = False) -> str:
+    m = str(mode or "").strip().lower()
+    if m in ("caption", "prose", "moss"):
+        return "caption"
+    if m == "layout":
+        return "layout"
+    if m in ("danbooru", "tags"):
+        return "danbooru"
+    if m == "hybrid":
+        return "layout" if for_json_layout else "caption"
+    return "layout" if for_json_layout else "caption"
+
+
 def build_rule_suffix(
     settings: Settings | None,
     extra_instruction: str = "",
     *,
+    mode: str | None = None,
     for_json_layout: bool = False,
 ) -> str:
-    """Build combined prompt rule & extra requirement text from Settings."""
+    """Build combined prompt rule & extra requirement text from Settings.
+
+    When ``mode`` is supplied (``caption`` | ``layout`` | ``danbooru`` or aliases
+    ``prose`` / ``tags`` / ``moss`` / ``hybrid``), strictly reads ONLY that mode's
+    dedicated rule (``caption_rules`` / ``layout_rules`` / ``danbooru_rules`` or
+    ``DEFAULT_MODE_RULES[mode]``) so modes never cross-pollinate.
+    """
     clauses: list[str] = []
     if settings is not None:
-        preset = str(settings.rule_preset or "moss").strip().lower()
-        if preset in ("prose", "moss"):
-            canonical_preset = "moss"
-        elif preset in ("tags", "danbooru"):
-            canonical_preset = "danbooru"
-        elif preset in ("hybrid", "layout"):
-            canonical_preset = "layout"
-        else:
-            canonical_preset = preset
-
-        # 1. Base rule of selected preset
-        base_rule = str(settings.prompt_rules or "").strip()
-        if not base_rule and canonical_preset in RULE_PRESETS:
-            base_rule = RULE_PRESETS[canonical_preset].strip()
-
-        if base_rule:
-            if for_json_layout and canonical_preset in ("danbooru", "tags"):
-                clauses.append(
-                    "For summary.caption and items[].caption inside the JSON, use structured comma-separated descriptive phrases."
-                )
+        if mode is not None:
+            canonical_mode = _canonical_mode(mode, for_json_layout=for_json_layout)
+            mode_rule = str(getattr(settings, f"{canonical_mode}_rules", "") or "").strip()
+            if not mode_rule:
+                mode_rule = DEFAULT_MODE_RULES[canonical_mode]
+            if for_json_layout or canonical_mode == "layout":
+                clauses.append(f"Layout mode rules:\n{mode_rule}")
             else:
-                clauses.append(f"Prompt style preset ({canonical_preset}):\n{base_rule}")
+                clauses.append(f"Mode rules ({canonical_mode}):\n{mode_rule}")
+        else:
+            preset = str(getattr(settings, "rule_preset", "moss") or "moss").strip().lower()
+            if preset in ("prose", "moss"):
+                canonical_preset = "moss"
+            elif preset in ("tags", "danbooru"):
+                canonical_preset = "danbooru"
+            elif preset in ("hybrid", "layout"):
+                canonical_preset = "layout"
+            else:
+                canonical_preset = preset
 
-        # 2. User's global custom requirements (automatically appended to EVERY rule)
-        user_custom = str(settings.user_custom_rules or "").strip()
+            # 1. Base rule of selected preset
+            base_rule = str(getattr(settings, "prompt_rules", "") or "").strip()
+            if not base_rule and canonical_preset in RULE_PRESETS:
+                base_rule = RULE_PRESETS[canonical_preset].strip()
+
+            if base_rule:
+                if for_json_layout:
+                    if canonical_preset in ("danbooru", "tags"):
+                        clauses.append(
+                            "For summary.caption and items[].caption inside the JSON, use structured comma-separated descriptive phrases."
+                        )
+                    elif str(getattr(settings, "prompt_rules", "") or "").strip():
+                        clauses.append(f"Custom layout prompt rules:\n{str(getattr(settings, 'prompt_rules', '')).strip()}")
+                else:
+                    clauses.append(f"Prompt style preset ({canonical_preset}):\n{base_rule}")
+
+        # 2. User's global custom requirements (automatically appended across modes)
+        user_custom = str(getattr(settings, "user_custom_rules", "") or "").strip()
         if user_custom:
-            clauses.append(f"User custom requirements (strictly follow across all presets):\n{user_custom}")
+            clauses.append(f"User custom requirements (strictly follow):\n{user_custom}")
 
-        lang = str(settings.output_language or "en").strip().lower()
+        lang = str(getattr(settings, "output_language", "en") or "en").strip().lower()
         if lang == "zh":
             clauses.append(
                 "Write all descriptive prompt text (or summary.caption and items[].caption in JSON) in fluent, natural Chinese (简体中文)."
@@ -362,7 +455,7 @@ def load_settings(
 
     host = env.get("PROMPT_STUDIO_HOST", "127.0.0.1")
     port = _as_int(env.get("PROMPT_STUDIO_PORT"), "PROMPT_STUDIO_PORT", 8791)
-    default_timeout = _as_float(prefs.get("timeout_s"), "timeout_s", 60.0)
+    default_timeout = _as_float(prefs.get("timeout_s"), "timeout_s", 120.0)
     default_retries = _as_int(prefs.get("max_retries"), "max_retries", 2)
     settings = Settings(
         base_url=resolved_base or "",
@@ -383,7 +476,14 @@ def load_settings(
         output_language=str(prefs.get("output_language") or "en"),
         prompt_rules=str(prefs.get("prompt_rules") or ""),
         user_custom_rules=str(prefs.get("user_custom_rules") or ""),
+        caption_rules=str(prefs.get("caption_rules") or ""),
+        layout_rules=str(prefs.get("layout_rules") or ""),
+        danbooru_rules=str(prefs.get("danbooru_rules") or ""),
         max_regions=_as_int(prefs.get("max_regions"), "max_regions", 10),
     )
     settings.ensure_local_bind()
+    if creds is not None:
+        # The active key is one of possibly many; the panel lists them all.
+        settings.active_key_id = creds.active_key_id
+        settings.api_keys = key_list(credential_path)
     return settings

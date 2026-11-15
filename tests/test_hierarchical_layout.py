@@ -95,12 +95,59 @@ class HierarchicalLayoutTests(unittest.TestCase):
 
     def test_layout_instruction_graph_directives(self):
         instr = layout_instruction("hybrid", 1024, 1024, max_regions=12)
-        self.assertIn("AT MOST 12 regions", instr)
-        self.assertIn("DECOUPLE DISTINCTIVE FEATURES", instr)
-        self.assertIn("光环", instr)
-        self.assertIn("光之碎片翼", instr)
-        self.assertIn("海报标题", instr)
-        self.assertIn("0-1000", instr)
+        self.assertIn("3–12 个框", instr)
+        self.assertIn("从远到近", instr)
+        self.assertIn("0–1000", instr)
+
+    def test_moss_prompt_studio_compilation_and_depth_phrases(self):
+        from prompt_studio.layout import compile_layout_dict, compile_layout_prompt, layout_instruction
+        raw = json.dumps({
+            "summary": {
+                "caption": "A waist-up portrait of an ethereal fair-skinned young woman with long ash-blonde hair in an urban setting.",
+                "canvas": "single",
+                "meta": ["outdoors", "portrait", "fashion"],
+                "palette": ["sage green", "cream white", "charcoal black", "dark brown", "ash blonde"],
+            },
+            "items": [
+                {
+                    "name": "背景建筑",
+                    "label": "object",
+                    "caption": "Blurred classical stone arches and columns enveloped in cool, diffused overcast lighting.",
+                    "box_2d": [0, 0, 1000, 1000],
+                },
+                {
+                    "name": "年轻女子",
+                    "label": "character",
+                    "caption": "A fair-skinned young woman with delicate features, light hazel eyes, and ash-blonde half-up hair.",
+                    "box_2d": [0, 50, 1000, 950],
+                },
+                {
+                    "name": "鼠尾草绿大衣",
+                    "label": "object",
+                    "caption": "An oversized sage-green wool overcoat with broad lapels.",
+                    "box_2d": [230, 50, 1000, 940],
+                },
+                {
+                    "name": "斜挎包",
+                    "label": "object",
+                    "caption": "A dark brown crossbody duffle bag slung over her left shoulder.",
+                    "box_2d": [260, 530, 910, 1000],
+                },
+            ],
+        })
+        draft = parse_model_layout(raw, 968, 1464, max_items=16)
+        compiled = compile_layout_dict(draft)
+        self.assertEqual(compiled["bbox_coord_space"], "abs_centralized")
+        self.assertEqual(compiled["bbox_format"], "yxyx")
+        self.assertEqual(compiled["summary"]["meta"], ["outdoors", "portrait", "fashion"])
+        self.assertEqual(compiled["summary"]["palette"], ["sage green", "cream white", "charcoal black", "dark brown", "ash blonde"])
+        self.assertIn("Behind 「年轻女子」, partly hidden by it", compiled["items"][0]["caption"])
+        self.assertIn("In front of 「背景建筑」, partially occluding it", compiled["items"][1]["caption"])
+        self.assertIn("behind 「鼠尾草绿大衣」, partly hidden by it", compiled["items"][1]["caption"])
+        # Verify Gemini box_2d instruction selection
+        gemini_instr = layout_instruction("hybrid", 968, 1464, model="gemini-3-flash-preview", caption_hint="A waist-up portrait.")
+        self.assertIn('"box_2d": [ymin, xmin, ymax, xmax]', gemini_instr)
+        self.assertIn("散文参考", gemini_instr)
 
 if __name__ == "__main__":
     unittest.main()

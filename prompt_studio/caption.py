@@ -6,26 +6,33 @@ generic: the MOSS-specific rule pack and the dual rule engine arrive in M2.
 
 from __future__ import annotations
 
+import json
 import re
 import time
 from dataclasses import dataclass, field
 from typing import Any, Sequence
 
+from .budget import OUTPUT_BUDGET
 from .client import ChatClient, ChatResult
 
 FORMATS = ("prose", "tags", "moss", "danbooru")
 
 _INSTRUCTIONS = {
     "prose": (
-        "Describe the image for use as an image-generation prompt. Write 2-4 sentences of cohesive "
-        "natural English. Explicitly cover: primary subject, distinctive features & accessories "
-        "(e.g. floating halos, wings/light shards, headwear), viewer-relative spatial placement "
-        "(CRITICAL: explicitly specify whether offset subjects, gestures/hands, or props are on the viewer's left "
-        "or right side of the frame to prevent downstream image generation models from mirroring the composition), "
-        "foreground/background spatial depth, materials, lighting atmosphere (rim light, specular reflections, bokeh), "
-        "camera framing, and art style. "
-        "Quote any visible signage or text verbatim inside quotation marks. "
-        "Do not mention that this is an image or address the reader. Output only the description."
+        "Describe this image in one continuous English paragraph of three or four sentences, "
+        "written for use as an image-generation prompt.\n"
+        "Start the paragraph with a complete sentence that names the shot and the subject "
+        "(e.g. 'A full-body shot of a girl in a white shirt and blue pinafore dress'), and let that "
+        "same sentence place the setting. Carry the paragraph forward through what the subject looks "
+        "like — face, eye colour, expression, exact hairstyle — and through what they are wearing, "
+        "layer by layer from the outermost garment inward, including fabric, hardware and accessories. "
+        "Then move to what they hold or carry and how they stand or move, naming each symmetrical-"
+        "breaking element on the viewer's left or the viewer's right so the composition cannot be "
+        "mirrored. Close with the surroundings and the light: the architecture or scenery, the quality "
+        "of the illumination, the colour mood.\n"
+        "Write running sentences joined by commas and full stops only — no headings, no numbering, "
+        "no line-by-line lists. Quote any legible text in the picture verbatim inside double quotes. "
+        "Stay faithful to what is visible and invent nothing."
     ),
     "tags": (
         "Convert the image into image-generation tags. Output ONE comma-separated line "
@@ -39,19 +46,20 @@ _INSTRUCTIONS = {
         "Convert the image into authentic Danbooru-style anime image-generation tags. "
         "Output ONE comma-separated line of English tags, ordered strictly from most to least important: "
         "character count and meta (e.g. 1girl, solo), core distinctive fantasy/costume features "
-        "(e.g. halo, glowing_halo, energy_wings, light_wings, horns), hair style and color, eye color, "
-        "facial expression, specific apparel and gear, pose and action, environment and props "
-        "(e.g. cafe, glass_door, poster, flyer), lighting and camera angle (e.g. rim_lighting, backlighting, depth_of_field), "
+        "(e.g. halo, glowing_halo, energy_wings, light_wings, horns), hair style (e.g. long_hair, half_updo, center_parting, loose_hair OR ponytail), "
+        "facing direction and eye gaze (e.g. looking_at_viewer, facing_viewer, profile), "
+        "hair color, eye color, facial expression, specific apparel and gear (e.g. coat, hoodie, pleated_skirt, belt, scarf, crossbody_bag, backpack), "
+        "pose and action (e.g. holding_book, holding_strap), environment and props, lighting and camera framing, "
         "art medium. All lowercase, use underscores inside multi-word tags. "
         "Strictly forbid sentences, forbid (word:1.2) syntax, no numbering, no markdown quotes."
     ),
     "moss": (
-        "Write an official MOSS-Image style prompt in English following Qwen3.5-9B TE + DiT causal attention standards: "
-        "1. Casual Attention Order: begin with medium, lighting atmosphere, and color temperature BEFORE subject/garments so surfaces inherit proper key light and tint. "
-        "2. Viewer Perspective: CRITICAL - explicitly anchor asymmetrical subjects, gestures, hands, and props to the viewer's left or viewer's right side to lock composition against flipping. "
-        "3. Static Anatomy & Garments: describe garment adjustments (shirt lift, skirt pull) as completed static states (e.g. 'shirt already pushed up') rather than active pulling verbs to prevent extra arms/hands. "
-        "4. Multi-subject Causal Blocking: if multiple characters appear, put primary character first, and start secondary character with contrast blocking ('In sharp contrast, the person on the right...') to prevent facial or costume bleeding. "
-        "5. Concrete Visible Optics: specify concrete optical traits (sharp direct flash, deep depth of field, micro-pores, natural skin specular sheen, film grain) instead of empty brand names, avoid buzzwords like masterpiece/8k or (word:1.2) syntax, and quote visible text verbatim in quotation marks. Output only the caption."
+        "Write an official MOSS-Image style prompt in English (2-4 cohesive, richly detailed sentences): "
+        "1. Shot & Subject: state the camera framing, medium, subject features, gaze, and exact hairstyle (e.g. half-up hair, loose waves, ponytail). "
+        "2. Garment Layers & Accessories: detail the attire style and every visible layer and fabric texture (coat, inner hoodie/shirt, skirt/trousers, belt buckle, scarf, bag). "
+        "3. Action, Props & Spatial Anchoring: describe held objects, bag straps, and posture naturally; anchor asymmetrical elements to the viewer's left or viewer's right to prevent mirror flipping. "
+        "4. Environment & Lighting: describe the background architecture/scenery and lighting atmosphere faithfully. "
+        "5. Output only the prompt text itself — no headings, no code blocks, no bullet lists."
     ),
 }
 
@@ -102,10 +110,126 @@ class MultiCaptionResult:
         }
 
 
+def _collect_strings(value: Any, key: str | None = None, out: list | None = None) -> list:
+    """Flatten every string in a decoded JSON value, remembering its key."""
+    out = [] if out is None else out
+    if isinstance(value, str):
+        out.append((key or "", value))
+    elif isinstance(value, dict):
+        for child_key, child in value.items():
+            _collect_strings(child, str(child_key), out)
+    elif isinstance(value, (list, tuple)):
+        for child in value:
+            _collect_strings(child, key, out)
+    return out
+
+
+_PROSE_KEYS = (
+    "caption",
+    "text",
+    "prompt",
+    "description",
+    "prose",
+    "content",
+    "positive",
+    "output",
+    "tags",
+)
+
+# Models frequently drop a closing brace when the caption sentence is long; the
+# JSON is then unparseable while the caption string itself is perfectly intact.
+_KEY_VALUE_RE = re.compile(
+    r'"\s*(?:caption|text|prompt|description|prose|content|positive|output)\s*"\s*:\s*'
+    r'"((?:[^"\\]|\\.)*)"',
+    re.IGNORECASE,
+)
+
+# The same sentence cut off mid-way by max_tokens: no closing quote at all.  Keep
+# the tail so the caller still gets real prose instead of an empty result.
+_OPEN_KEY_VALUE_RE = re.compile(
+    r'"\s*(?:caption|text|prompt|description|prose|content|positive|output)\s*"\s*:\s*'
+    r'"([^"\\]{12,})',
+    re.IGNORECASE,
+)
+
+
+def _regex_key_value(raw: str) -> str | None:
+    """Salvage a ``"caption": "..."`` pair out of truncated / malformed JSON."""
+    match = _KEY_VALUE_RE.search(raw)
+    if not match:
+        open_match = _OPEN_KEY_VALUE_RE.search(raw)
+        if not open_match:
+            return None
+        tail = open_match.group(1).strip()
+        # Drop the half-eaten final word so the result does not end mid-syllable.
+        if tail and not tail.endswith((".", "!", "?", "。", "！", "？")):
+            tail = tail.rsplit(" ", 1)[0].strip() or tail
+        return tail or None
+    escaped = match.group(1)
+    try:
+        value = json.loads(f'"{escaped}"')
+    except ValueError:
+        value = escaped.replace("\\n", "\n").replace('\\"', '"').replace("\\\\", "\\")
+    value = str(value).strip()
+    return value or None
+
+
+def _unwrap_json_envelope(text: str, joiner: str = " ") -> str | None:
+    """Pull the real prose out of any JSON wrapper the model invented.
+
+    Vision models sometimes answer a "plain paragraph, no JSON" instruction with
+    ``{"layout_draft": {"caption": "...", "visible_text": []}}`` — the wrapper key
+    changes between runs, so matching key names is a losing game.  Decode the
+    object and pick the prose-looking string instead.
+    """
+    raw = text.strip()
+    if not raw or not (raw.startswith("{") or raw.startswith("[")):
+        start = raw.find("{")
+        if start < 0:
+            return None
+        raw = raw[start:]
+
+    data = None
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        end = raw.rfind("}")
+        if end > 0:
+            try:
+                data = json.loads(raw[: end + 1])
+            except ValueError:
+                data = None
+    if data is None:
+        return _regex_key_value(raw)
+
+    pairs = _collect_strings(data)
+    prose = [(key, value.strip()) for key, value in pairs if value and value.strip()]
+    if not prose:
+        return None
+
+    groups: dict[str, list[str]] = {}
+    for key, value in prose:
+        if key.lower() in _PROSE_KEYS:
+            groups.setdefault(key, []).append(value)
+    if groups:
+        # A single caption split across a list of strings (or a tag list) is
+        # still one field: join every string that shared the winning key.
+        best = max(groups.values(), key=lambda items: sum(len(item) for item in items))
+        return joiner.join(best)
+
+    longest = max((value for _key, value in prose), key=len)
+    # A stray JSON blob with no caption-like field is only worth unwrapping when
+    # it carries a substantial piece of text; otherwise leave it to the regexes.
+    return longest if len(longest) >= 24 else None
+
+
 def _clean(text: str, fmt: str) -> str:
     out = text.strip()
     out = re.sub(r"^```[a-zA-Z]*\s*", "", out)
     out = re.sub(r"\s*```$", "", out)
+    unwrapped = _unwrap_json_envelope(out, ", " if fmt in ("tags", "danbooru") else " ")
+    if unwrapped:
+        out = unwrapped.strip()
     if fmt in ("tags", "danbooru"):
         out = out.replace("\r", " ").replace("\n", ", ")
         out = re.sub(r"^\s*(tags?|prompt)\s*[:：]\s*", "", out, flags=re.IGNORECASE)
@@ -113,6 +237,21 @@ def _clean(text: str, fmt: str) -> str:
         parts = [re.sub(r"\s+", " ", part).strip() for part in out.split(",")]
         out = ", ".join(part for part in parts if part)
     else:
+        # 散文与 MOSS 模式：兜底剥离仍残留的 JSON 外壳（结构化解析没能还原时）
+        out = re.sub(
+            r'^\s*\{\s*"(?:summary|caption|prompt|result|layout_draft|layout|data|output|response)"\s*:\s*\{\s*"(?:caption|text|prompt)"\s*:\s*["\']?',
+            "",
+            out,
+            flags=re.IGNORECASE,
+        )
+        out = re.sub(
+            r'^\s*\{\s*"(?:summary|caption|prompt|result|description|layout_draft|layout|data|output|response)"\s*:\s*["\']?',
+            "",
+            out,
+            flags=re.IGNORECASE,
+        )
+        out = re.sub(r'["\']\s*\}*\s*$', '', out)
+        out = re.sub(r'\s*\}\s*$', '', out)
         out = re.sub(r"[ \t]+", " ", out)
         out = re.sub(r"\n{3,}", "\n\n", out)
     return out.strip()
@@ -125,7 +264,7 @@ def caption_image(
     fmt: str | Sequence[str] = "prose",
     model: str | None = None,
     extra_instruction: str = "",
-    max_tokens: int = 500,
+    max_tokens: int = OUTPUT_BUDGET,
 ) -> CaptionResult | MultiCaptionResult:
     """Caption an image in one or several formats.
 

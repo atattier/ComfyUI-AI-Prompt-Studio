@@ -20,17 +20,28 @@ import copy
 import json
 import re
 import struct
+import threading
 import zlib
 from pathlib import Path
 from typing import Any, Callable, Sequence
 
+from . import budget
 from .caption import SAFETY_PREFIX, _INSTRUCTIONS, _clean
 from .config import build_rule_suffix, load_settings
-from .errors import StudioError
+from .errors import AuthError, ModelNotFoundError, RateLimitError, StudioError, UpstreamTimeoutError
 from .images import to_api_part
-from .layout import layout_instruction, match_canvas_size, parse_model_layout
+from .layout import (
+    compile_layout_prompt,
+    grid_overlay_data_url,
+    layout_instruction,
+    match_canvas_size,
+    parse_model_layout,
+    recover_partial_layout,
+    shrink_data_url,
+)
 from .sessions import MediaStore
 from .imagine import auto_imagine_pipeline, STYLES, ASPECTS, THEMES
+from .presets import PresetStore, BUILTIN_PRESETS
 
 MODES = ("caption", "layout", "danbooru", "hybrid")
 
@@ -204,6 +215,14 @@ def _default_text_model_call(resolved_model: str):
     return call
 
 
+_LAST_CALL_META = threading.local()
+
+
+def _is_truncated(text: str | None, finish_reason: str | None) -> bool:
+    """True when the budget ran out during thinking and no text came back."""
+    return not str(text or "").strip() and finish_reason in budget.TRUNCATION_REASONS
+
+
 def _default_model_call(*, instruction: str, image_part: dict[str, Any],
                         model: str, max_tokens: int) -> str:
     """Use the same OpenAI-compatible client and credentials as the HTTP route."""
@@ -221,7 +240,90 @@ def _default_model_call(*, instruction: str, image_part: dict[str, Any],
     result = backend.client.complete_via_stream(
         messages, model=model, temperature=0.3, max_tokens=max_tokens
     )
+    _LAST_CALL_META.finish_reason = result.finish_reason
     return result.text
+
+
+def _format_layout_warnings(draft: dict[str, Any]) -> str | None:
+    """Turn a parsed draft's schema warnings into a user-facing warning string."""
+    issues = [str(w).strip() for w in (draft.get("warnings") or []) if str(w).strip()]
+    if not issues:
+        return None
+    return "⚠️ 布局反推结果可能不准：" + " ".join(issues)
+
+
+def resolve_layout_output(
+    *,
+    raw_text: str,
+    finish_reason: str | None,
+    width: int,
+    height: int,
+    max_regions: int,
+    active_modes: Sequence[str],
+    existing_caption: str = "",
+) -> tuple[dict[str, Any], str | None]:
+    """Parse layout JSON, salvage partial regions on cutoff, or explain failure truthfully."""
+    raw_str = str(raw_text or "")
+    try:
+        draft = parse_model_layout(raw_str, width, height, max_items=max_regions)
+        return draft, _format_layout_warnings(draft)
+    except ValueError as exc:
+        salvaged = recover_partial_layout(
+            raw_str,
+            width,
+            height,
+            max_items=max_regions,
+            fallback_caption=existing_caption,
+        )
+        if salvaged is not None:
+            reason_tag = (
+                "安全策略拦截 (content_filter)"
+                if finish_reason == "content_filter"
+                else ("输出长度截断 (length)" if finish_reason == "length" else "JSON 未完全闭合")
+            )
+            warning = (
+                f"⚠️ 布局输出因 {reason_tag} 被提前中断，已自动抢救保留前 {len(salvaged['items'])} 个完整区域框。"
+            )
+            extra = _format_layout_warnings(salvaged)
+            if extra:
+                warning = f"{warning} {extra}"
+            return salvaged, warning
+
+        has_other_mode = any(m in ("caption", "danbooru") for m in active_modes)
+        cap_clean = str(existing_caption or "").strip()
+        if cap_clean and has_other_mode and finish_reason in ("content_filter", "length"):
+            placeholder = _fallback_draft(cap_clean, width, height)
+            kept = [m for m in ("caption", "danbooru") if m in active_modes]
+            kept_label = " / ".join("散文" if m == "caption" else "Danbooru" for m in kept) or "散文"
+            if finish_reason == "content_filter":
+                warning = (
+                    f"⚠️ {kept_label}已反推成功并保留！但「布局」分框阶段触发上游安全策略拦截 "
+                    f"(content_filter，第 {len(raw_str)} 字符处被中断)，暂以全图占位框兜底；"
+                    "可更换视觉模型或调整补充要求后重试布局。"
+                )
+            else:
+                warning = (
+                    f"⚠️ {kept_label}已反推成功并保留！但「布局」分框因长度截断 (length) 未生成完整画框，"
+                    "暂以全图占位框兜底；可降低「布局最大区域数」后重试。"
+                )
+            return placeholder, warning
+
+        if finish_reason == "content_filter":
+            raise ValueError(
+                f"布局反推失败：模型在输出第 {len(raw_str)} 字符时触发上游安全策略拦截 "
+                f"(finish_reason=content_filter) 被提前中断，未能生成有效区域框（{exc}）。"
+                "建议切换其他视觉模型，或先勾选「散文 / Danbooru」模式。"
+            ) from exc
+        if finish_reason == "length":
+            raise ValueError(
+                f"布局反推失败：模型输出因达到长度上限被截断 (finish_reason=length，"
+                f"第 {len(raw_str)} 字符)：{exc}。可降低「布局最大区域数」或换模型重试。"
+            ) from exc
+        raise ValueError(
+            f"布局反推失败（finish_reason={finish_reason or 'unknown'}）：{exc}。"
+            "模型没有按布局约定返回 items 区域数组，或 JSON 不完整。"
+            "请点「反推」重试；仍失败可换模型或减少画面文字。"
+        ) from exc
 
 
 def _concise_summary(text: str) -> str:
@@ -259,6 +361,68 @@ def _fallback_draft(caption: str, width: int, height: int) -> dict[str, Any]:
     }
 
 
+def _extract_clean_caption_and_draft(text: str) -> tuple[str, dict[str, Any] | None]:
+    """Extract pure narrative caption and recovered layout draft if text got polluted with JSON."""
+    if not text or not isinstance(text, str):
+        return "", None
+    t = text.strip()
+    pure = ""
+    draft_obj: dict[str, Any] | None = None
+
+    try:
+        data = json.loads(t)
+        if isinstance(data, dict):
+            cap = data.get("summary", {}).get("caption") or data.get("caption")
+            if cap:
+                pure = str(cap).strip()
+                draft_obj = data
+    except Exception:
+        pass
+
+    if not pure:
+        m = re.search(r'^(.*?)(?:"?\s*,\s*"(?:items|layout|regions|objects)"\s*:\s*\[)', t, re.DOTALL)
+        if m:
+            candidate = m.group(1).strip().strip('"').strip()
+            if candidate.startswith('{"summary":{"caption":"'):
+                candidate = candidate.replace('{"summary":{"caption":"', '').strip()
+            pure = candidate
+            items_part = t[m.end() - len("["):]
+            try:
+                items_json = '{"items":' + items_part
+                if not items_json.endswith("}"):
+                    items_json += "}"
+                draft_obj = json.loads(items_json)
+            except Exception:
+                draft_obj = None
+
+    if pure:
+        pure = re.sub(r'''^\s*\{\s*"(?:summary|caption|prompt|result)"\s*:\s*\{\s*"(?:caption|text|prompt)"\s*:\s*["']?''', '', pure, flags=re.IGNORECASE)
+        pure = re.sub(r'''^\s*\{\s*"(?:summary|caption|prompt|result|description)"\s*:\s*["']?''', '', pure, flags=re.IGNORECASE)
+        pure = re.sub(r"""["']\s*\}*\s*$""", '', pure)
+        pure = re.sub(r'\s*\}\s*$', '', pure).strip()
+    else:
+        cleaned = re.sub(r'''^\s*\{\s*"(?:summary|caption|prompt|result)"\s*:\s*\{\s*"(?:caption|text|prompt)"\s*:\s*["']?''', '', t, flags=re.IGNORECASE)
+        cleaned = re.sub(r'''^\s*\{\s*"(?:summary|caption|prompt|result|description)"\s*:\s*["']?''', '', cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r'"\s*,\s*"canvas".*$', '', cleaned, flags=re.DOTALL)
+        cleaned = re.sub(r"""["']\s*\}*\s*$""", '', cleaned)
+        pure = re.sub(r'\s*\}\s*$', '', cleaned).strip()
+
+    if draft_obj and isinstance(draft_obj, dict):
+        if not isinstance(draft_obj.get("summary"), dict):
+            draft_obj["summary"] = {"caption": pure or "A composed image.", "canvas": "single"}
+        elif pure and not draft_obj["summary"].get("caption"):
+            draft_obj["summary"]["caption"] = pure
+        # 兼容 box -> bbox 以及 description -> caption 映射
+        for it in draft_obj.get("items", []):
+            if isinstance(it, dict):
+                if "box" in it and "bbox" not in it:
+                    it["bbox"] = it["box"]
+                if "description" in it and "caption" not in it:
+                    it["caption"] = it["description"]
+
+    return pure, draft_obj
+
+
 def _normalize_state_payload(raw_state: dict[str, Any]) -> dict[str, Any]:
     """Normalize both backend state payloads and frontend v1 schema payloads."""
     state = dict(raw_state)
@@ -272,6 +436,19 @@ def _normalize_state_payload(raw_state: dict[str, Any]) -> dict[str, Any]:
 
     width = int(state.get("width") or 0)
     height = int(state.get("height") or 0)
+
+    # 自愈保护：若 caption 被污染混入 JSON 或 "items"/"layout": [，将其智能解构拆分
+    raw_cap = str(state.get("caption") or state.get("caption_text") or "").strip()
+    if raw_cap and (any(k in raw_cap for k in ('"items"', '"layout"', '"regions"', '"objects"')) or raw_cap.startswith("{")):
+        pure_cap, extracted_draft = _extract_clean_caption_and_draft(raw_cap)
+        if pure_cap:
+            state["caption"] = pure_cap
+            state["caption_text"] = pure_cap
+        if extracted_draft and (not state.get("draft") or not state["draft"].get("items")):
+            try:
+                state["draft"] = parse_model_layout(json.dumps(extracted_draft), width or 1024, height or 1024)
+            except Exception:
+                pass
 
     if not state.get("caption") and isinstance(state.get("summary"), dict):
         summary_cap = str(state["summary"].get("caption") or "").strip()
@@ -353,6 +530,34 @@ def normalize_modes(
     return selected
 
 
+def _shrunk_part(part: dict[str, Any]) -> dict[str, Any]:
+    """送模型的图统一缩到长边 1280；失败就退回原图。"""
+    url = (part.get("image_url") or {}).get("url") if isinstance(part, dict) else None
+    if not isinstance(url, str):
+        return part
+    try:
+        small = shrink_data_url(url)
+    except Exception:
+        return part
+    if not small or small == url:
+        return part
+    return {"type": "image_url", "image_url": {"url": small}}
+
+
+def _gridded_part(part: dict[str, Any]) -> dict[str, Any]:
+    """把送模型的图换成叠了像素刻度的版本；任何异常都退回原图。"""
+    url = (part.get("image_url") or {}).get("url") if isinstance(part, dict) else None
+    if not isinstance(url, str):
+        return part
+    try:
+        gridded = grid_overlay_data_url(url)
+    except Exception:
+        return part
+    if not gridded or gridded == url:
+        return part
+    return {"type": "image_url", "image_url": {"url": gridded}}
+
+
 def _generate_state(*, mode: str, raw: bytes, mime: str,
                     extra_instruction: str, model: str,
                     call_model: Callable[..., str] | None,
@@ -372,6 +577,7 @@ def _generate_state(*, mode: str, raw: bytes, mime: str,
         part = {"type": "image_url", "image_url": {
             "url": "data:%s;base64,%s" % (mime, base64.b64encode(raw).decode("ascii"))
         }}
+    part = _shrunk_part(part)
     if call_model is None:
         call_model = _default_model_call
 
@@ -385,79 +591,130 @@ def _generate_state(*, mode: str, raw: bytes, mime: str,
         "source_height": src_h,
     })
 
-    def _invoke(instr: str, max_tok: int) -> str:
+    def _invoke(instr: str, max_tok: int, image_part: dict[str, Any] | None = None) -> tuple[str, str | None]:
+        _LAST_CALL_META.finish_reason = None
         try:
-            return call_model(
-                instruction=instr, image_part=part,
+            txt = call_model(
+                instruction=instr, image_part=image_part or part,
                 model=resolved_model, max_tokens=max_tok,
             )
+            return txt, getattr(_LAST_CALL_META, "finish_reason", None)
+        except AuthError as exc:
+            raise ValueError("反推鉴权失败 (401)：API Key 无效或未设置，请在节点「⚙ 设置」中配置有效密钥。") from exc
+        except ModelNotFoundError as exc:
+            raise ValueError("模型不存在 (404)：当前 Magpie / 网关未提供该模型，请在节点「⚙ 设置」中检查模型名。") from exc
+        except RateLimitError as exc:
+            raise ValueError("网关并发受限或额度耗尽 (429)：请稍后重试或检查账户余额。") from exc
+        except UpstreamTimeoutError as exc:
+            raise ValueError(
+                f"反推超时（{exc.message}）：Thinking 模型通常需要 20~45 秒，请在节点「⚙ 设置」中将请求超时调大至 120~180 秒后重试；也可以检查 Magpie 网关并先点「反推」单独生成再排队。"
+            ) from exc
         except StudioError as exc:
             raise ValueError(
-                "反推超时或上游暂时不可用：请检查 Magpie / Base URL / 模型名，"
+                "反推上游服务暂时不可用：请检查 Magpie / Base URL / 模型名，"
                 "在节点「⚙ 设置」中调整模型或超时设置后重试；也可以先点「反推」单独生成结果再排队。"
             ) from exc
         except (TimeoutError, OSError) as exc:
             raise ValueError("反推网络超时；请检查 Magpie 是否可用后重试。") from exc
 
-    need_caption_call = ("caption" in active_modes) and not (
-        isinstance(state.get("caption_text"), str) and state["caption_text"].strip()
-    )
+    has_existing_cap = isinstance(state.get("caption_text"), str) and bool(state["caption_text"].strip())
     need_layout_call = bool({"layout", "hybrid"} & set(active_modes)) and not _has_draft(state)
+    # 布局反推默认先跑一次纯散文反推作为 caption_hint 再合并进 layout
+    need_caption_call = (
+        ("caption" in active_modes) or (need_layout_call and call_model is _default_model_call)
+    ) and not has_existing_cap
     need_danbooru_call = ("danbooru" in active_modes) and not (
         isinstance(state.get("danbooru_prompt"), str) and state["danbooru_prompt"].strip()
     )
 
+    warnings: list[str] = []
+
     if need_caption_call:
-        base_fmt = "tags" if settings.rule_preset == "tags" else "prose"
-        cap_instr = SAFETY_PREFIX + _INSTRUCTIONS[base_fmt] + build_rule_suffix(settings, extra_clean)
-        raw_cap = _invoke(cap_instr, 500)
+        base_fmt = "prose"
+        cap_instr = (
+            SAFETY_PREFIX
+            + _INSTRUCTIONS[base_fmt]
+            + build_rule_suffix(settings, extra_clean, mode="caption")
+        )
+        raw_cap, cap_finish = _invoke(cap_instr, budget.OUTPUT_BUDGET)
+        if _is_truncated(raw_cap, cap_finish):
+            raw_cap, cap_finish = _invoke(cap_instr, budget.ESCALATED_BUDGET)
         caption = _clean(str(raw_cap or ""), base_fmt)
         if not caption:
-            raise ValueError("The model returned an empty caption.")
-        state["caption"] = caption
-        state["caption_text"] = caption
+            if cap_finish == "content_filter":
+                if not need_layout_call:
+                    raise ValueError("散文反推触发上游安全策略拦截 (content_filter)，未生成内容。请更换视觉模型后重试。")
+                warnings.append("⚠️ 散文反推被上游安全策略拦截，已改用布局摘要作为描述。")
+            elif need_layout_call:
+                # 布局还要跑：散文空返回不该打断整次反推，最后用布局摘要兜底
+                warnings.append("⚠️ 散文反推这次没返回文字（模型空回），已改用布局摘要作为描述。")
+            else:
+                raise ValueError("散文反推返回为空：模型这次没吐文字，重试或换一个视觉模型。")
+        if caption:
+            state["caption"] = caption
+            state["caption_text"] = caption
 
     if need_layout_call:
         layout_target_mode = "hybrid" if "hybrid" in active_modes else "layout"
-        lay_extra = build_rule_suffix(settings, extra_clean, for_json_layout=True).strip()
+        lay_extra = build_rule_suffix(
+            settings, extra_clean, mode="layout", for_json_layout=True
+        ).strip()
+        ref_cap = str(state.get("caption") or state.get("caption_text") or "").strip()
         lay_instr = SAFETY_PREFIX + layout_instruction(
-            layout_target_mode, width, height, lay_extra, max_regions=settings.max_regions
+            layout_target_mode,
+            width,
+            height,
+            lay_extra,
+            max_regions=settings.max_regions,
+            model=resolved_model,
+            caption_hint=ref_cap,
         )
-        raw_lay = _invoke(lay_instr, 3000)
-        try:
-            draft = parse_model_layout(
-                str(raw_lay or ""), width, height, max_items=settings.max_regions
-            )
-        except ValueError as exc:
-            raise ValueError(
-                f"布局反推失败（模型输出不是完整 JSON）：{exc}。请重试或换模型。"
-            ) from exc
+        raw_lay, lay_finish = _invoke(lay_instr, budget.OUTPUT_BUDGET, _gridded_part(part))
+        draft, lay_warning = resolve_layout_output(
+            raw_text=str(raw_lay or ""),
+            finish_reason=lay_finish,
+            width=width,
+            height=height,
+            max_regions=settings.max_regions,
+            active_modes=active_modes,
+            existing_caption=ref_cap,
+        )
+        if lay_warning:
+            warnings.append(lay_warning)
 
-        full_caption = str(state.get("caption_text") or draft["summary"]["caption"]).strip()
-        short_caption = (
-            str(draft["summary"]["caption"]).strip()
-            if layout_target_mode == "layout"
-            else _concise_summary(draft["summary"]["caption"])
-        )
+        draft_caption = str(draft["summary"]["caption"]).strip()
+        full_caption = str(state.get("caption_text") or draft_caption).strip()
         layout_draft = copy.deepcopy(draft)
-        layout_draft["summary"]["caption"] = short_caption or full_caption
+        layout_draft["summary"]["caption"] = draft_caption or full_caption
         hybrid_draft = copy.deepcopy(draft)
-        hybrid_draft["summary"]["caption"] = full_caption or short_caption
+        hybrid_draft["summary"]["caption"] = full_caption or draft_caption
 
         state["layout_draft"] = layout_draft
         state["hybrid_draft"] = hybrid_draft
         state["draft"] = hybrid_draft if mode in ("hybrid", "danbooru") else (layout_draft if mode == "layout" else hybrid_draft)
+        state["compiled_layout_prompt"] = compile_layout_prompt(state["draft"])
         if not state.get("caption"):
             state["caption"] = str(state["draft"]["summary"]["caption"])
 
     if need_danbooru_call:
-        dan_instr = SAFETY_PREFIX + _INSTRUCTIONS["danbooru"] + build_rule_suffix(settings, extra_clean)
-        raw_dan = _invoke(dan_instr, 600)
+        dan_instr = (
+            SAFETY_PREFIX
+            + _INSTRUCTIONS["danbooru"]
+            + build_rule_suffix(settings, extra_clean, mode="danbooru")
+        )
+        raw_dan, dan_finish = _invoke(dan_instr, budget.TAG_BUDGET)
         dan_text = _clean(str(raw_dan or ""), "danbooru")
+        if not dan_text and dan_finish == "content_filter":
+            if state.get("caption") or state.get("draft"):
+                warnings.append("⚠️ Danbooru 标签反推触发上游安全策略拦截 (content_filter)，暂未生成标签。")
+            else:
+                raise ValueError("Danbooru 反推触发上游安全策略拦截 (content_filter)，未返回标签。可切换视觉模型重试。")
         state["danbooru_prompt"] = dan_text
         state["danbooru_text"] = dan_text
         state["tags"] = dan_text
 
+    if warnings:
+        state["warning"] = " ".join(warnings)
     return state
 
 
@@ -474,18 +731,35 @@ def build_prompt_outputs(
     has_draft = isinstance(draft, dict) and isinstance(draft.get("items"), list) and len(draft["items"]) > 0
 
     caption_text = str(state.get("caption_text") or state.get("caption") or "").strip()
-    if not caption_text and has_draft:
+    if caption_text and (any(k in caption_text for k in ('"items"', '"layout"', '"regions"', '"objects"')) or caption_text.startswith("{")):
+        pure_cap, _ = _extract_clean_caption_and_draft(caption_text)
+        if pure_cap:
+            caption_text = pure_cap
+        elif has_draft:
+            caption_text = str(draft.get("summary", {}).get("caption") or "").strip()
+    elif not caption_text and has_draft:
         caption_text = str(draft.get("summary", {}).get("caption") or "").strip()
 
     if mode == "caption" and not caption_text:
         raise ValueError("payload 里没有 caption 文本；请重新反推或在编辑弹窗里填写。")
 
+    danbooru_prompt = str(
+        state.get("danbooru_prompt")
+        or state.get("danbooru_text")
+        or state.get("tags")
+        or ""
+    ).strip()
+
     if not has_draft:
         if mode in ("layout", "hybrid") and not synthesize_missing_draft:
             raise ValueError("payload 里没有布局草稿；请切到布局模式重新反推。")
         fallback = _fallback_draft(caption_text or "A composed image.", width, height)
-        fallback_json = json.dumps(fallback, ensure_ascii=False, separators=(",", ":"))
-        return (caption_text or fallback["summary"]["caption"], fallback_json, fallback_json)
+        fallback_json = compile_layout_prompt(fallback)
+        return (
+            caption_text or fallback["summary"]["caption"],
+            fallback_json,
+            danbooru_prompt or fallback_json,
+        )
 
     # Synchronize items and dimensions from the active draft so manual edits in
     # the workbench/node always propagate to both layout_prompt and hybrid_prompt.
@@ -499,8 +773,8 @@ def build_prompt_outputs(
     layout_draft["height"] = height
     layout_draft["items"] = copy.deepcopy(active_items)
     if not isinstance(layout_draft.get("summary"), dict):
-        layout_draft["summary"] = {"caption": _concise_summary(active_summary), "canvas": "single"}
-    elif mode == "layout":
+        layout_draft["summary"] = {"caption": active_summary, "canvas": "single"}
+    elif mode == "layout" or not layout_draft["summary"].get("caption"):
         layout_draft["summary"]["caption"] = active_summary
 
     hybrid_draft = copy.deepcopy(state.get("hybrid_draft") if isinstance(state.get("hybrid_draft"), dict) else draft)
@@ -514,14 +788,8 @@ def build_prompt_outputs(
             active_summary if mode == "hybrid" else (caption_text or active_summary)
         )
 
-    layout_prompt = json.dumps(layout_draft, ensure_ascii=False, separators=(",", ":"))
-    hybrid_prompt = json.dumps(hybrid_draft, ensure_ascii=False, separators=(",", ":"))
-    danbooru_prompt = str(
-        state.get("danbooru_prompt")
-        or state.get("danbooru_text")
-        or state.get("tags")
-        or ""
-    ).strip()
+    layout_prompt = compile_layout_prompt(layout_draft)
+    hybrid_prompt = compile_layout_prompt(hybrid_draft)
     if not danbooru_prompt:
         tags_list = []
         if has_draft:
@@ -572,8 +840,20 @@ class AIPromptStudioCaptionNode:
                 ),
                 "seed": (
                     "INT",
-                    {"default": 0, "min": 0, "max": 0xFFFFFFFF,
-                     "tooltip": "数值变化时强制重新执行（反推本身不受影响）"},
+                    {"default": 0, "min": 0, "max": 0xffffffffffffffff,
+                     "tooltip": "数值变化时强制重新执行；未连接参考图时作为开盲盒随机种子"},
+                ),
+                "theme": (
+                    ["", "random"] + [k for k in THEMES.keys() if k != "random"],
+                    {"default": "random", "tooltip": "题材方向（未连接图片或自动构思盲盒时遵循）"},
+                ),
+                "style": (
+                    ["", "auto"] + [k for k in STYLES.keys() if k != "auto"],
+                    {"default": "auto", "tooltip": "画面视觉风格：自动 / 动漫 / 写实 / 电影感 / 插画 / 3D"},
+                ),
+                "aspect": (
+                    ["", "auto"] + list(ASPECTS.keys()),
+                    {"default": "auto", "tooltip": "画幅比例：自动 / 竖版 / 横版 / 方形"},
                 ),
                 "enable_caption": (
                     "BOOLEAN",
@@ -597,6 +877,11 @@ class AIPromptStudioCaptionNode:
     RETURN_TYPES = ("STRING", "STRING", "STRING", "INT", "INT", "STRING")
     RETURN_NAMES = ("caption_prompt", "layout_prompt", "danbooru_prompt", "width", "height", "negative_prompt")
     FUNCTION = "execute"
+
+    @classmethod
+    def VALIDATE_INPUTS(cls, **kwargs: Any) -> bool | str:
+        """Allow backwards-compatible and flexible input values."""
+        return True
     CATEGORY = "AI Prompt Studio"
     DESCRIPTION = (
         "AI 提示词工作台（图生图反推 + 文生图自主灵感二合一）："
@@ -689,8 +974,8 @@ class AIPromptStudioCaptionNode:
                     style=clean_widget_str(style) or state.get("style") or "auto",
                     aspect=clean_widget_str(aspect) or state.get("aspect") or "auto",
                     max_regions=settings.max_regions,
-                    rule_suffix=build_rule_suffix(settings, extra_clean),
-                    layout_rule_suffix=build_rule_suffix(settings, extra_clean, for_json_layout=True),
+                    rule_suffix=build_rule_suffix(settings, extra_clean, mode="caption"),
+                    layout_rule_suffix=build_rule_suffix(settings, extra_clean, mode="layout", for_json_layout=True),
                 )
                 state["seed"] = seed
                 if auto_imagine_enabled:
@@ -761,7 +1046,13 @@ class AIPromptStudioCaptionNode:
             except Exception:
                 st = {}
             hybrid_draft = st.get("hybrid_draft") or st.get("draft")
-            primary = json.dumps(hybrid_draft, ensure_ascii=False, separators=(",", ":")) if hybrid_draft else layout_prompt
+            if isinstance(hybrid_draft, dict):
+                hybrid_draft = copy.deepcopy(hybrid_draft)
+                hybrid_draft["width"] = width
+                hybrid_draft["height"] = height
+                primary = compile_layout_prompt(hybrid_draft)
+            else:
+                primary = layout_prompt
         else:
             primary = danbooru_prompt
         return (primary, width, height, new_payload)
@@ -778,7 +1069,13 @@ class AIPromptStudioCaptionNode:
             except Exception:
                 st = {}
             hyb = st.get("hybrid_draft") or st.get("draft")
-            third = json.dumps(hyb, ensure_ascii=False, separators=(",", ":")) if hyb else danbooru_prompt
+            if isinstance(hyb, dict):
+                hyb = copy.deepcopy(hyb)
+                hyb["width"] = width
+                hyb["height"] = height
+                third = compile_layout_prompt(hyb)
+            else:
+                third = layout_prompt
         else:
             third = danbooru_prompt
         outputs = (caption_prompt, layout_prompt, third, width, height, neg_prompt)
@@ -933,6 +1230,11 @@ class AIPromptStudioImagineNode:
     RETURN_TYPES = ("STRING", "STRING", "STRING", "INT", "INT", "STRING")
     RETURN_NAMES = ("caption_prompt", "layout_prompt", "danbooru_prompt", "width", "height", "negative_prompt")
     FUNCTION = "execute"
+
+    @classmethod
+    def VALIDATE_INPUTS(cls, **kwargs: Any) -> bool | str:
+        """Allow backwards-compatible and flexible input values."""
+        return True
     CATEGORY = "AI Prompt Studio"
     DESCRIPTION = (
         "AI 灵感画面生成（全自动链路）：输入一句话想法，或完全留空让模型自己想点子！"
@@ -954,16 +1256,92 @@ class AIPromptStudioImagineNode:
         payload = kwargs.get("payload", "{}")
         return f"{seed}:{idea}:{payload}"
 
+
+def get_preset_names() -> list[str]:
+    try:
+        store = PresetStore()
+        presets = store.list()
+        store.close()
+        names = [p["name"] for p in presets if p.get("name")]
+        return names if names else ["双人对视 · 电影宽幅 (2.33:1)"]
+    except Exception:
+        return ["双人对视 · 电影宽幅 (2.33:1)"]
+
+
+class AIPromptStudioPresetNode:
+    """Composition & Prompt Preset Loader.
+
+    Loads a saved or built-in composition preset (layout, prompt, resolution)
+    directly into workflow pipelines.
+    """
+
+    @classmethod
+    def INPUT_TYPES(cls) -> dict[str, Any]:
+        preset_names = get_preset_names()
+        return {
+            "required": {
+                "preset_name": (
+                    preset_names,
+                    {"default": preset_names[0] if preset_names else "", "tooltip": "选择构图与提示词预设"},
+                ),
+            },
+            "optional": {
+                "extra_prompt": (
+                    "STRING",
+                    {"default": "", "multiline": True, "tooltip": "可选：追加到提示词末尾的补充词"},
+                ),
+            },
+        }
+
+    RETURN_TYPES = ("STRING", "STRING", "STRING", "STRING", "INT", "INT")
+    RETURN_NAMES = ("caption_prompt", "layout_prompt", "danbooru_prompt", "layout_json", "width", "height")
+    FUNCTION = "execute"
+    CATEGORY = "AI Prompt Studio"
+    DESCRIPTION = "一键加载已保存的构图与提示词预设，输出散文、空间布局、Danbooru 标签及推荐画布尺寸。"
+
+    def execute(self, preset_name: str, extra_prompt: str = ""):
+        store = PresetStore()
+        found = None
+        for p in store.list():
+            if p.get("name") == preset_name or p.get("id") == preset_name:
+                found = p
+                break
+        store.close()
+
+        if not found:
+            found = BUILTIN_PRESETS[0] if BUILTIN_PRESETS else {}
+
+        prompts = found.get("prompts") or {}
+        draft = found.get("draft") or {}
+        width = int(found.get("width") or 1024)
+        height = int(found.get("height") or 1024)
+
+        caption = str(prompts.get("caption") or "")
+        layout_desc = str(prompts.get("layout") or "")
+        danbooru = str(prompts.get("danbooru") or "")
+        layout_json = json.dumps(draft, ensure_ascii=False)
+
+        extra = str(extra_prompt or "").strip()
+        if extra:
+            caption = f"{caption}, {extra}" if caption else extra
+            danbooru = f"{danbooru}, {extra}" if danbooru else extra
+
+        return (caption, layout_desc, danbooru, layout_json, width, height)
+
+
 def register(mappings: dict, display_names: dict) -> None:
     mappings["AIPromptStudioCaption"] = AIPromptStudioCaptionNode
     display_names["AIPromptStudioCaption"] = "AI 提示词工作台 (反推与自动灵感)"
     # 保留别名兼容历史工作流，指向合并后的全能主节点
     mappings["AIPromptStudioImagine"] = AIPromptStudioCaptionNode
     display_names["AIPromptStudioImagine"] = "AI 灵感画面提示词 (已合并至主节点)"
+    mappings["AIPromptStudioPreset"] = AIPromptStudioPresetNode
+    display_names["AIPromptStudioPreset"] = "AI 构图提示词预设加载器"
 
 
 __all__ = [
     "AIPromptStudioCaptionNode",
+    "AIPromptStudioPresetNode",
     "register",
     "image_dimensions",
     "MODES",

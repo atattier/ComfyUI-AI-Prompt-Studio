@@ -6,7 +6,15 @@ import uuid
 from pathlib import Path
 
 from prompt_studio import wincred
-from prompt_studio.config import DEFAULT_BASE_URL, DEFAULT_MODEL, Settings, load_settings, normalize_base_url
+from prompt_studio.config import (
+    DEFAULT_BASE_URL,
+    DEFAULT_MODE_RULES,
+    DEFAULT_MODEL,
+    Settings,
+    build_rule_suffix,
+    load_settings,
+    normalize_base_url,
+)
 from prompt_studio.credentials import save_credentials
 from prompt_studio.errors import ConfigError
 
@@ -39,6 +47,27 @@ class EndpointJoinTests(unittest.TestCase):
             "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
         )
 
+    def test_completes_gemini_host_only(self):
+        settings = make_settings(base_url="https://generativelanguage.googleapis.com")
+        self.assertEqual(
+            settings.api_url("/chat/completions"),
+            "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+        )
+
+    def test_completes_gemini_v1beta_without_openai(self):
+        settings = make_settings(base_url="https://generativelanguage.googleapis.com/v1beta/")
+        self.assertEqual(
+            settings.api_url("/chat/completions"),
+            "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+        )
+
+    def test_custom_endpoint_with_own_path(self):
+        settings = make_settings(base_url="https://gateway.example.com/openai/v1/")
+        self.assertEqual(
+            settings.api_url("/chat/completions"),
+            "https://gateway.example.com/openai/v1/chat/completions",
+        )
+
 
 class ValidationTests(unittest.TestCase):
     def test_rejects_non_http_scheme(self):
@@ -66,6 +95,49 @@ class PublicViewTests(unittest.TestCase):
         self.assertNotIn(KEY, str(public))
         self.assertFalse(public.get("api_key"))
         self.assertIn("...", public["api_key_masked"])
+        self.assertIn("caption_rules", public)
+        self.assertIn("layout_rules", public)
+        self.assertIn("danbooru_rules", public)
+        self.assertEqual(set(public["default_mode_rules"].keys()), {"caption", "layout", "danbooru"})
+
+
+class ModeRuleIsolationTests(unittest.TestCase):
+    def test_per_mode_rules_are_isolated_and_fall_back_to_defaults(self):
+        settings = make_settings(
+            caption_rules="CAP_ONLY_RULE",
+            layout_rules="LAY_ONLY_RULE",
+            danbooru_rules="DAN_ONLY_RULE",
+            user_custom_rules="GLOBAL_SHARED_RULE",
+            output_language="en",
+        )
+        cap_suffix = build_rule_suffix(settings, "EXTRA_NODE_NOTE", mode="caption")
+        lay_suffix = build_rule_suffix(settings, "EXTRA_NODE_NOTE", mode="layout", for_json_layout=True)
+        dan_suffix = build_rule_suffix(settings, "EXTRA_NODE_NOTE", mode="danbooru")
+
+        self.assertIn("CAP_ONLY_RULE", cap_suffix)
+        self.assertNotIn("LAY_ONLY_RULE", cap_suffix)
+        self.assertNotIn("DAN_ONLY_RULE", cap_suffix)
+        self.assertIn("GLOBAL_SHARED_RULE", cap_suffix)
+        self.assertIn("EXTRA_NODE_NOTE", cap_suffix)
+
+        self.assertIn("LAY_ONLY_RULE", lay_suffix)
+        self.assertNotIn("CAP_ONLY_RULE", lay_suffix)
+        self.assertNotIn("DAN_ONLY_RULE", lay_suffix)
+        self.assertIn("GLOBAL_SHARED_RULE", lay_suffix)
+
+        self.assertIn("DAN_ONLY_RULE", dan_suffix)
+        self.assertNotIn("CAP_ONLY_RULE", dan_suffix)
+        self.assertNotIn("LAY_ONLY_RULE", dan_suffix)
+        self.assertIn("GLOBAL_SHARED_RULE", dan_suffix)
+
+        # Blank per-mode fields fall back to objective DEFAULT_MODE_RULES for that mode only
+        defaults_settings = make_settings(output_language="en")
+        self.assertIn(DEFAULT_MODE_RULES["caption"], build_rule_suffix(defaults_settings, "", mode="caption"))
+        self.assertIn(
+            DEFAULT_MODE_RULES["layout"],
+            build_rule_suffix(defaults_settings, "", mode="layout", for_json_layout=True),
+        )
+        self.assertIn(DEFAULT_MODE_RULES["danbooru"], build_rule_suffix(defaults_settings, "", mode="danbooru"))
 
 
 class LoadOrderTests(unittest.TestCase):

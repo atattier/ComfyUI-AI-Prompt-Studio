@@ -50,7 +50,18 @@ def available() -> bool:
 
 
 def _advapi():
-    return ctypes.windll.advapi32
+    lib = ctypes.windll.advapi32
+    # 不声明签名，ctypes 会按 int 猜测指针参数，64 位下 CredReadW 常常静默失败，
+    # 表现就是「能存进去、读不出来 → 重启后提示没配 Key」。
+    lib.CredWriteW.argtypes = [_PCREDENTIALW, wintypes.DWORD]
+    lib.CredWriteW.restype = wintypes.BOOL
+    lib.CredReadW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, ctypes.POINTER(_PCREDENTIALW)]
+    lib.CredReadW.restype = wintypes.BOOL
+    lib.CredDeleteW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD]
+    lib.CredDeleteW.restype = wintypes.BOOL
+    lib.CredFree.argtypes = [ctypes.c_void_p]
+    lib.CredFree.restype = None
+    return lib
 
 
 def _target(target: str | None) -> str:

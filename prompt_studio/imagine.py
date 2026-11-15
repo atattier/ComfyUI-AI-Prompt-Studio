@@ -18,8 +18,15 @@ import json
 import re
 from typing import Any, Callable, Sequence
 
+from . import budget
 from .caption import _clean, _INSTRUCTIONS
-from .layout import match_canvas_size, parse_model_layout
+from .layout import (
+    compile_layout_prompt,
+    match_canvas_size,
+    parse_any_layout,
+    parse_model_layout,
+    recover_partial_layout,
+)
 
 STYLES: dict[str, str] = {
     "auto": "",
@@ -150,7 +157,7 @@ def brainstorm_ideas(
     th = theme if theme in THEMES else "random"
     st = style if style in STYLES else "auto"
     instr = brainstorm_instruction(theme=th, style=st, count=count, rule_suffix=rule_suffix)
-    raw = call(instr, 300 * count + 200, 0.95)
+    raw = call(instr, budget.OUTPUT_BUDGET, 0.95)
     return parse_brainstorm(raw, count=count, fallback_theme=th)
 
 
@@ -257,7 +264,7 @@ def imagine_candidates(
     style = style if style in STYLES else "auto"
     aspect = str(aspect or "auto").strip().lower()
     instr = candidates_instruction(idea_clean, count=count, style=style, aspect=aspect, rule_suffix=rule_suffix)
-    raw = call(instr, 600 * count + 400, 0.9)
+    raw = call(instr, budget.OUTPUT_BUDGET, 0.9)
     return parse_candidates(raw, count=count, aspect=aspect)
 
 
@@ -269,15 +276,17 @@ def layout_from_prompt_instruction(prompt: str, width: int, height: int, *, max_
     limit = max(1, min(16, int(max_regions or 8)))
     text = (
         "You are a visual layout planner for the MOSS-Image layout model.\n"
-        f"Plan the composition of this imagined image on a {width}x{height} canvas:\n"
+        f"Plan the composition of this image prompt (which may be English prose, Chinese description, or MOSS <|concept|> blocks) on a {width}x{height} canvas:\n"
         f"\"{prompt}\"\n\n"
-        f"Decompose it into AT MOST {limit} regions: the overall environment, main character(s), "
-        "distinctive features (halos, wings, weapons, props) as separate tight boxes, and every piece of "
-        "visible text as its own 'text' region with the exact words in the 'text' field. "
+        f"Decompose it into AT MOST {limit} regions: the overall environment if prominent, main character(s), "
+        "distinctive features (halos, wings, weapons, accessories, props) as separate tight boxes, and every piece of "
+        "visible text as its own 'text' region with the exact quoted words in the 'text' field. "
         "Place each box where the description puts it (respect viewer's left / right / foreground / background). "
-        "Boxes are [x1, y1, x2, y2] integers in 0-1000 normalized space, (0,0) top-left.\n\n"
+        "Boxes are [x1, y1, x2, y2] integers in 0-1000 normalized space, (0,0) top-left. "
+        "Translate Chinese/conceptual elements into clear objective visual English inside item captions while setting short Chinese names in 'name'.\n\n"
         "Output STRICT JSON ONLY (no markdown fence, no explanation):\n"
-        '{"summary":{"caption":"the full image prompt"},"items":[{"name":"中文实体名","label":"object|character|text",'
+        '{"summary":{"caption":"the full English image prompt","canvas":"single","meta":["style_tag"],"palette":["color1","color2"]},'
+        '"items":[{"name":"中文实体名","label":"object|character|text",'
         '"parent":"父级实体名或空","bbox":[x1,y1,x2,y2],"caption":"concise English visual description","text":"visible text if text label"}]}'
     )
     if rule_suffix.strip():
@@ -297,6 +306,222 @@ def danbooru_from_prompt_instruction(prompt: str, rule_suffix: str = "") -> str:
     return text
 
 
+def _clean_caption_preserve_quotes(raw: str) -> str:
+    """Clean outer markdown fences or JSON wrappers from LLM prose without stripping legitimate closing quotes."""
+    text = str(raw or "").strip()
+    if not text:
+        return ""
+    fence = re.match(r"^```(?:[a-zA-Z0-9_-]+)?\s*(.*?)\s*```$", text, flags=re.DOTALL)
+    if fence:
+        text = fence.group(1).strip()
+    if text.startswith("{"):
+        try:
+            obj = json.loads(text)
+            if isinstance(obj, dict):
+                summ = obj.get("summary")
+                if isinstance(summ, dict) and isinstance(summ.get("caption"), str):
+                    text = summ["caption"].strip()
+                else:
+                    for key in ("caption", "prompt", "text", "description", "result"):
+                        val = obj.get(key)
+                        if isinstance(val, str) and val.strip():
+                            text = val.strip()
+                            break
+        except (ValueError, json.JSONDecodeError):
+            prefix_re = (
+                r'^\s*\{\s*"(?:summary|caption|prompt|result)"\s*:\s*'
+                r'\{\s*"(?:caption|text|prompt)"\s*:\s*["\']'
+            )
+            flat_re = r'^\s*\{\s*"(?:summary|caption|prompt|result|description)"\s*:\s*["\']'
+            stripped = re.sub(prefix_re, "", text, flags=re.IGNORECASE)
+            had_wrap = stripped != text
+            if not had_wrap:
+                stripped = re.sub(flat_re, "", text, flags=re.IGNORECASE)
+                had_wrap = stripped != text
+            if had_wrap:
+                stripped = re.sub(r'["\']\s*\}*\s*$', "", stripped)
+                text = stripped
+    text = re.sub(r"[ \t]+", " ", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
+def detect_prompt_source_type(text: str, explicit_type: str = "auto") -> str:
+    """Classify a finished prompt as 'layout', 'danbooru', or 'caption'."""
+    exp = str(explicit_type or "auto").strip().lower()
+    if exp in ("caption", "layout", "danbooru"):
+        return exp
+
+    raw = str(text or "").strip()
+    if not raw:
+        return "caption"
+
+    unwrapped = raw
+    fence = re.match(r"^```(?:json)?\s*(.*?)\s*```$", unwrapped, flags=re.DOTALL | re.IGNORECASE)
+    if fence:
+        unwrapped = fence.group(1).strip()
+
+    if "{" in unwrapped and "}" in unwrapped:
+        try:
+            parsed = _extract_json(unwrapped)
+            if isinstance(parsed, dict):
+                items = parsed.get("items") if isinstance(parsed.get("items"), list) else parsed.get("objects")
+                if isinstance(items, list) and (
+                    len(items) > 0
+                    or bool(parsed.get("bbox_coord_space"))
+                    or bool(parsed.get("bbox_format"))
+                ):
+                    return "layout"
+        except (ValueError, json.JSONDecodeError):
+            pass
+
+    if re.search(r"<\|[^|\n]+\|>", unwrapped):
+        return "caption"
+
+    if re.search(r"[\u3400-\u9fff\uf900-\ufaff]", unwrapped):
+        return "caption"
+
+    flat = unwrapped.replace("\r", "").replace("\n", ",")
+    parts = [p.strip() for p in flat.split(",") if p.strip()]
+    if len(parts) >= 2:
+        underscore_parts = sum(1 for p in parts if "_" in p)
+        weight_syntax = bool(re.search(r"\([^)]+:\d+(?:\.\d+)?\)", unwrapped))
+        starts_danbooru = bool(
+            re.match(
+                r"^(?:masterpiece|best[_ ]quality|high[_ ]quality|1girl|1boy|2girls|2boys|multiple_girls|solo|scenery|no_humans)\b",
+                unwrapped,
+                flags=re.IGNORECASE,
+            )
+        )
+        has_sentence_period = bool(re.search(r"[a-zA-Z]{2,}[.!?](?:\s|$)", unwrapped))
+        avg_words = sum(len(p.split()) for p in parts) / len(parts)
+        max_words = max(len(p.split()) for p in parts)
+        if len(parts) == 2:
+            if underscore_parts >= 1 and avg_words <= 3.0 and not has_sentence_period:
+                return "danbooru"
+        else:
+            strong_signal = (underscore_parts >= max(2, len(parts) // 3)) or weight_syntax or starts_danbooru
+            if avg_words <= 4.0 and max_words <= 7 and (strong_signal or (not has_sentence_period and len(parts) >= 4)):
+                return "danbooru"
+
+    return "caption"
+
+
+def _describe_item_spatial(bbox: Sequence[int | float], width: int, height: int) -> str:
+    w = max(float(width or 1), 1.0)
+    h = max(float(height or 1), 1.0)
+    x1, y1, x2, y2 = [float(v) for v in bbox[:4]]
+    cx = (x1 + x2) / (2.0 * w)
+    cy = (y1 + y2) / (2.0 * h)
+    area_ratio = (max(0.0, x2 - x1) * max(0.0, y2 - y1)) / (w * h)
+    if area_ratio >= 0.72:
+        return "full-frame"
+    vert = "upper" if cy < 0.36 else ("lower" if cy > 0.64 else "")
+    horiz = "viewer's left" if cx < 0.38 else ("viewer's right" if cx > 0.62 else "center")
+    if vert and horiz != "center":
+        return f"{vert} {horiz}"
+    if vert:
+        return f"{vert} center"
+    return horiz
+
+
+def caption_from_layout_instruction(
+    draft: dict[str, Any],
+    width: int,
+    height: int,
+    *,
+    rule_suffix: str = "",
+) -> str:
+    summary = draft.get("summary") if isinstance(draft.get("summary"), dict) else {}
+    sum_cap = str(summary.get("caption") or "").strip()
+    meta = ", ".join(str(x) for x in (summary.get("meta") or []) if str(x).strip())
+    palette = ", ".join(str(x) for x in (summary.get("palette") or []) if str(x).strip())
+
+    lines: list[str] = []
+    for idx, it in enumerate(draft.get("items") or []):
+        if not isinstance(it, dict):
+            continue
+        pos = _describe_item_spatial(it.get("bbox") or [0, 0, width, height], width, height)
+        lbl = str(it.get("label") or "object")
+        name = str(it.get("name") or "").strip()
+        cap = str(it.get("caption") or "").strip()
+        text_val = str(it.get("text") or "").strip()
+        entry = f"{idx + 1}. [{lbl}]"
+        if name:
+            entry += f" ({name})"
+        entry += f" at {pos}: {cap}"
+        if text_val:
+            entry += f' [exact visible text: "{text_val}"]'
+        lines.append(entry)
+
+    regions_block = "\n".join(lines) or "(no individual items)"
+    extra_meta = []
+    if meta:
+        extra_meta.append(f"Meta/style hints: {meta}")
+    if palette:
+        extra_meta.append(f"Color palette: {palette}")
+    meta_block = ("\n" + "\n".join(extra_meta)) if extra_meta else ""
+
+    text = (
+        "You are an expert image-generation prompt writer following the MOSS-Image captioning standard.\n"
+        f"Synthesize one cohesive, rich, vivid natural-language paragraph (2-4 fluent sentences) from this finished {width}x{height} layout specification.\n\n"
+        f"Base summary caption:\n\"{sum_cap}\"{meta_block}\n\n"
+        f"Ordered regions (background to foreground):\n{regions_block}\n\n"
+        "Requirements:\n"
+        "- Preserve ALL subjects, garments, accessories, props, spatial placements (viewer's left/right), lighting, medium, and verbatim double-quoted text from the layout.\n"
+        "- Follow MOSS-Image flow: camera framing & subject appearance -> layered attire & materials -> pose/props/spatial grounding -> background & lighting atmosphere.\n"
+        "- Never output JSON, markdown code blocks, or coordinate numbers. Output ONLY the clean narrative prompt paragraph."
+    )
+    if rule_suffix.strip():
+        text += "\n\n" + rule_suffix.strip()
+    return text
+
+
+def danbooru_from_layout_instruction(
+    draft: dict[str, Any],
+    full_caption: str = "",
+    *,
+    rule_suffix: str = "",
+) -> str:
+    summary = draft.get("summary") if isinstance(draft.get("summary"), dict) else {}
+    sum_cap = str(full_caption or summary.get("caption") or "").strip()
+    regions = []
+    for it in draft.get("items") or []:
+        if not isinstance(it, dict):
+            continue
+        cap = str(it.get("caption") or "").strip()
+        txt = str(it.get("text") or "").strip()
+        part = cap
+        if txt:
+            part += f' (text: "{txt}")'
+        if part:
+            regions.append(part)
+    regions_text = "; ".join(regions)
+    text = (
+        "Convert this structured image layout specification into authentic image-generation Danbooru tags.\n"
+        f"Scene summary: \"{sum_cap}\"\n"
+        f"Key regions: {regions_text or '(none)'}\n\n"
+        "Rules: "
+        f"{_INSTRUCTIONS['danbooru']}"
+    )
+    if rule_suffix.strip():
+        text += "\n\n" + rule_suffix.strip()
+    return text
+
+
+def caption_from_danbooru_instruction(tags: str, *, rule_suffix: str = "") -> str:
+    text = (
+        "Expand and translate these Danbooru/booru image tags into a cohesive, vivid natural-language image prompt "
+        "(2-4 fluent sentences following the MOSS-Image standard: framing/medium & subject -> hairstyle/attire/accessories -> pose/props -> setting/lighting).\n"
+        f"Tags: \"{tags}\"\n\n"
+        "Preserve every important character trait, costume detail, fantasy feature, prop, camera angle, lighting cue, and medium implied by the tags. "
+        "Do NOT invent contradicting elements, and do NOT output JSON, markdown, or tag lists. Output ONLY the narrative paragraph."
+    )
+    if rule_suffix.strip():
+        text += "\n\n" + rule_suffix.strip()
+    return text
+
+
 def _concise(text: str) -> str:
     cleaned = " ".join(str(text or "").split())
     for sep in (". ", "。"):
@@ -304,6 +529,228 @@ def _concise(text: str) -> str:
         if 12 <= idx <= 200:
             return cleaned[: idx + 1]
     return cleaned[:200]
+
+
+def complete_from_finished_prompt(
+    call: ModelCall,
+    prompt: str,
+    *,
+    source_mode: str = "auto",
+    modes: Sequence[str] = ("caption",),
+    width: int = 1024,
+    height: int = 1024,
+    max_regions: int = 8,
+    rule_suffix: str = "",
+    danbooru_rule_suffix: str = "",
+    layout_rule_suffix: str = "",
+    force_size: bool = False,
+) -> dict[str, Any]:
+    """Import a finished prompt (layout JSON, natural caption, or Danbooru tags) and complete all requested output modes."""
+    raw = str(prompt or "").strip()
+    if not raw:
+        raise ValueError("请先填入成品提示词。")
+
+    detected = detect_prompt_source_type(raw, source_mode)
+    active = [m for m in modes if m in ("caption", "layout", "hybrid", "danbooru")] or ["caption"]
+    # Keep canonical deduplicated order as provided by caller
+    dedup_active: list[str] = []
+    for m in active:
+        if m not in dedup_active:
+            dedup_active.append(m)
+    primary = dedup_active[0]
+    want_layout = ("layout" in dedup_active) or ("hybrid" in dedup_active)
+
+    req_w = int(width or 1024)
+    req_h = int(height or 1024)
+    matched_w, matched_h = match_canvas_size(req_w, req_h)
+
+    state: dict[str, Any] = {
+        "source": "imported_prompt",
+        "detected_source": detected,
+        "mode": primary,
+        "modes": dedup_active,
+        "width": matched_w,
+        "height": matched_h,
+        "auto_imagine": False,
+    }
+
+    if detected == "layout":
+        draft, resolved_w, resolved_h = parse_any_layout(
+            raw,
+            width=matched_w,
+            height=matched_h,
+            max_items=max_regions,
+            force_size=force_size,
+        )
+        state["width"] = resolved_w
+        state["height"] = resolved_h
+        layout_draft = copy.deepcopy(draft)
+        hybrid_draft = copy.deepcopy(draft)
+        orig_summary = str(layout_draft.get("summary", {}).get("caption") or "").strip()
+
+        full_caption = orig_summary
+        if "caption" in dedup_active:
+            cap_raw = call(
+                caption_from_layout_instruction(
+                    draft,
+                    resolved_w,
+                    resolved_h,
+                    rule_suffix=rule_suffix,
+                ),
+                900,
+                0.35,
+            )
+            cleaned_cap = _clean_caption_preserve_quotes(str(cap_raw or ""))
+            if cleaned_cap:
+                full_caption = cleaned_cap
+            hybrid_draft["summary"]["caption"] = full_caption
+            state["caption"] = full_caption
+            state["caption_text"] = full_caption
+        else:
+            state["caption"] = orig_summary
+            if orig_summary:
+                state["caption_text"] = orig_summary
+
+        state["layout_draft"] = layout_draft
+        state["hybrid_draft"] = hybrid_draft
+        state["draft"] = layout_draft if primary == "layout" else hybrid_draft
+        state["compiled_layout_prompt"] = compile_layout_prompt(state["draft"])
+
+        if "danbooru" in dedup_active:
+            dan_raw = call(
+                danbooru_from_layout_instruction(
+                    draft,
+                    full_caption=full_caption,
+                    rule_suffix=danbooru_rule_suffix,
+                ),
+                budget.TAG_BUDGET,
+                0.3,
+            )
+            tags = _clean(str(dan_raw or ""), "danbooru")
+            if tags:
+                state["danbooru_prompt"] = tags
+                state["danbooru_text"] = tags
+                state["tags"] = tags
+        return state
+
+    if detected == "danbooru":
+        tags_clean = raw
+        fence = re.match(r"^```(?:[a-zA-Z0-9_-]+)?\s*(.*?)\s*```$", tags_clean, flags=re.DOTALL)
+        if fence:
+            tags_clean = fence.group(1).strip()
+        tags_clean = ", ".join(
+            part.strip()
+            for part in tags_clean.replace("\r", "").replace("\n", ",").split(",")
+            if part.strip()
+        ) or raw
+        state["danbooru_prompt"] = tags_clean
+        state["danbooru_text"] = tags_clean
+        state["tags"] = tags_clean
+
+        prose = ""
+        if "caption" in dedup_active:
+            cap_raw = call(
+                caption_from_danbooru_instruction(tags_clean, rule_suffix=rule_suffix),
+                900,
+                0.35,
+            )
+            prose = _clean_caption_preserve_quotes(str(cap_raw or ""))
+            if prose:
+                state["caption"] = prose
+                state["caption_text"] = prose
+
+        if want_layout:
+            source_for_layout = prose or tags_clean
+            lay_raw = call(
+                layout_from_prompt_instruction(
+                    source_for_layout,
+                    matched_w,
+                    matched_h,
+                    max_regions=max_regions,
+                    rule_suffix=layout_rule_suffix,
+                ),
+                budget.OUTPUT_BUDGET,
+                0.35,
+            )
+            try:
+                draft = parse_model_layout(str(lay_raw or ""), matched_w, matched_h, max_items=max_regions)
+            except ValueError:
+                salvaged = recover_partial_layout(
+                    str(lay_raw or ""),
+                    matched_w,
+                    matched_h,
+                    max_items=max_regions,
+                    fallback_caption=source_for_layout,
+                )
+                if salvaged is None:
+                    raise
+                draft = salvaged
+            layout_draft = copy.deepcopy(draft)
+            hybrid_draft = copy.deepcopy(draft)
+            if prose:
+                hybrid_draft["summary"]["caption"] = prose
+            state["layout_draft"] = layout_draft
+            state["hybrid_draft"] = hybrid_draft
+            state["draft"] = layout_draft if primary == "layout" else hybrid_draft
+            state["compiled_layout_prompt"] = compile_layout_prompt(state["draft"])
+            if not state.get("caption"):
+                state["caption"] = str(draft["summary"]["caption"])
+        return state
+
+    # detected == "caption" (English prose, Chinese description, or MOSS <|...|> blocks)
+    prose_clean = raw
+    fence = re.match(r"^```(?:[a-zA-Z0-9_-]+)?\s*(.*?)\s*```$", prose_clean, flags=re.DOTALL)
+    if fence:
+        prose_clean = fence.group(1).strip()
+    state["caption"] = prose_clean
+    state["caption_text"] = prose_clean
+
+    if want_layout:
+        lay_raw = call(
+            layout_from_prompt_instruction(
+                prose_clean,
+                matched_w,
+                matched_h,
+                max_regions=max_regions,
+                rule_suffix=layout_rule_suffix,
+            ),
+            budget.OUTPUT_BUDGET,
+            0.35,
+        )
+        try:
+            draft = parse_model_layout(str(lay_raw or ""), matched_w, matched_h, max_items=max_regions)
+        except ValueError:
+            salvaged = recover_partial_layout(
+                str(lay_raw or ""),
+                matched_w,
+                matched_h,
+                max_items=max_regions,
+                fallback_caption=prose_clean,
+            )
+            if salvaged is None:
+                raise
+            draft = salvaged
+        layout_draft = copy.deepcopy(draft)
+        hybrid_draft = copy.deepcopy(draft)
+        hybrid_draft["summary"]["caption"] = prose_clean
+        state["layout_draft"] = layout_draft
+        state["hybrid_draft"] = hybrid_draft
+        state["draft"] = layout_draft if primary == "layout" else hybrid_draft
+        state["compiled_layout_prompt"] = compile_layout_prompt(state["draft"])
+
+    if "danbooru" in dedup_active:
+        dan_raw = call(
+            danbooru_from_prompt_instruction(prose_clean, danbooru_rule_suffix or rule_suffix),
+            budget.TAG_BUDGET,
+            0.3,
+        )
+        tags = _clean(str(dan_raw or ""), "danbooru")
+        if tags:
+            state["danbooru_prompt"] = tags
+            state["danbooru_text"] = tags
+            state["tags"] = tags
+
+    return state
 
 
 def expand_candidate(
@@ -338,7 +785,7 @@ def expand_candidate(
     if "layout" in active:
         raw = call(
             layout_from_prompt_instruction(prose, width, height, max_regions=max_regions, rule_suffix=layout_rule_suffix),
-            3000,
+            budget.OUTPUT_BUDGET,
             0.4,
         )
         draft = parse_model_layout(str(raw or ""), width, height, max_items=max_regions)
@@ -351,7 +798,7 @@ def expand_candidate(
         state["draft"] = layout_draft if primary == "layout" else hybrid_draft
 
     if "danbooru" in active:
-        raw = call(danbooru_from_prompt_instruction(prose, rule_suffix), 600, 0.3)
+        raw = call(danbooru_from_prompt_instruction(prose, rule_suffix), budget.TAG_BUDGET, 0.3)
         tags = _clean(str(raw or ""), "danbooru")
         if tags:
             state["danbooru_prompt"] = tags
@@ -431,4 +878,6 @@ __all__ = [
     "parse_candidates",
     "expand_candidate",
     "auto_imagine_pipeline",
+    "detect_prompt_source_type",
+    "complete_from_finished_prompt",
 ]

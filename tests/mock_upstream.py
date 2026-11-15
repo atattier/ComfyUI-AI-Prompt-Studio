@@ -36,6 +36,7 @@ MODELS = [
     {"id": "editor-model", "modalities": {"input": ["text", "image"], "output": ["text"]}},
     {"id": "editor-noop", "modalities": {"input": ["text"], "output": ["text"]}},
     {"id": "editor-bad-json", "modalities": {"input": ["text"], "output": ["text"]}},
+    {"id": "editor-patch", "modalities": {"input": ["text"], "output": ["text"]}},
     {"id": "editor-ambiguous", "modalities": {"input": ["text"], "output": ["text"]}},
     {"id": "caption-model", "modalities": {"input": ["text", "image"], "output": ["text"]}},
     {"id": "empty-model", "modalities": {"input": ["text", "image"], "output": ["text"]}},
@@ -272,7 +273,7 @@ class MockHandler(BaseHTTPRequestHandler):
                     },
                     ensure_ascii=False,
                 )
-            if "summary" in lowered and "at most 6 regions" in lowered:
+            if "summary" in lowered and ("at most 6 regions" in lowered or "看图反推" in system):
                 left, right = decode_png_colors(images[0]) if images else ("red", "blue")
                 caption = (
                     f"A high-contrast studio poster split into {left} and {right} halves with balanced composition and soft key light."
@@ -312,6 +313,18 @@ class MockHandler(BaseHTTPRequestHandler):
 
         if model == "editor-noop":
             return json.dumps({"reply": "不需要修改", "changes": []}, ensure_ascii=False)
+
+        if model == "editor-patch":
+            return json.dumps(
+                {
+                    "reply": "把女主换成短发骑士",
+                    "patch": {
+                        "summary": {"caption": "A knight stands in a stone hall."},
+                        "items": [{"index": 0, "caption": "A short-haired knight in worn plate armor."}],
+                    },
+                },
+                ensure_ascii=False,
+            )
 
         if model == "editor-bad-json":
             return "I think it looks fine."

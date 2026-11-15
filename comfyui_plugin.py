@@ -25,9 +25,12 @@ _BACKEND_ERROR: BaseException | None = None
 
 def get_backend() -> StudioBackend | None:
     global _BACKEND, _BACKEND_ERROR
-    if _BACKEND is None and _BACKEND_ERROR is None:
+    # 失败不要永久记住：以前启动时读不到 Key 就再也不重试，结果连「保存设置」
+    # 这个接口都是死的，用户怎么填都没用，只能重启。
+    if _BACKEND is None:
         try:
             _BACKEND = StudioBackend()
+            _BACKEND_ERROR = None
             print(
                 "[ai_prompt_studio] backend ready: "
                 f"{_BACKEND.settings.base_url} · {_BACKEND.settings.model}"
@@ -53,7 +56,7 @@ def register() -> bool:
     backend = get_backend()
     if backend is None and _BACKEND_ERROR is not None:
         traceback.print_exception(type(_BACKEND_ERROR), _BACKEND_ERROR, _BACKEND_ERROR.__traceback__)
-    install_routes(routes, backend)
+    install_routes(routes, backend, backend_getter=get_backend)
     print("[ai_prompt_studio] routes registered at /ai_prompt_studio/*")
     return True
 
