@@ -33,14 +33,15 @@
 - 📏 **智能尺寸适配 (Width/Height)**：根据输入图像宽高比，自动匹配 MOSS 推荐的分辨率网格（16 整数倍、面积近 1M、每边 256~2048），直接作为 INT 尺寸连入 Latent / 出图节点。
 - ⚙️ **统一模型网关与全局规则**：兼容任意 OpenAI 格式接口（Magpie / NewAPI / OneAPI / vLLM / Ollama 等）；支持 MOSS 官方散文/布局规范，并独创 **「★ 用户自定义要求」** 自动合并注入所有预设规则。
 - ⚡ **零侵入侧边栏工作台**：自带独立的侧边栏面板，自动识别画布中任意文本节点，采用**结构化操作（replace/insert/append/delete）与块级 Diff 审阅机制**，绝不幻觉重写整段提示词，支持无限撤销与 SQLite 历史版本回溯。
+- 📚 **构图与提示词资产库 (`Preset Hub`)**：支持节点顶栏一键 **「💾 存为预设」**，极速归档当前空间画框、提示词与推荐画布尺寸；内置多套经典构图（双人宽幅对峙、三分法肖像、电影特写、全景叙事等）；配备全景 **「📚 构图预设库」** 抽屉，支持高对比 SVG 构图骨架图直观预览、**「⚡ 一键应用回节点」**、分类检索与 JSON 导入导出；更附赠专属 **`AIPromptStudioPreset`** 自动化加载节点。
 
 ---
 
 ## 📸 界面预览
 
-| 节点富交互界面与改词动作条 | 多形态空间布局画框与撤销 | 网关配置与自定义提示词规则 |
+| 节点富交互界面与改词动作条 | 多形态空间布局画框与撤销 | 模型网关与自定义提示词规则 |
 |:---:|:---:|:---:|
-| ![节点主界面](docs/images/node_main_interface.png) | ![空间排版画框](docs/images/stage_layout_editor.png) | ![模型网关设置](docs/images/model_settings_modal.png) |
+| ![节点主界面](docs/images/node_main_interface.png) | ![空间排版画框](docs/images/stage_layout_editor.png) | ![模型与规则设置](docs/images/model_settings_modal.png) |
 
 ---
 
@@ -62,15 +63,16 @@ git clone https://github.com/atattier/ComfyUI-AI-Prompt-Studio.git
 
 ## 🚀 快速上手
 
-### 1. 配置模型网关与 API 密钥
+### 1. 配置模型接口与 API Key
 1. 点击节点顶栏的 **「⚙ 设置」** 按钮（或打开侧边栏工作台底部的设置）；
-2. 填写模型服务网关信息：
-   - **Base URL**：例如 `http://127.0.0.1:3425/v1`（本机 Magpie 网关）或 `https://api.openai.com/v1`；
-   - **API Key**：你的接口密钥；
-   - **默认模型 (Model)**：支持一键从网关拉取可用模型列表，并支持文本/视觉/流式能力探测；
-3. 点击 **「保存设置并生效」**。
+2. 在 **「🌐 模型接口」** 页填写三行即可：
+   - **接口地址 (Base URL)**：例如 `http://127.0.0.1:3425/v1`（本机 Magpie 网关）、`https://api.openai.com/v1` 或 `https://generativelanguage.googleapis.com/v1beta/openai/`（Gemini 兼容层）；
+   - **API Key**：只需粘贴一次，点「✓ 保存设置并生效」即写入系统凭据；之后输入框留空就表示保持不变，右侧会显示「已保存：备注 (掩码)」；
+   - **主模型 (Model)**：点 **「拉取模型列表」** 从当前网关取回候选模型，输入框可直接联想选择；也可以手填（Gemini 兼容层没有 `/models` 接口）；
+3. 点 **「测试连接」** 可立即检查连通性、文本、视觉与流式能力，结果在「🤖 模型体检」页显示；
+4. **保存多个网关并一键切换**：填好地址 / 密钥 / 模型后点 **「存为网关」**，就会在「已保存的网关」下拉框里新增一条；以后选中下拉项即可把三者一起切换，不必重填。删除网关、管理多条密钥、修改超时 / 重试都在下方折叠的 **「高级设置：密钥列表 / 超时与重试 / 删除网关」** 里。
 
-> 🔒 **安全承诺**：API Key 仅安全存储于本机操作系统凭据库（Windows Credential Manager / 受保护文件）和后端内存中；前端页面仅显示脱敏掩码，工作流 JSON、审计日志与 Git 仓库中**绝不写入**任何明文密钥。
+> 🔒 **安全承诺**：每条 API Key 各自存为一个本机操作系统凭据条目（Windows Credential Manager / 受保护文件），只有当前生效的那条进入后端内存；前端页面仅显示脱敏掩码，工作流 JSON、审计日志与 Git 仓库中**绝不写入**任何明文密钥。
 
 ---
 
@@ -103,7 +105,7 @@ git clone https://github.com/atattier/ComfyUI-AI-Prompt-Studio.git
   - 点击画框内任意区域框或标签胶囊，即弹出局部编辑抽屉；
   - 支持直接修改区域标签（角色、物体、文字、背景、特效、服饰）与细节描述；
   - 自带 **「改此区 ✦」**、**「✨ 扩写」**、**「🌐 译英」**，针对选定框进行精准局部 AI 润色；
-  - 支持键盘快捷键：选框后按 `Delete` / `Backspace` 删框，`Esc` 取消选中，`Ctrl+Z` 撤销；
+  - 支持键盘快捷键：选中画框后按 `Delete` / `Backspace` **连框带描述一起删除**（区域名称、视觉描述、可见文字随框一并移除，误删可点「↩ 撤销」恢复），`Esc` 取消选中；
 - **快捷改词条**：
   - `⚡ 反推`：重新读取图像并执行多模态反推；
   - `✨ 扩写`：丰富画面环境与氛围细节；
@@ -147,6 +149,9 @@ git clone https://github.com/atattier/ComfyUI-AI-Prompt-Studio.git
 | `GET` | `/ai_prompt_studio/health` | 服务存活探测 |
 | `GET` | `/ai_prompt_studio/status` | 服务状态、公开配置（密钥仅掩码）与模型探测报告 |
 | `POST` | `/ai_prompt_studio/config` | 保存网关地址、模型、超时与全局提示词规则配置 |
+| `GET/POST`| `/ai_prompt_studio/gateways` | 读取 / 保存带名字的网关（Base URL + 模型 + 密钥绑定） |
+| `POST` | `/ai_prompt_studio/gateways/{id}/activate` | 一键切换网关：地址、模型与绑定密钥同时生效 |
+| `DELETE` | `/ai_prompt_studio/gateways/{id}` | 删除网关配置（密钥本身保留） |
 | `POST` | `/ai_prompt_studio/probe` | 探测指定模型文本/视觉/流式能力 |
 | `POST` | `/ai_prompt_studio/chat` | 多轮对话流式 SSE 交互 |
 | `POST` | `/ai_prompt_studio/edit` | 生成结构化编辑提案与校验 |
