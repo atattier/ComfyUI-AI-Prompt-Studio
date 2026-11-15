@@ -9,7 +9,7 @@
 
 import { app } from "../../scripts/app.js";
 
-import { StudioApi, ApiError } from "./lib/api.js";
+import { StudioApi, ApiError } from "./lib/api.js?v=20261115_v33";
 import {
   collectTargets,
   currentTarget,
@@ -20,8 +20,15 @@ import {
   setWidgetText,
   targetWire,
 } from "./lib/targets.js";
-import { describeOp, describeStats, excerpt, selectOps } from "./lib/diff.js";
-import { openLayoutEditor } from "./lib/layout_editor.js";
+import {
+  describeOp,
+  describeStats,
+  excerpt,
+  formatFriendlyError,
+  formatErrorTechnicalDetail,
+  selectOps,
+} from "./lib/diff.js?v=20261115_v33";
+import { openLayoutEditor } from "./lib/layout_editor.js?v=20261115_v33";
 import { UndoStack } from "./lib/undo.js";
 import { fileToDataUrl, sourceToDataUrl } from "./lib/images.js";
 
@@ -31,17 +38,17 @@ const SESSION_KEY = "aps.sessions.v1";
 
 const QUICK_CHIPS = [
   {
-    label: "✨ 扩写",
+    label: "扩写",
     title: "补充具象光影、构图与材质细节",
     prompt: "Expand and enrich the prompt with concrete visual lighting, composition, and texture details in English.",
   },
   {
-    label: "🌐 译英",
+    label: "译英",
     title: "将中文部分翻译为地道英文提示词",
     prompt: "Translate all Chinese parts of the prompt into natural, idiomatic English image-generation phrasing.",
   },
   {
-    label: "🎯 MOSS",
+    label: "MOSS",
     title: "按 MOSS-Image 规范清理权重括号并具象化描述",
     prompt: "Optimize for MOSS-Image: remove (tag:weight) parentheses and convert abstract tags into concrete visible lighting and spatial descriptions.",
   },
@@ -102,12 +109,12 @@ function iconButton(label, title, onClick, className = "") {
 }
 
 function mountStyles() {
-  if (document.querySelector('link[data-aps-style="20261107_v7"]')) return;
+  if (document.querySelector('link[data-aps-style="20261115_v33"]')) return;
   document.querySelectorAll("link[data-aps-style]").forEach((n) => n.remove());
   const link = el("link", {
     rel: "stylesheet",
-    href: new URL("./style.css?v=20261107_v7", import.meta.url).href,
-    "data-aps-style": "20261107_v7",
+    href: new URL("./style.css?v=20261115_v33", import.meta.url).href,
+    "data-aps-style": "20261115_v33",
   });
   document.head.append(link);
 }
@@ -155,11 +162,31 @@ function contentText(content) {
   return "";
 }
 
-function setStatus(message, kind = "info") {
+function setStatus(message, kind = "info", titleText = "") {
   if (!ui.status) return;
-  ui.status.textContent = message || "";
+  const txt = message || "";
+  ui.status.textContent = txt;
+  ui.status.title = titleText || txt;
   ui.status.dataset.kind = kind;
-  if (message) console.info(`[ai-prompt-studio] ${message}`);
+  if (txt) console.info(`[ai-prompt-studio] ${txt}`);
+}
+
+function reportStudioError(error, actionName = "操作") {
+  const friendly = formatFriendlyError(error, actionName);
+  const tech = formatErrorTechnicalDetail(error);
+  const tip = tech ? `${friendly}\n\n${tech}` : friendly;
+  setStatus(friendly, "error", tip);
+  return { friendly, tech, tip };
+}
+
+function buildErrorDetailsBox(techDetail) {
+  if (!techDetail) return null;
+  const details = el("details", { class: "aps-chat-diff aps-chat-error-details" });
+  details.append(
+    el("summary", { class: "aps-chat-diff-sum" }, "查看技术细节（错误码 / 重试 / 报错原文）"),
+    el("pre", { class: "aps-chat-error-pre" }, String(techDetail)),
+  );
+  return details;
 }
 
 function setBusy(busy, message = "") {
@@ -195,7 +222,7 @@ function buildPanel(root) {
       title: "打开宽屏左右双栏精细工作台（参考图/布局画布 + 实时编辑 + 多轮对话）",
       onclick: () => openDualColumnWorkbench(),
     },
-    "🖥 双栏工作台",
+    "双栏工作台",
   );
   ui.cloudGenerateBtn = el(
     "button",
@@ -210,7 +237,7 @@ function buildPanel(root) {
   const header = el("header", { class: "aps-header" }, [
     el("div", { class: "aps-brand-row" }, [
       el("div", { class: "aps-brand" }, [
-        el("span", { class: "aps-logo" }, "✳"),
+        el("span", { class: "aps-logo" }, ""),
         el("span", { class: "aps-title" }, "AI 提示词工作台"),
       ]),
       el("div", { style: "display: flex; gap: 4px;" }, [ui.cloudGenerateBtn, ui.openWorkbenchBtn]),
@@ -293,7 +320,7 @@ function buildPanel(root) {
           title: "读取画布图片反推并载入当前对话",
           onclick: () => quickReverseIntoChat(),
         },
-        "🖼 读图反推",
+        "读图反推",
       ),
       ...QUICK_CHIPS.map((chip) =>
         el(
@@ -605,8 +632,9 @@ function toggleCloudGenerate() {
             ui.cloudPanel.hidden = true;
           }, 1200);
         } catch (err) {
-          feedback.textContent = `云端生成失败：${err?.message || err}`;
-          setStatus(`云端生成失败: ${err?.message || err}`, "error");
+          const { friendly, tip } = reportStudioError(err, "云端生成");
+          feedback.textContent = friendly;
+          feedback.title = tip;
         } finally {
           runBtn.disabled = false;
           setBusy(false);
@@ -717,7 +745,7 @@ async function quickReverseIntoChat() {
     }
     const text = body.text || "";
     if (text) {
-      addMessage("user", `🖼 反推参考图（${state.caption.sourceLabel || "参考图"}）`);
+      addMessage("user", `反推参考图（${state.caption.sourceLabel || "参考图"}）`);
       addMessage("assistant", text, "已自动同步至当前提示词与对话上下文，可直接继续提修改要求。");
       const target = activeTarget();
       if (target) {
@@ -730,7 +758,7 @@ async function quickReverseIntoChat() {
       setStatus("反推完成并已写入节点，可直接在下方对话微调。", "ok");
     }
   } catch (error) {
-    setStatus(error.message || String(error), "error");
+    reportStudioError(error, "读图反推");
   } finally {
     setBusy(false);
   }
@@ -745,10 +773,11 @@ function showSetup(error, status = null) {
   const baseField = el("input", { class: "aps-input", type: "url", value: config.base_url || "http://127.0.0.1:3425/v1" });
   const modelField = el("input", { class: "aps-input", value: config.model || "auto/glm-5.3-flash" });
   const keyField = el("input", {
-    class: "aps-input",
-    type: "password",
+    class: "aps-input is-masked",
+    type: "text",
     placeholder: "留空沿用已保存的 Key",
-    autocomplete: "new-password",
+    autocomplete: "off",
+    "data-lpignore": "true",
     spellcheck: "false",
   });
   const timeoutField = el("input", {
@@ -757,7 +786,7 @@ function showSetup(error, status = null) {
     min: "10",
     max: "300",
     step: "10",
-    value: String(config.timeout_s ?? 60),
+    value: String(config.timeout_s ?? 120),
   });
   const retriesField = el("input", {
     class: "aps-input",
@@ -795,7 +824,9 @@ function showSetup(error, status = null) {
       feedback.textContent = body.message || "配置已保存。";
       await loadStatus();
     } catch (err) {
-      feedback.textContent = `保存失败：${err?.message || err}`;
+      const { friendly, tip } = reportStudioError(err, "保存配置");
+      feedback.textContent = friendly;
+      feedback.title = tip;
     } finally {
       keyField.value = "";
       save.disabled = false;
@@ -837,7 +868,7 @@ async function loadStatus() {
     if (error instanceof ApiError && error.code === "config_error") {
       if (ui.setup) showSetup(error);
     } else {
-      setStatus(error.message || String(error), "error");
+      reportStudioError(error, "读取状态");
     }
   }
 }
@@ -892,7 +923,7 @@ async function probeCapabilities() {
     updateCapabilityBadges();
     setStatus("能力探测完成。", "ok");
   } catch (error) {
-    setStatus(error.message || String(error), "error");
+    reportStudioError(error, "能力探测");
   } finally {
     setBusy(false);
   }
@@ -1023,10 +1054,12 @@ function updateButtons() {
 
 // -------------------------------------------------------------------- chat
 function bubbleFor(message) {
-  return el("div", { class: `aps-msg ${message.role}` }, [
+  const cls = `aps-msg ${message.role}${message.error ? " is-error" : ""}`;
+  return el("div", { class: cls }, [
     el("div", { class: "aps-msg-role" }, message.role === "user" ? "你" : "模型"),
     el("div", { class: "aps-msg-text" }, message.text),
-    message.note ? el("div", { class: "aps-msg-note" }, message.note) : null,
+    message.note ? el("div", { class: `aps-msg-note${message.error ? " is-error" : ""}` }, message.note) : null,
+    message.error && message.errorDetail ? buildErrorDetailsBox(message.errorDetail) : null,
   ]);
 }
 
@@ -1121,9 +1154,14 @@ async function sendChat() {
           }
         } else if (event.event === "error") {
           throw new ApiError(data.message || "模型请求失败。", {
-            code: data.code,
+            code: data.code || "stream_error",
+            status: Number(data.http_status || data.status || 0) || 0,
             retryable: data.retryable,
             requestId: data.request_id,
+            detail: data.detail || "",
+            upstreamStatus: data.upstream_status ?? null,
+            attempts: data.attempts ?? 1,
+            partialText: data.partial_text || "",
           });
         }
       },
@@ -1138,13 +1176,17 @@ async function sendChat() {
       setStatus("已停止生成。", "info");
     } else {
       bubble.classList.add("is-error");
-      const message = error.message || String(error);
+      const { friendly, tech } = reportStudioError(error, "对话");
       bubbleText.textContent = streamed || "";
-      const note = el("div", { class: "aps-msg-note is-error" }, message);
+      const note = el("div", { class: "aps-msg-note is-error" }, friendly);
       bubble.append(note);
-      conversation.messages[conversation.messages.length - 1].text = bubbleText.textContent || "（失败）";
-      conversation.messages[conversation.messages.length - 1].note = message;
-      setStatus(message, "error");
+      const detailsBox = buildErrorDetailsBox(tech);
+      if (detailsBox) bubble.append(detailsBox);
+      const lastEntry = conversation.messages[conversation.messages.length - 1];
+      lastEntry.text = bubbleText.textContent || "（失败）";
+      lastEntry.note = friendly;
+      lastEntry.error = true;
+      lastEntry.errorDetail = tech || "";
     }
   } finally {
     bubble.classList.remove("is-streaming");
@@ -1237,25 +1279,32 @@ async function requestEdit(overrideInstruction = null, chipLabel = null) {
       "ok",
     );
   } catch (error) {
-    setStatus(error.message || String(error), "error");
-    renderDiffError(error);
+    const { friendly, tech } = reportStudioError(error, "生成修改");
+    renderDiffError(friendly, tech);
   } finally {
     setBusy(false);
   }
 }
 
-function renderDiffError(error) {
+function renderDiffError(messageOrError, techDetail = "") {
   if (!ui.diffHost) return;
+  const msg = typeof messageOrError === "string"
+    ? messageOrError
+    : formatFriendlyError(messageOrError, "生成修改");
+  const tech = techDetail || (typeof messageOrError === "object" ? formatErrorTechnicalDetail(messageOrError) : "");
   ui.diffHost.textContent = "";
-  ui.diffHost.append(
-    el("div", { class: "aps-diff is-error" }, [
-      el("div", { class: "aps-diff-head" }, "没有生成可应用的修改"),
-      el("div", { class: "aps-diff-error" }, error.message || String(error)),
-      el("div", { class: "aps-diff-actions" }, [
-        el("button", { class: "aps-btn", type: "button", onclick: clearDiff }, "关闭"),
-      ]),
+  const children = [
+    el("div", { class: "aps-diff-head" }, "没有生成可应用的修改"),
+    el("div", { class: "aps-diff-error" }, msg),
+  ];
+  const detailsBox = buildErrorDetailsBox(tech);
+  if (detailsBox) children.push(detailsBox);
+  children.push(
+    el("div", { class: "aps-diff-actions" }, [
+      el("button", { class: "aps-btn", type: "button", onclick: clearDiff }, "关闭"),
     ]),
   );
+  ui.diffHost.append(el("div", { class: "aps-diff is-error" }, children));
 }
 
 function clearDiff() {
@@ -1383,7 +1432,7 @@ async function applyProposal(mode) {
       setStatus("提示词已经是目标内容，没有写入。", "info");
     }
   } catch (error) {
-    setStatus(error.message || String(error), "error");
+    reportStudioError(error, "应用修改");
   } finally {
     setBusy(false);
     updateDiffButtons();
@@ -1489,7 +1538,7 @@ async function useNodeImage() {
     renderCaptionPreview();
     setStatus("已读取节点图片。", "ok");
   } catch (error) {
-    setStatus(error.message || String(error), "error");
+    reportStudioError(error, "读取节点图片");
   }
 }
 
@@ -1565,7 +1614,7 @@ async function runCaption() {
       setStatus(`反推完成：${got.join("、")}。`, "ok");
     }
   } catch (error) {
-    setStatus(error.message || String(error), "error");
+    reportStudioError(error, "反推");
   } finally {
     state.caption.busy = false;
     updateButtons();

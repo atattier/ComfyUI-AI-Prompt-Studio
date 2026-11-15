@@ -6,14 +6,39 @@
 import { readSSE } from "./sse.js";
 
 export class ApiError extends Error {
-  constructor(message, { code = "api_error", status = 0, retryable = false, requestId = "" } = {}) {
+  constructor(
+    message,
+    {
+      code = "api_error",
+      status = 0,
+      retryable = false,
+      requestId = "",
+      detail = "",
+      upstreamStatus = null,
+      attempts = 1,
+      partialText = "",
+    } = {},
+  ) {
     super(message);
     this.name = "ApiError";
     this.code = code;
     this.status = status;
     this.retryable = retryable;
     this.requestId = requestId;
+    this.detail = detail ? String(detail) : "";
+    this.upstreamStatus =
+      upstreamStatus != null && Number.isFinite(Number(upstreamStatus)) ? Number(upstreamStatus) : null;
+    this.attempts = Number.isFinite(Number(attempts)) && Number(attempts) > 0 ? Number(attempts) : 1;
+    this.partialText = partialText ? String(partialText) : "";
   }
+}
+
+function errorDetailString(error) {
+  if (!error) return "";
+  if (typeof error === "string") return error;
+  const name = error.name ? String(error.name) : "Error";
+  const msg = error.message ? String(error.message) : String(error);
+  return msg.startsWith(`${name}:`) ? msg : `${name}: ${msg}`;
 }
 
 const DEFAULT_BASE = "/ai_prompt_studio";
@@ -42,6 +67,7 @@ export class StudioApi {
       throw new ApiError("无法连接到 ComfyUI 服务，请确认后台仍在运行。", {
         code: "network_error",
         retryable: true,
+        detail: errorDetailString(error),
       });
     }
     let payload = null;
@@ -57,6 +83,10 @@ export class StudioApi {
         status: response.status,
         retryable: Boolean(err.retryable),
         requestId: err.request_id || "",
+        detail: err.detail || "",
+        upstreamStatus: err.upstream_status ?? null,
+        attempts: err.attempts ?? 1,
+        partialText: err.partial_text || "",
       });
     }
     return payload;
@@ -68,6 +98,46 @@ export class StudioApi {
 
   saveConfig(body = {}) {
     return this.request("/config", { method: "POST", body });
+  }
+
+  /** Stored keys for the current Base URL: `{ keys: [{id,label,masked,active}], active_key_id }`. */
+  listKeys() {
+    return this.request("/keys");
+  }
+
+  addKey({ api_key, label = "", activate = true } = {}) {
+    return this.request("/keys", { method: "POST", body: { api_key, label, activate } });
+  }
+
+  activateKey(id) {
+    return this.request(`/keys/${encodeURIComponent(id)}/activate`, { method: "POST", body: {} });
+  }
+
+  deleteKey(id) {
+    return this.request(`/keys/${encodeURIComponent(id)}`, { method: "DELETE" });
+  }
+
+  /** Saved gateway profiles: label + Base URL + model + bound key, switched in one call. */
+  listGateways() {
+    return this.request("/gateways");
+  }
+
+  saveGateway({ label = "", base_url, model, key_id = "", activate = true } = {}) {
+    return this.request("/gateways", {
+      method: "POST",
+      body: { label, base_url, model, key_id, activate },
+    });
+  }
+
+  activateGateway(id) {
+    return this.request(`/gateways/${encodeURIComponent(id)}/activate`, {
+      method: "POST",
+      body: {},
+    });
+  }
+
+  deleteGateway(id) {
+    return this.request(`/gateways/${encodeURIComponent(id)}`, { method: "DELETE" });
   }
 
   listModels() {
@@ -82,10 +152,10 @@ export class StudioApi {
     return this.request("/capabilities");
   }
 
-  edit({ message, target, model, images, session_id, create_session, allow_empty } = {}) {
+  edit({ message, target, mode, model, images, session_id, create_session, allow_empty, canvas } = {}) {
     return this.request("/edit", {
       method: "POST",
-      body: { message, target, model, images, session_id, create_session, allow_empty },
+      body: { message, target, mode, model, images, session_id, create_session, allow_empty, canvas },
     });
   }
 
@@ -112,6 +182,21 @@ export class StudioApi {
       method: "POST",
       body: { prompt, width, height, mode, model },
     });
+  }
+
+  completeFromPrompt({
+    prompt,
+    source_mode = "auto",
+    modes,
+    width = 1024,
+    height = 1024,
+    size_mode = "auto",
+    model = "",
+    extra_instruction = "",
+  } = {}) {
+    const body = { prompt, source_mode, width, height, size_mode, model, extra_instruction };
+    if (Array.isArray(modes) && modes.length > 0) body.modes = modes;
+    return this.request("/complete_from_prompt", { method: "POST", body });
   }
 
   addVersion({ target, text, source = "apply", label = "", meta } = {}) {
@@ -153,6 +238,7 @@ export class StudioApi {
       throw new ApiError("无法连接到 ComfyUI 服务，请确认后台仍在运行。", {
         code: "network_error",
         retryable: true,
+        detail: errorDetailString(error),
       });
     }
     if (!response.ok) {
@@ -167,24 +253,135 @@ export class StudioApi {
         code: err.code || "http_error",
         status: response.status,
         retryable: Boolean(err.retryable),
+        requestId: err.request_id || "",
+        detail: err.detail || "",
+        upstreamStatus: err.upstream_status ?? null,
+        attempts: err.attempts ?? 1,
+        partialText: err.partial_text || "",
       });
     }
     let streamError = null;
-    await readSSE(
-      response,
-      (event) => {
-        if (event.event === "error") {
-          const data = event.data || {};
-          streamError = new ApiError(data.message || "模型请求失败。", {
-            code: data.code || "stream_error",
-            retryable: Boolean(data.retryable),
-            requestId: data.request_id || "",
-          });
-        }
-        onEvent(event);
-      },
-      { signal },
-    );
+    try {
+      await readSSE(
+        response,
+        (event) => {
+          if (event.event === "error") {
+            const data = event.data || {};
+            streamError = new ApiError(data.message || "模型请求失败。", {
+              code: data.code || "stream_error",
+              status: Number(data.http_status || data.status || 0) || 0,
+              retryable: Boolean(data.retryable),
+              requestId: data.request_id || "",
+              detail: data.detail || "",
+              upstreamStatus: data.upstream_status ?? null,
+              attempts: data.attempts ?? 1,
+              partialText: data.partial_text || "",
+            });
+          }
+          onEvent(event);
+        },
+        { signal },
+      );
+    } catch (error) {
+      if (error && error.name === "AbortError") throw error;
+      if (error instanceof ApiError) throw error;
+      throw new ApiError("流式响应读取中断，请重试。", {
+        code: "stream_interrupted",
+        retryable: true,
+        detail: errorDetailString(error),
+      });
+    }
     if (streamError) throw streamError;
+  }
+
+  listPresets({ category, search } = {}) {
+    const params = new URLSearchParams();
+    if (category) params.set("category", category);
+    if (search) params.set("search", search);
+    const qs = params.toString();
+    return this.request(`/presets${qs ? `?${qs}` : ""}`);
+  }
+
+  listPresetCategories() {
+    return this.request("/presets/categories");
+  }
+
+  addPresetCategory(name) {
+    return this.request("/presets/categories", { method: "POST", body: { name } });
+  }
+
+  deletePresetCategory(name) {
+    return this.request(`/presets/categories/${encodeURIComponent(name)}`, { method: "DELETE" });
+  }
+
+  renamePresetCategory(oldName, newName) {
+    return this.request(`/presets/categories/${encodeURIComponent(oldName)}`, {
+      method: "PUT",
+      body: { new_name: newName },
+    });
+  }
+
+  /** Read prompt/layout metadata out of an image without creating a preset. */
+  inspectImage({ dataUrl, filename = "" } = {}) {
+    return this.request("/inspect_image", {
+      method: "POST",
+      body: { image_data: dataUrl, filename },
+    });
+  }
+
+  importPresetImage({ dataUrl, filename, category } = {}) {
+    return this.request("/presets/import_image", {
+      method: "POST",
+      body: { image_data: dataUrl, filename, category },
+    });
+  }
+
+  resetBuiltinPresets() {
+    return this.request("/presets/reset_builtins", { method: "POST" });
+  }
+
+  /** URL of the original image (with embedded ComfyUI metadata) attached to a preset. */
+  presetImageUrl(id) {
+    return this.url(`/presets/${encodeURIComponent(id)}/image`);
+  }
+
+  getPreset(id) {
+    return this.request(`/presets/${encodeURIComponent(id)}`);
+  }
+
+  savePreset(body = {}) {
+    return this.request("/presets", { method: "POST", body });
+  }
+
+  deletePreset(id) {
+    return this.request(`/presets/${encodeURIComponent(id)}`, { method: "DELETE" });
+  }
+
+  importPresets(presets = []) {
+    return this.request("/presets/import", { method: "POST", body: { presets } });
+  }
+
+  exportPresets() {
+    return this.request("/presets/export");
+  }
+
+  summarizePresetTitle({ presetId, prompt, draft, model } = {}) {
+    return this.request("/presets/summarize_title", {
+      method: "POST",
+      body: { preset_id: presetId, prompt, draft, model },
+    });
+  }
+
+  reCaptionPreset(presetId, { model } = {}) {
+    return this.request(`/presets/${encodeURIComponent(presetId)}/re_caption`, {
+      method: "POST",
+      body: { model },
+    });
+  }
+
+  reloadPresetMetadata(presetId) {
+    return this.request(`/presets/${encodeURIComponent(presetId)}/reload_metadata`, {
+      method: "POST",
+    });
   }
 }
