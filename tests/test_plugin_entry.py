@@ -57,7 +57,7 @@ class PluginRegistrationTests(unittest.TestCase):
         # sidebar extension and never injects nodes into existing workflows.
         self.assertEqual(
             set(module.NODE_CLASS_MAPPINGS),
-            {"AIPromptStudioCaption", "AIPromptStudioImagine", "AIPromptStudioPreset"},
+            {"AIPromptStudioCaption", "AIPromptStudioImagine", "AIPromptStudioPreset", "AIPromptStudioLora"},
         )
         self.assertEqual(
             module.NODE_DISPLAY_NAME_MAPPINGS,
@@ -65,6 +65,7 @@ class PluginRegistrationTests(unittest.TestCase):
                 "AIPromptStudioCaption": "AI 提示词工作台 (反推与自动灵感)",
                 "AIPromptStudioImagine": "AI 灵感画面提示词 (已合并至主节点)",
                 "AIPromptStudioPreset": "AI 构图提示词预设加载器",
+                "AIPromptStudioLora": "AI LoRA 预设与堆叠加载器",
             },
         )
         paths = [route.path for route in self.routes]

@@ -385,4 +385,69 @@ export class StudioApi {
       method: "POST",
     });
   }
+
+  // ------------------------------------------------------------- LoRA Presets
+  listLoraPresets({ category = "", search = "" } = {}) {
+    const query = new URLSearchParams();
+    if (category && category !== "全部") query.set("category", category);
+    if (search) query.set("search", search);
+    const qs = query.toString();
+    return this.request(`/lora_presets${qs ? "?" + qs : ""}`);
+  }
+
+  getAvailableLoras() {
+    return this.request("/lora_presets/available_loras");
+  }
+
+  getLoraPreset(id) {
+    return this.request(`/lora_presets/${encodeURIComponent(id)}`);
+  }
+
+  saveLoraPreset(body = {}) {
+    return this.request("/lora_presets", { method: "POST", body });
+  }
+
+  deleteLoraPreset(id) {
+    return this.request(`/lora_presets/${encodeURIComponent(id)}`, { method: "DELETE" });
+  }
+
+  listLoraPresetCategories() {
+    return this.request("/lora_presets/categories");
+  }
+
+  addLoraPresetCategory(name) {
+    return this.request("/lora_presets/categories", {
+      method: "POST",
+      body: { name },
+    });
+  }
+
+  deleteLoraPresetCategory(name) {
+    return this.request(`/lora_presets/categories/${encodeURIComponent(name)}`, {
+      method: "DELETE",
+    });
+  }
+
+  renameLoraPresetCategory(oldName, newName) {
+    return this.request(`/lora_presets/categories/${encodeURIComponent(oldName)}`, {
+      method: "PUT",
+      body: { new_name: newName },
+    });
+  }
+
+  resetBuiltinLoraPresets() {
+    return this.request("/lora_presets/reset_builtins", { method: "POST" });
+  }
+
+  loraPresetImageUrl(id) {
+    return this.url(`/lora_presets/${encodeURIComponent(id)}/image`);
+  }
+
+  importLoraPresets(presets = []) {
+    return this.request("/lora_presets/import", { method: "POST", body: { presets } });
+  }
+
+  exportLoraPresets() {
+    return this.request("/lora_presets/export");
+  }
 }

@@ -37,4 +37,11 @@ try:
 except Exception as exc:  # noqa: BLE001
     print(f"[ai_prompt_studio] caption node failed to register: {exc}")
 
+try:
+    from prompt_studio.lora_node import register as _register_lora_node
+
+    _register_lora_node(NODE_CLASS_MAPPINGS, NODE_DISPLAY_NAME_MAPPINGS)
+except Exception as exc:  # noqa: BLE001
+    print(f"[ai_prompt_studio] lora node failed to register: {exc}")
+
 __all__ = ["WEB_DIRECTORY", "NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS"]

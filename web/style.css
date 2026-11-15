@@ -5510,3 +5510,24 @@ details.aps-adv[open] > summary { margin-bottom: 8px; }
 }
 /* 独立工作台的密钥框同样用遮盖而非 password 类型 */
 .aps-input.is-masked { -webkit-text-security: disc; }
+
+/* --------------------------------------------------------------------------
+   LoRA Preset Hub & Node Card Styling
+   -------------------------------------------------------------------------- */
+.aps-lora-node-card {
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+  font-family: var(--aps-font, inherit);
+  transition: border-color 0.15s ease;
+}
+.aps-lora-node-card:hover {
+  border-color: var(--aps-accent, #3b82f6);
+}
+.aps-lora-row {
+  transition: background 0.12s ease;
+}
+.aps-lora-row:hover {
+  background: var(--aps-bg-hover, rgba(255, 255, 255, 0.08)) !important;
+}
+.aps-lora-card-tools .aps-btn {
+  font-weight: 500;
+}

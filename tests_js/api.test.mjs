@@ -192,6 +192,40 @@ test("presets api calls support list, save, and delete", async () => {
   assert.equal(api.presetImageUrl("p_1"), "/ai_prompt_studio/presets/p_1/image");
 });
 
+test("lora presets api calls support list, save, delete, and available loras", async () => {
+  const calls = [];
+  const api = new StudioApi({
+    fetchImpl: async (url, init) => {
+      calls.push({ url, method: init?.method || "GET", body: init?.body ? JSON.parse(init.body) : null });
+      return jsonResponse({ ok: true });
+    },
+  });
+
+  await api.listLoraPresets({ category: "画风", search: "米山" });
+  assert.equal(calls[0].url, "/ai_prompt_studio/lora_presets?category=%E7%94%BB%E9%A3%8E&search=%E7%B1%B3%E5%B1%B1");
+
+  await api.saveLoraPreset({ name: "测试LoRA预设", loras: [{ name: "test.safetensors", strength_model: 0.8 }] });
+  assert.equal(calls[1].url, "/ai_prompt_studio/lora_presets");
+  assert.equal(calls[1].method, "POST");
+  assert.equal(calls[1].body.name, "测试LoRA预设");
+
+  await api.deleteLoraPreset("lora_123");
+  assert.equal(calls[2].url, "/ai_prompt_studio/lora_presets/lora_123");
+  assert.equal(calls[2].method, "DELETE");
+
+  await api.getAvailableLoras();
+  assert.equal(calls[3].url, "/ai_prompt_studio/lora_presets/available_loras");
+
+  await api.listLoraPresetCategories();
+  assert.equal(calls[4].url, "/ai_prompt_studio/lora_presets/categories");
+
+  await api.addLoraPresetCategory("服饰/机能");
+  assert.equal(calls[5].url, "/ai_prompt_studio/lora_presets/categories");
+  assert.equal(calls[5].method, "POST");
+
+  assert.equal(api.loraPresetImageUrl("lp_1"), "/ai_prompt_studio/lora_presets/lp_1/image");
+});
+
 test("completeFromPrompt calls POST /complete_from_prompt with finished prompt params", async () => {
   let calledUrl = null;
   let calledBody = null;

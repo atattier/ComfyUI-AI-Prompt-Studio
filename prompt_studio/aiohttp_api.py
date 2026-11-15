@@ -63,6 +63,7 @@ from .redaction import Redactor, mask_secret
 from .sessions import MediaStore, SessionStore
 from .versions import VersionStore
 from .presets import PresetStore
+from .lora_presets import LoraPresetStore, scan_available_loras
 
 MAX_BODY = 25 * 1024 * 1024
 
@@ -80,6 +81,7 @@ class StudioBackend:
         self.sessions = SessionStore(self.settings.db_path, media=self.media)
         self.versions = VersionStore(self.settings.home / "versions.sqlite3")
         self.presets = PresetStore(self.settings.home / "presets.sqlite3")
+        self.lora_presets = LoraPresetStore(self.settings.home / "lora_presets.sqlite3")
 
     def close(self) -> None:
         try:
@@ -88,7 +90,10 @@ class StudioBackend:
             try:
                 self.versions.close()
             finally:
-                self.presets.close()
+                try:
+                    self.presets.close()
+                finally:
+                    self.lora_presets.close()
 
     # ------------------------------------------------------------------ info
     def status(self) -> dict[str, Any]:
@@ -956,6 +961,89 @@ class StudioBackend:
     def export_presets(self) -> list[dict[str, Any]]:
         return self.presets.export_all()
 
+    # --------------------------------------------------------- lora presets
+    def list_lora_presets(self, *, category: str | None = None, search: str | None = None) -> list[dict[str, Any]]:
+        return self.lora_presets.list(category=category, search=search)
+
+    def get_lora_preset(self, preset_id: str) -> dict[str, Any]:
+        p = self.lora_presets.get(preset_id)
+        if not p:
+            raise NotFoundError(f"LoRA preset {preset_id} not found.")
+        return p
+
+    def save_lora_preset(self, body: dict[str, Any]) -> dict[str, Any]:
+        if not isinstance(body, dict):
+            raise InvalidRequestError("LoRA preset data must be an object.")
+        try:
+            return self.lora_presets.save(body)
+        except ValueError as err:
+            raise InvalidRequestError(str(err)) from err
+
+    def delete_lora_preset(self, preset_id: str) -> dict[str, Any]:
+        try:
+            ok = self.lora_presets.delete(preset_id)
+        except ValueError as err:
+            raise InvalidRequestError(str(err)) from err
+        if not ok:
+            raise NotFoundError(f"LoRA preset {preset_id} not found.")
+        return {"status": "ok", "deleted_id": preset_id}
+
+    def list_lora_categories(self) -> list[str]:
+        return self.lora_presets.categories()
+
+    def lora_category_info(self) -> dict[str, Any]:
+        return {
+            "categories": self.lora_presets.categories(),
+            "custom": self.lora_presets.custom_categories(),
+        }
+
+    def add_lora_category(self, body: dict[str, Any]) -> dict[str, Any]:
+        name = body.get("name") if isinstance(body, dict) else None
+        try:
+            self.lora_presets.add_category(name)
+        except ValueError as err:
+            raise InvalidRequestError(str(err)) from err
+        return self.lora_category_info()
+
+    def delete_lora_category(self, name: str) -> dict[str, Any]:
+        try:
+            result = self.lora_presets.delete_category(name)
+        except KeyError as err:
+            raise NotFoundError(f"分类「{name}」不存在。") from err
+        except ValueError as err:
+            raise InvalidRequestError(str(err)) from err
+        return {**result, **self.lora_category_info()}
+
+    def rename_lora_category(self, old_name: str, body: dict[str, Any]) -> dict[str, Any]:
+        new_name = body.get("new_name") if isinstance(body, dict) else None
+        try:
+            result = self.lora_presets.rename_category(old_name, new_name)
+        except ValueError as err:
+            raise InvalidRequestError(str(err)) from err
+        return {**result, **self.lora_category_info()}
+
+    def get_lora_preset_image(self, preset_id: str) -> tuple[bytes, str, str]:
+        res = self.lora_presets.get_image(preset_id)
+        if not res:
+            raise NotFoundError(f"Image for LoRA preset {preset_id} not found.")
+        return res
+
+    def export_lora_presets(self) -> list[dict[str, Any]]:
+        return self.lora_presets.export_presets()
+
+    def import_lora_presets(self, body: dict[str, Any]) -> dict[str, Any]:
+        presets = body.get("presets") if isinstance(body, dict) else None
+        if not isinstance(presets, list):
+            raise InvalidRequestError("presets must be a list of preset objects.")
+        return self.lora_presets.import_presets(presets)
+
+    def reset_builtin_loras(self) -> dict[str, Any]:
+        count = self.lora_presets.reset_builtins()
+        return {"status": "ok", "recovered_count": count}
+
+    def list_available_loras(self) -> list[str]:
+        return scan_available_loras()
+
 
 # ----------------------------------------------------------------- aiohttp
 def _as_int(value: Any, default: int = 0) -> int:
@@ -1779,6 +1867,100 @@ def install_routes(
     async def import_presets_route(request: web.Request) -> web.Response:
         body = await _json_body(request)
         res = await asyncio.to_thread(require().import_presets, body)
+        return web.json_response(res)
+
+    # --------------------------------------------------- lora preset routes
+    @routes.get("/ai_prompt_studio/lora_presets")
+    @guarded
+    async def list_lora_presets_route(request: web.Request) -> web.Response:
+        category = request.query.get("category")
+        search = request.query.get("search")
+        data = await asyncio.to_thread(require().list_lora_presets, category=category, search=search)
+        return web.json_response({"presets": data})
+
+    @routes.get("/ai_prompt_studio/lora_presets/available_loras")
+    @guarded
+    async def available_loras_route(_request: web.Request) -> web.Response:
+        data = await asyncio.to_thread(require().list_available_loras)
+        return web.json_response({"loras": data})
+
+    @routes.get("/ai_prompt_studio/lora_presets/categories")
+    @guarded
+    async def list_lora_preset_categories_route(_request: web.Request) -> web.Response:
+        info = await asyncio.to_thread(require().lora_category_info)
+        return web.json_response(info)
+
+    @routes.post("/ai_prompt_studio/lora_presets/categories")
+    @guarded
+    async def add_lora_preset_category_route(request: web.Request) -> web.Response:
+        body = await _json_body(request)
+        info = await asyncio.to_thread(require().add_lora_category, body)
+        return web.json_response(info, status=201)
+
+    @routes.delete("/ai_prompt_studio/lora_presets/categories/{name}")
+    @guarded
+    async def delete_lora_preset_category_route(request: web.Request) -> web.Response:
+        name = request.match_info["name"]
+        info = await asyncio.to_thread(require().delete_lora_category, name)
+        return web.json_response(info)
+
+    @routes.put("/ai_prompt_studio/lora_presets/categories/{name}")
+    @guarded
+    async def rename_lora_preset_category_route(request: web.Request) -> web.Response:
+        name = request.match_info["name"]
+        body = await _json_body(request)
+        info = await asyncio.to_thread(require().rename_lora_category, name, body)
+        return web.json_response(info)
+
+    @routes.post("/ai_prompt_studio/lora_presets/reset_builtins")
+    @guarded
+    async def reset_builtin_loras_route(_request: web.Request) -> web.Response:
+        res = await asyncio.to_thread(require().reset_builtin_loras)
+        return web.json_response(res)
+
+    @routes.get("/ai_prompt_studio/lora_presets/export")
+    @guarded
+    async def export_lora_presets_route(_request: web.Request) -> web.Response:
+        data = await asyncio.to_thread(require().export_lora_presets)
+        return web.json_response({"presets": data})
+
+    @routes.post("/ai_prompt_studio/lora_presets/import")
+    @guarded
+    async def import_lora_presets_route(request: web.Request) -> web.Response:
+        body = await _json_body(request)
+        res = await asyncio.to_thread(require().import_lora_presets, body)
+        return web.json_response(res)
+
+    @routes.get("/ai_prompt_studio/lora_presets/{preset_id}/image")
+    @guarded
+    async def get_lora_preset_image_route(request: web.Request) -> web.Response:
+        raw, mime, filename = await asyncio.to_thread(require().get_lora_preset_image, request.match_info["preset_id"])
+        headers = {
+            "Content-Type": mime,
+            "Content-Disposition": f'inline; filename="{filename}"',
+            "Cache-Control": "public, max-age=86400",
+        }
+        return web.Response(body=raw, headers=headers)
+
+    @routes.get("/ai_prompt_studio/lora_presets/{preset_id}")
+    @guarded
+    async def get_lora_preset_route(request: web.Request) -> web.Response:
+        preset_id = request.match_info["preset_id"]
+        preset = await asyncio.to_thread(require().get_lora_preset, preset_id)
+        return web.json_response(preset)
+
+    @routes.post("/ai_prompt_studio/lora_presets")
+    @guarded
+    async def save_lora_preset_route(request: web.Request) -> web.Response:
+        body = await _json_body(request)
+        saved = await asyncio.to_thread(require().save_lora_preset, body)
+        return web.json_response(saved, status=200)
+
+    @routes.delete("/ai_prompt_studio/lora_presets/{preset_id}")
+    @guarded
+    async def delete_lora_preset_route(request: web.Request) -> web.Response:
+        preset_id = request.match_info["preset_id"]
+        res = await asyncio.to_thread(require().delete_lora_preset, preset_id)
         return web.json_response(res)
 
 

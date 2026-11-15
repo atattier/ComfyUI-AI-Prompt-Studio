@@ -34,6 +34,7 @@
 - ⚙️ **统一模型网关与全局规则**：兼容任意 OpenAI 格式接口（Magpie / NewAPI / OneAPI / vLLM / Ollama 等）；支持 MOSS 官方散文/布局规范，并独创 **「★ 用户自定义要求」** 自动合并注入所有预设规则。
 - ⚡ **零侵入侧边栏工作台**：自带独立的侧边栏面板，自动识别画布中任意文本节点，采用**结构化操作（replace/insert/append/delete）与块级 Diff 审阅机制**，绝不幻觉重写整段提示词，支持无限撤销与 SQLite 历史版本回溯。
 - 📚 **构图与提示词资产库 (`Preset Hub`)**：支持节点顶栏一键 **「💾 存为预设」**，极速归档当前空间画框、提示词与推荐画布尺寸；内置多套经典构图（双人宽幅对峙、三分法肖像、电影特写、全景叙事等）；配备全景 **「📚 构图预设库」** 抽屉，支持高对比 SVG 构图骨架图直观预览、**「⚡ 一键应用回节点」**、分类检索与 JSON 导入导出；更附赠专属 **`AIPromptStudioPreset`** 自动化加载节点。
+- 🥞 **独立 LoRA 资产与堆叠预设器 (`AIPromptStudioLora`)**：支持一条预设内打包多个 LoRA 组合（如画风 + 角色 + 细节增强），支持单个 LoRA 独立开关、Model/Clip 权重比例微调与全局缩放；既可直接连入 MODEL/CLIP 执行真加载，也可输出标准 ComfyUI `LORA_STACK` 元组列表、一键复制触发词（Trigger Words）与 `<lora:name:weight>` 语法字符串；附带专属 **「📚 LoRA 预设库」** 抽屉，支持分类管理、实时搜索、JSON 导入导出与自动扫描本机已安装 LoRA。
 
 ---
 
@@ -120,7 +121,26 @@ git clone https://github.com/atattier/ComfyUI-AI-Prompt-Studio.git
 
 ---
 
-### 3. 使用全局侧边栏工作台（零侵入）
+### 3. 使用独立 LoRA 预设与多重堆叠节点 (`AIPromptStudioLora`)
+
+右键画布菜单 `添加节点 -> AI Prompt Studio -> AI LoRA 预设与堆叠加载器`。
+
+```
+[CheckpointLoader] ──(MODEL, CLIP)──→ [AI LoRA 预设与堆叠加载器] ──┬─→ MODEL        ──→ KSampler
+                                        支持组合堆叠与权重缩放:      ├─→ CLIP         ──→ CLIPTextEncode
+                                         🥞 LoRA 1 (M:0.8 / C:0.8)   ├─→ lora_stack   ──→ 兼容下游堆叠器
+                                         🥞 LoRA 2 (M:0.5 / C:0.5)   ├─→ trigger_words──→ 触发词文本
+                                                                     └─→ lora_syntax  ──→ <lora:name:w> 语法
+```
+
+- **预设库抽屉**：点击节点卡片顶部的 **「📚 LoRA 预设库」**，即可在 Explorer 风格的窗口中按分类（画风、角色、光影、细节）快速浏览、编辑、删除与「⚡ 一键应用回节点」；
+- **一键另存为预设**：调整好组合与权重后点击 **「💾 存为预设」**，极速归档至本地 SQLite 数据库；
+- **触发词一键复制**：卡片直接显示当前组合的所有触发词，点击 **「📋 复制」** 即可粘贴至生图提示词中；
+- **优雅容错机制**：如某项 LoRA 文件在当前电脑缺失，节点将输出清晰中文警告并继续加载其余 LoRA，绝不中断工作流。
+
+---
+
+### 4. 使用全局侧边栏工作台（零侵入）
 
 在 ComfyUI 右侧或左侧功能栏中点击 **「AI 提示词」** 图标即可唤出。
 
