@@ -1147,7 +1147,7 @@ async function adoptCanvasSizeToImage(node, dataUrl, statusEl = null) {
 }
 
 
-async function maybeOfferImageMetadata(node, meta, filename, statusEl) {
+async function maybeOfferImageMetadata(node, meta, filename, statusEl, imageSeq = 0) {
   if (!meta?.found) {
     const base = String(statusEl?.textContent || "").trim();
     setNodeStatus(statusEl, base ? `${base} · 未发现提示词元数据` : "未发现提示词元数据");
@@ -1175,6 +1175,10 @@ async function maybeOfferImageMetadata(node, meta, filename, statusEl) {
     });
     if (!ok) {
       setNodeStatus(statusEl, "已忽略图片自带的提示词。");
+      return false;
+    }
+    if (node._apsImageSeq !== imageSeq) {
+      setNodeStatus(statusEl, "已加载新图，忽略上一张图的提示词。");
       return false;
     }
     const before = JSON.stringify(readPayload(node));
@@ -1228,13 +1232,36 @@ async function handleNewReferenceImage(node, fileOrDataUrl, statusEl = null, opt
   if (!dataUrl) return;
 
   // Read the image's own prompt metadata in parallel with the upload; the dialog
-  // only appears once the canvas has settled on the new picture's size.
+  // only appears once the canvas has settled on the new picture's size. The
+  // sequence number keeps a slow inspection for image A from landing on image B.
+  const imageSeq = (node._apsImageSeq || 0) + 1;
+  node._apsImageSeq = imageSeq;
+  let metadataTimer = null;
+  let metadataController = null;
   const detection = options.skipMetadata
     ? null
-    : api.inspectImage({ dataUrl, filename: fileObj?.name || "" }).catch((err) => {
-        console.warn("[ai-prompt-studio] 图片元数据检测失败:", err);
-        return null;
-      });
+    : (() => {
+        metadataController = typeof AbortController === "function" ? new AbortController() : null;
+        if (metadataController) {
+          metadataTimer = setTimeout(() => metadataController.abort(), 10_000);
+        }
+        return api
+          .inspectImage({
+            dataUrl,
+            filename: fileObj?.name || "",
+            signal: metadataController?.signal,
+          })
+          .catch((err) => {
+            if (err?.name !== "AbortError") {
+              console.warn("[ai-prompt-studio] 图片元数据检测失败:", err);
+            }
+            return null;
+          })
+          .finally(() => {
+            if (metadataTimer) clearTimeout(metadataTimer);
+            metadataTimer = null;
+          });
+      })();
 
   // 1. Immediately display on stage and cache to session
   node._apsImageDataUrl = dataUrl;
@@ -1286,7 +1313,9 @@ async function handleNewReferenceImage(node, fileOrDataUrl, statusEl = null, opt
 
   if (detection) {
     const meta = await detection;
-    if (meta) await maybeOfferImageMetadata(node, meta, fileObj?.name || "", statusEl);
+    if (meta && node._apsImageSeq === imageSeq) {
+      await maybeOfferImageMetadata(node, meta, fileObj?.name || "", statusEl, imageSeq);
+    }
   }
 }
 

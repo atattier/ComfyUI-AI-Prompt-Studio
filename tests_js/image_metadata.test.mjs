@@ -65,3 +65,23 @@ test("merge without items leaves existing draft untouched", () => {
   assert.equal(state.layout_prompt, "旧布局");
   assert.deepEqual(result.applied, []);
 });
+test("layout-only metadata does not overwrite a hand-written caption", () => {
+  const state = { width: 1024, height: 1024, caption_text: "用户手写的散文，别动我" };
+  const meta = {
+    width: 512,
+    height: 512,
+    prompts: { caption: "A lighthouse at dusk" },
+    draft: {
+      width: 512,
+      height: 512,
+      summary: { caption: "A lighthouse at dusk" },
+      items: [{ label: "object", caption: "x", bbox: [0, 0, 512, 512] }],
+    },
+  };
+  const result = mergeImageMetadataIntoState(state, meta, { width: 1024, height: 1024 });
+  assert.equal(state.caption_text, "用户手写的散文，别动我");
+  assert.ok(!result.applied.includes("caption"));
+  assert.ok(result.applied.includes("boxes"));
+  const summary = imageMetadataSummary(meta);
+  assert.deepEqual(summary.parts, ["布局提示词（1 个画框）"]);
+});

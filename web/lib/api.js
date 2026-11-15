@@ -322,10 +322,11 @@ export class StudioApi {
   }
 
   /** Read prompt/layout metadata out of an image without creating a preset. */
-  inspectImage({ dataUrl, filename = "" } = {}) {
+  inspectImage({ dataUrl, filename = "", signal } = {}) {
     return this.request("/inspect_image", {
       method: "POST",
       body: { image_data: dataUrl, filename },
+      signal,
     });
   }
 

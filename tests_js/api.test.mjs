@@ -363,3 +363,16 @@ test("inspectImage posts the data URL to the inspect route", async () => {
     filename: "a.png",
   });
 });
+
+test("inspectImage passes an abort signal through to fetch", async () => {
+  const controller = new AbortController();
+  let received = null;
+  const api = new StudioApi({
+    fetchImpl: async (_url, init) => {
+      received = init.signal;
+      return jsonResponse({ found: false });
+    },
+  });
+  await api.inspectImage({ dataUrl: "data:image/png;base64,AA==", signal: controller.signal });
+  assert.equal(received, controller.signal);
+});

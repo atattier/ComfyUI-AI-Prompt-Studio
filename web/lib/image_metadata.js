@@ -9,17 +9,33 @@ import { rescaleLayoutDraft } from "./layout_editor.js?v=20261115_v33";
 
 const SNIPPET_LIMIT = 90;
 
+/**
+ * A caption the image actually carries.  The backend fills a missing caption
+ * from the layout draft's own summary, so on a layout-only image the two are
+ * byte-identical; that is not a written caption and must not replace the
+ * node's prose.
+ */
+function writtenCaption(meta) {
+  const caption = String(meta?.prompts?.caption || "").trim();
+  if (!caption) return "";
+  const draft = meta?.draft;
+  const items = Array.isArray(draft?.items) ? draft.items : [];
+  const summaryCaption = String(draft?.summary?.caption || "").trim();
+  if (items.length && caption === summaryCaption) return "";
+  return caption;
+}
+
 /** What the picture carries, in words the node card can show. */
 export function imageMetadataSummary(meta) {
   const prompts = meta?.prompts || {};
   const items = Array.isArray(meta?.draft?.items) ? meta.draft.items : [];
   const parts = [];
-  if (prompts.caption) parts.push("散文提示词");
+  const caption = writtenCaption(meta);
+  if (caption) parts.push("散文提示词");
   if (prompts.layout || items.length) {
     parts.push(items.length ? `布局提示词（${items.length} 个画框）` : "布局提示词");
   }
   if (prompts.danbooru) parts.push("Danbooru 标签");
-  const caption = String(prompts.caption || meta?.draft?.summary?.caption || "").trim();
   return {
     parts,
     captionSnippet: caption.length > SNIPPET_LIMIT ? `${caption.slice(0, SNIPPET_LIMIT)}…` : caption,
@@ -38,7 +54,7 @@ export function mergeImageMetadataIntoState(state, meta, { width, height } = {})
   const prompts = meta.prompts || {};
   const applied = [];
 
-  const caption = String(prompts.caption || meta.draft?.summary?.caption || "").trim();
+  const caption = writtenCaption(meta);
   if (caption) {
     state.caption = caption;
     state.caption_text = caption;
