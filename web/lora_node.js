@@ -12,16 +12,16 @@
  */
 
 import { app } from "../../scripts/app.js";
-import { StudioApi } from "./lib/api.js?v=20261116_v38";
+import { StudioApi } from "./lib/api.js?v=20261116_v39";
 import {
   openSaveLoraPresetModal,
   openLoraPresetLibraryModal,
   openLoraPresetLightbox,
   buildLoraSyntaxString,
-} from "./lib/lora_editor.js?v=20261116_v38";
+} from "./lib/lora_editor.js?v=20261116_v39";
 
 const NODE_TYPE = "AIPromptStudioLora";
-const STYLE_VERSION = "20261116_v38";
+const STYLE_VERSION = "20261116_v39";
 
 function mountStyles() {
   if (typeof document === "undefined") return;
@@ -251,7 +251,7 @@ function showLoraPresetPreviewTooltip(targetEl, preset, api) {
     let coverUrl = preset.thumbnail || (preset.has_image ? api.loraPresetImageUrl(preset.id) : "");
     if (!coverUrl && loras.length > 0) {
       const firstWithPreview = loras.find((l) => l.name);
-      if (firstWithPreview) {
+      if (firstWithPreview && typeof api?.loraPreviewImageUrl === "function") {
         coverUrl = api.loraPreviewImageUrl(firstWithPreview.name);
       }
     }

@@ -443,6 +443,12 @@ export class StudioApi {
     return this.url(`/lora_presets/${encodeURIComponent(id)}/image`);
   }
 
+  /** URL for local LoRA preview cover image by its filename or relative path. */
+  loraPreviewImageUrl(name) {
+    if (!name) return "";
+    return this.url(`/lora_presets/preview_image?name=${encodeURIComponent(name)}`);
+  }
+
   importLoraPresets(presets = []) {
     return this.request("/lora_presets/import", { method: "POST", body: { presets } });
   }

@@ -224,6 +224,8 @@ test("lora presets api calls support list, save, delete, and available loras", a
   assert.equal(calls[5].method, "POST");
 
   assert.equal(api.loraPresetImageUrl("lp_1"), "/ai_prompt_studio/lora_presets/lp_1/image");
+  assert.equal(api.loraPreviewImageUrl("model_a.safetensors"), "/ai_prompt_studio/lora_presets/preview_image?name=model_a.safetensors");
+  assert.equal(api.loraPreviewImageUrl(""), "");
 });
 
 test("completeFromPrompt calls POST /complete_from_prompt with finished prompt params", async () => {

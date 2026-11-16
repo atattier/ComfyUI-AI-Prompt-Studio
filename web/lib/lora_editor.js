@@ -5,7 +5,7 @@
  * editing, category organization, and 1-click application to canvas nodes.
  */
 
-import { StudioApi } from "./api.js?v=20261116_v38";
+import { StudioApi } from "./api.js?v=20261116_v39";
 
 function detectIsLightTheme() {
   if (typeof document === "undefined" || typeof getComputedStyle !== "function") return false;
@@ -648,7 +648,9 @@ export function openLoraPresetLightbox(preset, { api: suppliedApi = null, onAppl
   let coverUrl = preset.thumbnail || (preset.has_image ? api.loraPresetImageUrl(preset.id) : "");
   if (!coverUrl && preset.loras && preset.loras.length > 0) {
     const firstL = preset.loras.find((l) => l.name);
-    if (firstL) coverUrl = api.loraPreviewImageUrl(firstL.name);
+    if (firstL && typeof api?.loraPreviewImageUrl === "function") {
+      coverUrl = api.loraPreviewImageUrl(firstL.name);
+    }
   }
 
   function renderMediaView() {
@@ -1061,7 +1063,7 @@ export function openLoraPresetLibraryModal({
     let coverUrl = preset.thumbnail || (preset.has_image ? api.loraPresetImageUrl(preset.id) : "");
     if (!coverUrl && loras.length > 0) {
       const firstWithPreview = loras.find((l) => l.name);
-      if (firstWithPreview) {
+      if (firstWithPreview && typeof api?.loraPreviewImageUrl === "function") {
         coverUrl = api.loraPreviewImageUrl(firstWithPreview.name);
       }
     }
