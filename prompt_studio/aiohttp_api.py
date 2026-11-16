@@ -63,7 +63,7 @@ from .redaction import Redactor, mask_secret
 from .sessions import MediaStore, SessionStore
 from .versions import VersionStore
 from .presets import PresetStore
-from .lora_presets import LoraPresetStore, scan_available_loras
+from .lora_presets import LoraPresetStore, scan_available_loras, scan_available_loras_metadata
 
 MAX_BODY = 25 * 1024 * 1024
 
@@ -1044,6 +1044,9 @@ class StudioBackend:
     def list_available_loras(self) -> list[str]:
         return scan_available_loras()
 
+    def list_available_loras_metadata(self) -> dict[str, Any]:
+        return scan_available_loras_metadata()
+
 
 # ----------------------------------------------------------------- aiohttp
 def _as_int(value: Any, default: int = 0) -> int:
@@ -1882,7 +1885,8 @@ def install_routes(
     @guarded
     async def available_loras_route(_request: web.Request) -> web.Response:
         data = await asyncio.to_thread(require().list_available_loras)
-        return web.json_response({"loras": data})
+        details = await asyncio.to_thread(require().list_available_loras_metadata)
+        return web.json_response({"loras": data, "lora_details": details})
 
     @routes.get("/ai_prompt_studio/lora_presets/categories")
     @guarded

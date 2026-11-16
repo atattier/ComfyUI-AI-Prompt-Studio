@@ -180,6 +180,67 @@ def scan_available_loras() -> list[str]:
     return sorted(list(found))
 
 
+def get_lora_trigger_words(lora_rel_path: str) -> str:
+    """Attempt to locate trigger words from sidecar json/txt files."""
+    possible_roots = []
+    try:
+        import folder_paths
+        lora_full = folder_paths.get_full_path("loras", lora_rel_path)
+        if lora_full:
+            possible_roots.append(os.path.dirname(lora_full))
+    except Exception:
+        pass
+
+    possible_roots.extend([
+        r"E:\AI_vedios\ComfyUI_aki\ComfyUI-aki-v3.2\ComfyUI\models\loras",
+        os.path.join(os.getcwd(), "models", "loras"),
+    ])
+
+    for root_dir in possible_roots:
+        if not os.path.isdir(root_dir):
+            continue
+        full_path = os.path.join(root_dir, lora_rel_path)
+        base = os.path.splitext(full_path)[0]
+        candidates = [
+            base + ".metadata.json",
+            full_path + ".weilin-info.json",
+            base + ".safetensors.weilin-info.json",
+            base + ".json",
+            base + ".txt",
+            base + ".civitai.info",
+        ]
+        for c in candidates:
+            if os.path.isfile(c):
+                try:
+                    if c.endswith(".txt"):
+                        text = open(c, encoding="utf-8", errors="ignore").read().strip()
+                        if text:
+                            return text
+                    with open(c, encoding="utf-8", errors="ignore") as fp:
+                        data = json.load(fp)
+                    tw = (
+                        data.get("civitai", {}).get("trainedWords")
+                        or data.get("trainedWords")
+                        or data.get("trigger_words")
+                        or data.get("tags")
+                    )
+                    if tw:
+                        return tw if isinstance(tw, str) else ", ".join(str(w) for w in tw if w)
+                except Exception:
+                    pass
+    return ""
+
+
+def scan_available_loras_metadata() -> dict[str, dict[str, Any]]:
+    """Scan available LoRA files along with sidecar trigger words."""
+    loras = scan_available_loras()
+    result = {}
+    for lora_name in loras:
+        tw = get_lora_trigger_words(lora_name)
+        result[lora_name] = {"trigger_words": tw}
+    return result
+
+
 class LoraPresetStore:
     """SQLite-backed store for LoRA stack presets."""
 

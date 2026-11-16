@@ -1,9 +1,14 @@
 /**
  * Frontend extension for AIPromptStudioLora graph node.
  *
- * Provides a dedicated in-node control card for LoRA stack preset selection,
- * real-time weight overview, trigger word copying, and access to the full
- * LoRA Preset Hub.
+ * Modern, clean, and fully interactive in-node LoRA Stacker & Preset Manager.
+ * Inspired by ComfyUI-Lora-Manager and Prompt-Gallery:
+ * - Hides cluttering stock ComfyUI widgets.
+ * - In-node interactive LoRA stack rows with on/off switch, Model/Clip strength steppers,
+ *   single-LoRA trigger word copying, reordering, and deletion.
+ * - Fast local LoRA search/select dropdown with auto trigger word detection.
+ * - 1-click Preset saving, preset dropdown switching, and rich Preset Hub drawer.
+ * - Real-time aggregated trigger words & <lora:...> syntax copying.
  */
 
 import { app } from "../../scripts/app.js";
@@ -11,7 +16,6 @@ import { StudioApi } from "./lib/api.js";
 import {
   openSaveLoraPresetModal,
   openLoraPresetLibraryModal,
-  formatLoraStackSummary,
   buildLoraSyntaxString,
 } from "./lib/lora_editor.js";
 
@@ -33,296 +37,614 @@ export function setupLoraNode(node) {
   // Find standard widgets
   const getWidget = (name) => node.widgets?.find((w) => w.name === name);
   const presetWidget = getWidget("preset_name");
-  const customJsonWidget = getWidget("custom_stack_json");
+  const modelScaleWidget = getWidget("model_strength_scale");
+  const clipScaleWidget = getWidget("clip_strength_scale");
   const extraTwWidget = getWidget("extra_trigger_words");
+  const customJsonWidget = getWidget("custom_stack_json");
 
-  // Hide raw JSON widget to keep node clean
-  if (customJsonWidget) {
-    customJsonWidget.type = "hidden";
-    customJsonWidget.hidden = true;
-    customJsonWidget.computeSize = () => [0, -4];
+  // Hide raw/cluttering widgets from canvas draw
+  const hideWidgets = [
+    presetWidget,
+    modelScaleWidget,
+    clipScaleWidget,
+    extraTwWidget,
+    customJsonWidget,
+  ];
+  for (const w of hideWidgets) {
+    if (w) {
+      w.type = "hidden";
+      w.hidden = true;
+      w.computeSize = () => [0, -4];
+      w.draw = () => {};
+    }
   }
 
-  // Create In-Node Card Container
+  // Adjust node dimensions
+  const currentW = node.size ? node.size[0] : 390;
+  const currentH = node.size ? node.size[1] : 440;
+  node.setSize([Math.max(currentW, 390), Math.max(currentH, 440)]);
+
+  // State
+  let currentStack = []; // array of { id, name, strength_model, strength_clip, enabled, trigger_words, linked }
+  let availableLoras = []; // array of filenames
+  let loraDetails = {}; // map of { [name]: { trigger_words: string } }
+  let presetsList = []; // array of preset objects from database
+  let currentPresetData = null;
+  let showExtraInput = false;
+
+  // Root Card Element
   const card = el("div", "aps-lora-node-card notranslate");
-  card.style.display = "flex";
-  card.style.flexDirection = "column";
-  card.style.gap = "8px";
-  card.style.padding = "10px";
-  card.style.background = "var(--aps-bg-surface, #1e1e24)";
-  card.style.border = "1px solid var(--aps-border, #3a3a46)";
-  card.style.borderRadius = "8px";
-  card.style.fontSize = "12px";
-  card.style.boxSizing = "border-box";
-  card.style.width = "100%";
 
-  // 1. Toolbar Row
-  const toolRow = el("div", "aps-lora-card-tools");
-  toolRow.style.display = "flex";
-  toolRow.style.justifyContent = "space-between";
-  toolRow.style.alignItems = "center";
-  toolRow.style.gap = "6px";
+  // Prevent canvas dragging / zooming when interacting inside card
+  card.addEventListener("wheel", (e) => e.stopPropagation(), { passive: true });
+  card.addEventListener("pointerdown", (e) => e.stopPropagation());
+  card.addEventListener("mousedown", (e) => e.stopPropagation());
 
-  const brand = el("div");
-  brand.style.display = "flex";
-  brand.style.alignItems = "center";
-  brand.style.gap = "4px";
-  brand.style.fontWeight = "bold";
-  brand.style.color = "var(--aps-text-primary, #eee)";
-  brand.append(el("span", "", "🥞"), el("span", "", "LoRA 资产与堆叠"));
+  // ---------------------------------------------------------------------------
+  // 1. Top Bar: Brand Title & Preset Hub / Clear Actions
+  // ---------------------------------------------------------------------------
+  const topBar = el("div", "aps-lora-top-bar");
+  const brand = el("div", "aps-lora-brand");
+  brand.append(el("span", "", "🥞"), el("span", "", "LoRA 预设与堆叠"));
 
-  const btnGroup = el("div");
-  btnGroup.style.display = "flex";
-  btnGroup.style.gap = "4px";
-
-  const saveBtn = el("button", "aps-btn aps-btn-xs", "💾 存为预设");
+  const topActions = el("div", "aps-lora-actions");
+  const saveBtn = el("button", "aps-btn aps-btn-xs aps-btn-primary", "💾 存为预设");
   saveBtn.type = "button";
-  saveBtn.title = "将当前节点的 LoRA 堆叠保存到预设库";
+  saveBtn.title = "将当前堆叠保存为新预设或覆盖现有预设";
 
-  const libBtn = el("button", "aps-btn aps-btn-xs aps-primary", "📚 LoRA 预设库");
+  const libBtn = el("button", "aps-btn aps-btn-xs", "📚 预设库");
   libBtn.type = "button";
-  libBtn.title = "打开 LoRA 资产与堆叠预设库浏览器";
+  libBtn.title = "打开 LoRA 资产与堆叠预设库浏览器（分类、封面、导入导出）";
 
-  btnGroup.append(saveBtn, libBtn);
-  toolRow.append(brand, btnGroup);
-  card.append(toolRow);
+  const clearBtn = el("button", "aps-btn aps-btn-xs aps-btn-text", "🗑️");
+  clearBtn.type = "button";
+  clearBtn.title = "清空当前堆叠";
 
-  // 2. Preset Info & Stack Overview
-  const infoRow = el("div");
-  infoRow.style.display = "flex";
-  infoRow.style.justifyContent = "space-between";
-  infoRow.style.alignItems = "center";
-  infoRow.style.padding = "4px 8px";
-  infoRow.style.background = "rgba(0, 0, 0, 0.25)";
-  infoRow.style.borderRadius = "4px";
+  topActions.append(saveBtn, libBtn, clearBtn);
+  topBar.append(brand, topActions);
+  card.append(topBar);
 
-  const presetBadge = el("span", "aps-badge aps-badge-blue");
-  presetBadge.textContent = presetWidget?.value || "默认堆叠";
+  // ---------------------------------------------------------------------------
+  // 2. Preset Row: Clean Dropdown to Switch Saved Presets
+  // ---------------------------------------------------------------------------
+  const presetBar = el("div", "aps-lora-preset-bar");
+  const presetLabel = el("span", "aps-lora-preset-label", "预设:");
+  const presetSelect = el("select", "aps-lora-preset-select");
+  presetSelect.title = "切换已保存的 LoRA 预设组合";
 
-  const countBadge = el("span", "aps-badge aps-badge-purple");
-  countBadge.textContent = "0 个 LoRA";
+  presetBar.append(presetLabel, presetSelect);
+  card.append(presetBar);
 
-  infoRow.append(presetBadge, countBadge);
-  card.append(infoRow);
+  // ---------------------------------------------------------------------------
+  // 3. Quick Add Row: Pick local LoRA to add immediately
+  // ---------------------------------------------------------------------------
+  const addBar = el("div", "aps-lora-add-bar");
+  const addSelect = el("select", "aps-lora-add-select");
+  addSelect.title = "选择本地已安装的 LoRA 模型";
 
-  // 3. Stack Details Box
-  const stackBox = el("div");
-  stackBox.style.display = "flex";
-  stackBox.style.flexDirection = "column";
-  stackBox.style.gap = "3px";
-  stackBox.style.maxHeight = "120px";
-  stackBox.style.overflowY = "auto";
-  stackBox.style.padding = "4px 6px";
-  stackBox.style.background = "rgba(0, 0, 0, 0.15)";
-  stackBox.style.borderRadius = "4px";
-  stackBox.style.fontSize = "11px";
+  const addBtn = el("button", "aps-btn aps-btn-xs aps-btn-primary aps-lora-add-btn", "➕ 添加");
+  addBtn.type = "button";
+  addBtn.title = "将所选 LoRA 添加到当前堆叠列表";
+
+  addBar.append(addSelect, addBtn);
+  card.append(addBar);
+
+  // ---------------------------------------------------------------------------
+  // 4. Interactive LoRA Stack Box: Scrollable rows with switches, weights, deletes
+  // ---------------------------------------------------------------------------
+  const stackBox = el("div", "aps-lora-stack-box");
   card.append(stackBox);
 
-  // 4. Trigger Words Preview Box
-  const twRow = el("div");
-  twRow.style.display = "flex";
-  twRow.style.flexDirection = "column";
-  twRow.style.gap = "4px";
+  // ---------------------------------------------------------------------------
+  // 5. Footer Bar: Aggregated Trigger Words, Copy & Syntax
+  // ---------------------------------------------------------------------------
+  const footerBar = el("div", "aps-lora-footer-bar");
 
-  const twHeader = el("div");
-  twHeader.style.display = "flex";
-  twHeader.style.justifyContent = "space-between";
-  twHeader.style.alignItems = "center";
+  // Summary row
+  const twBox = el("div", "aps-lora-footer-tw-box");
+  const twLabel = el("span", "aps-lora-footer-tw-label", "💬 触发词:");
+  const twPreview = el("span", "aps-lora-footer-tw-preview", "（暂无触发词）");
+  twBox.append(twLabel, twPreview);
 
-  const twLabel = el("span", "", "触发词预览：");
-  twLabel.style.opacity = "0.75";
-  twLabel.style.fontSize = "11px";
+  // Extra input (foldable)
+  const extraRow = el("div");
+  extraRow.style.display = "none";
+  const extraInput = el("input", "aps-lora-extra-input");
+  extraInput.placeholder = "可选：输入追加的提示词...";
+  extraInput.value = extraTwWidget?.value || "";
+  extraRow.append(extraInput);
 
-  const copyTwBtn = el("button", "aps-btn aps-btn-xs", "📋 复制");
+  // Button row
+  const footerBtns = el("div", "aps-lora-footer-btns");
+  const copyTwBtn = el("button", "aps-btn aps-btn-xs", "📋 复制触发词");
   copyTwBtn.type = "button";
-  copyTwBtn.style.padding = "1px 6px";
 
-  twHeader.append(twLabel, copyTwBtn);
+  const copySyntaxBtn = el("button", "aps-btn aps-btn-xs", "📋 复制语法");
+  copySyntaxBtn.type = "button";
 
-  const twSnippet = el("div");
-  twSnippet.style.padding = "4px 6px";
-  twSnippet.style.background = "rgba(0, 0, 0, 0.25)";
-  twSnippet.style.borderRadius = "4px";
-  twSnippet.style.fontSize = "11px";
-  twSnippet.style.color = "#93c5fd";
-  twSnippet.style.wordBreak = "break-all";
-  twSnippet.textContent = "（暂无触发词）";
+  const toggleExtraBtn = el("button", "aps-btn aps-btn-xs aps-btn-text", "➕ 附加词");
+  toggleExtraBtn.type = "button";
+  toggleExtraBtn.title = "展开/折叠附加触发词输入框";
 
-  twRow.append(twHeader, twSnippet);
-  card.append(twRow);
+  footerBtns.append(copyTwBtn, copySyntaxBtn, toggleExtraBtn);
+  footerBar.append(twBox, extraRow, footerBtns);
+  card.append(footerBar);
 
-  // 5. Status / Syntax line
-  const syntaxLine = el("div");
-  syntaxLine.style.fontSize = "11px";
-  syntaxLine.style.opacity = "0.6";
-  syntaxLine.style.overflow = "hidden";
-  syntaxLine.style.textOverflow = "ellipsis";
-  syntaxLine.style.whiteSpace = "nowrap";
-  syntaxLine.textContent = "语法: <无 LoRA>";
-  card.append(syntaxLine);
-
-  let currentPresetData = null;
-
-  async function refreshDisplay() {
-    let presetName = presetWidget?.value || "";
-    presetBadge.textContent = presetName || "未命名堆叠";
-
-    // Try reading customJsonWidget
-    let loras = [];
-    let tw = "";
-    if (customJsonWidget?.value) {
-      try {
-        const parsed = JSON.parse(customJsonWidget.value);
-        if (Array.isArray(parsed)) {
-          loras = parsed;
-        } else if (parsed && typeof parsed === "object") {
-          loras = parsed.loras || [];
-          tw = parsed.trigger_words || "";
-        }
-      } catch {}
+  // ---------------------------------------------------------------------------
+  // Core Synchronization Logic
+  // ---------------------------------------------------------------------------
+  function getActiveTriggerWords() {
+    const list = [];
+    for (const item of currentStack) {
+      if (item && item.enabled !== false && item.trigger_words) {
+        list.push(item.trigger_words.trim());
+      }
     }
+    const extra = extraInput.value.trim();
+    if (extra) list.push(extra);
+    return list.filter(Boolean).join(", ");
+  }
 
-    // Fallback: fetch preset info from API
-    if (loras.length === 0 && presetName) {
-      try {
-        const listRes = await api.listLoraPresets();
-        const found = listRes.presets?.find(
-          (p) => p.name === presetName || p.id === presetName
-        );
-        if (found) {
-          currentPresetData = found;
-          loras = found.loras || [];
-          tw = found.trigger_words || "";
-        }
-      } catch {}
+  function syncStateToNode() {
+    const activeTw = getActiveTriggerWords();
+    twPreview.textContent = activeTw || "（暂无触发词）";
+    twPreview.title = activeTw;
+
+    const payload = {
+      loras: currentStack.map((item) => ({
+        name: item.name,
+        strength_model: Number(Number(item.strength_model ?? 1.0).toFixed(3)),
+        strength_clip: Number(Number(item.strength_clip ?? 1.0).toFixed(3)),
+        enabled: item.enabled !== false,
+        trigger_words: item.trigger_words || "",
+      })),
+      trigger_words: activeTw,
+    };
+
+    if (customJsonWidget) {
+      customJsonWidget.value = JSON.stringify(payload);
     }
-
-    countBadge.textContent = formatLoraStackSummary(loras);
-
-    // Render stack list
-    stackBox.innerHTML = "";
-    if (loras.length === 0) {
-      const emptySpan = el("div", "", "暂无加载中的 LoRA。");
-      emptySpan.style.opacity = "0.5";
-      stackBox.append(emptySpan);
-    } else {
-      loras.forEach((item) => {
-        const itemRow = el("div");
-        itemRow.style.display = "flex";
-        itemRow.style.justifyContent = "space-between";
-        itemRow.style.alignItems = "center";
-        itemRow.style.opacity = item.enabled !== false ? "1" : "0.5";
-
-        const nameSpan = el("span", "", `• ${item.name || "未命名"}`);
-        nameSpan.style.overflow = "hidden";
-        nameSpan.style.textOverflow = "ellipsis";
-        nameSpan.style.whiteSpace = "nowrap";
-        nameSpan.style.maxWidth = "160px";
-
-        const wSpan = el("span", "", `M:${item.strength_model} C:${item.strength_clip}`);
-        wSpan.style.opacity = "0.75";
-
-        itemRow.append(nameSpan, wSpan);
-        stackBox.append(itemRow);
-      });
+    if (extraTwWidget) {
+      extraTwWidget.value = extraInput.value.trim();
     }
-
-    // Trigger words
-    const fullTw = [tw, extraTwWidget?.value].filter(Boolean).join(", ");
-    twSnippet.textContent = fullTw.trim() || "（暂无触发词）";
-
-    // Syntax
-    const syntax = buildLoraSyntaxString(loras);
-    syntaxLine.textContent = syntax ? `语法: ${syntax}` : "语法: <无 LoRA>";
+    if (presetWidget && presetSelect.value) {
+      presetWidget.value = presetSelect.value;
+    }
 
     node.setDirtyCanvas?.(true, true);
   }
 
-  // Hook widget changes
-  if (presetWidget) {
-    const origCallback = presetWidget.callback;
-    presetWidget.callback = function (...args) {
-      const r = origCallback?.apply(this, args);
-      // Reset custom JSON when switching preset dropdown manually
-      if (customJsonWidget) customJsonWidget.value = "";
-      refreshDisplay();
-      return r;
-    };
+  function renderStackList() {
+    stackBox.innerHTML = "";
+    if (currentStack.length === 0) {
+      const empty = el("div", "aps-lora-empty-state");
+      empty.append(
+        el("div", "", "🥞 暂无加载中的 LoRA"),
+        el("div", "", "可在上方搜索选择本地 LoRA 添加，或切换已存预设")
+      );
+      stackBox.append(empty);
+      syncStateToNode();
+      return;
+    }
+
+    currentStack.forEach((item, index) => {
+      const itemRow = el("div", `aps-lora-item ${item.enabled === false ? "is-disabled" : ""}`);
+
+      // 1. Item Head: Toggle + Name + Tools (Reorder, Delete)
+      const head = el("div", "aps-lora-item-head");
+      const nameGroup = el("div", "aps-lora-item-name-group");
+
+      const toggleBtn = el(
+        "button",
+        `aps-lora-toggle-btn ${item.enabled === false ? "is-off" : ""}`,
+        item.enabled === false ? "OFF" : "ON"
+      );
+      toggleBtn.type = "button";
+      toggleBtn.title = item.enabled === false ? "点击启用该 LoRA" : "点击禁用（静音）该 LoRA";
+      toggleBtn.addEventListener("click", () => {
+        item.enabled = item.enabled === false ? true : false;
+        renderStackList();
+      });
+
+      const nameSpan = el("span", "aps-lora-item-name", item.name || "未命名 LoRA");
+      nameSpan.title = item.name;
+      nameGroup.append(toggleBtn, nameSpan);
+
+      const tools = el("div", "aps-lora-item-tools");
+
+      // Up button
+      if (index > 0) {
+        const upBtn = el("button", "aps-lora-icon-btn", "▲");
+        upBtn.type = "button";
+        upBtn.title = "上移一层";
+        upBtn.addEventListener("click", () => {
+          const temp = currentStack[index - 1];
+          currentStack[index - 1] = currentStack[index];
+          currentStack[index] = temp;
+          renderStackList();
+        });
+        tools.append(upBtn);
+      }
+
+      // Down button
+      if (index < currentStack.length - 1) {
+        const downBtn = el("button", "aps-lora-icon-btn", "▼");
+        downBtn.type = "button";
+        downBtn.title = "下移一层";
+        downBtn.addEventListener("click", () => {
+          const temp = currentStack[index + 1];
+          currentStack[index + 1] = currentStack[index];
+          currentStack[index] = temp;
+          renderStackList();
+        });
+        tools.append(downBtn);
+      }
+
+      // Delete button
+      const delBtn = el("button", "aps-lora-icon-btn is-delete", "✕");
+      delBtn.type = "button";
+      delBtn.title = "移除该 LoRA";
+      delBtn.addEventListener("click", () => {
+        currentStack.splice(index, 1);
+        renderStackList();
+      });
+      tools.append(delBtn);
+
+      head.append(nameGroup, tools);
+      itemRow.append(head);
+
+      // 2. Weights Row: Model Strength, Link Button, Clip Strength
+      const weightsRow = el("div", "aps-lora-item-weights");
+
+      // Model Stepper
+      const mStepper = el("div", "aps-weight-stepper");
+      const mMinus = el("button", "", "-");
+      mMinus.type = "button";
+      const mInput = el("input");
+      mInput.type = "number";
+      mInput.step = "0.05";
+      mInput.value = Number(item.strength_model ?? 1.0).toFixed(2);
+      const mPlus = el("button", "", "+");
+      mPlus.type = "button";
+
+      mStepper.append(mMinus, mInput, mPlus);
+
+      // Link button (Model & Clip lock)
+      const isLinked = item.linked !== false;
+      const linkBtn = el("button", `aps-link-btn ${isLinked ? "" : "is-unlinked"}`, isLinked ? "🔗" : "⛓️");
+      linkBtn.type = "button";
+      linkBtn.title = isLinked ? "权重联动已开启（点击解绑）" : "权重联动已解除（点击锁定联动）";
+
+      // Clip Stepper
+      const cStepper = el("div", "aps-weight-stepper");
+      const cMinus = el("button", "", "-");
+      cMinus.type = "button";
+      const cInput = el("input");
+      cInput.type = "number";
+      cInput.step = "0.05";
+      cInput.value = Number(item.strength_clip ?? item.strength_model ?? 1.0).toFixed(2);
+      const cPlus = el("button", "", "+");
+      cPlus.type = "button";
+
+      cStepper.append(cMinus, cInput, cPlus);
+
+      // Stepper change handlers
+      const updateM = (val) => {
+        const rounded = Number(val.toFixed(2));
+        item.strength_model = rounded;
+        mInput.value = rounded.toFixed(2);
+        if (item.linked !== false) {
+          item.strength_clip = rounded;
+          cInput.value = rounded.toFixed(2);
+        }
+        syncStateToNode();
+      };
+
+      const updateC = (val) => {
+        const rounded = Number(val.toFixed(2));
+        item.strength_clip = rounded;
+        cInput.value = rounded.toFixed(2);
+        syncStateToNode();
+      };
+
+      mMinus.addEventListener("click", () => updateM((Number(mInput.value) || 1.0) - 0.05));
+      mPlus.addEventListener("click", () => updateM((Number(mInput.value) || 1.0) + 0.05));
+      mInput.addEventListener("change", () => updateM(Number(mInput.value) || 1.0));
+
+      cMinus.addEventListener("click", () => updateC((Number(cInput.value) || 1.0) - 0.05));
+      cPlus.addEventListener("click", () => updateC((Number(cInput.value) || 1.0) + 0.05));
+      cInput.addEventListener("change", () => updateC(Number(cInput.value) || 1.0));
+
+      linkBtn.addEventListener("click", () => {
+        item.linked = item.linked === false ? true : false;
+        if (item.linked) {
+          updateM(Number(mInput.value) || 1.0);
+        }
+        renderStackList();
+      });
+
+      weightsRow.append(
+        el("span", "", "M:"),
+        mStepper,
+        linkBtn,
+        el("span", "", "C:"),
+        cStepper
+      );
+      itemRow.append(weightsRow);
+
+      // 3. Trigger words chip (if present)
+      if (item.trigger_words && item.trigger_words.trim()) {
+        const twRow = el("div", "aps-lora-item-tw");
+        const twIcon = el("span", "", "🏷️");
+        const twText = el("span", "aps-lora-item-tw-text", item.trigger_words);
+        twText.title = item.trigger_words;
+
+        const copyItemTw = el("button", "aps-lora-icon-btn", "📋");
+        copyItemTw.type = "button";
+        copyItemTw.title = "复制此 LoRA 的触发词";
+        copyItemTw.addEventListener("click", () => {
+          navigator.clipboard.writeText(item.trigger_words);
+          copyItemTw.textContent = "✓";
+          setTimeout(() => { copyItemTw.textContent = "📋"; }, 1200);
+        });
+
+        twRow.append(twIcon, twText, copyItemTw);
+        itemRow.append(twRow);
+      }
+
+      stackBox.append(itemRow);
+    });
+
+    syncStateToNode();
   }
 
-  copyTwBtn.addEventListener("click", () => {
-    const text = twSnippet.textContent;
-    if (text && text !== "（暂无触发词）") {
-      navigator.clipboard.writeText(text);
-      copyTwBtn.textContent = "✓ 已复制";
-      setTimeout(() => { copyTwBtn.textContent = "📋 复制"; }, 1500);
+  // ---------------------------------------------------------------------------
+  // Load initial data (presets, local loras, stack)
+  // ---------------------------------------------------------------------------
+  async function initData() {
+    // 1. Fetch available local LoRAs
+    try {
+      const res = await api.getAvailableLoras();
+      availableLoras = res.loras || [];
+      loraDetails = res.lora_details || {};
+
+      addSelect.innerHTML = "";
+      const defaultOpt = el("option", "", `+ 从本地添加 LoRA... (共 ${availableLoras.length} 个)`);
+      defaultOpt.value = "";
+      addSelect.append(defaultOpt);
+
+      availableLoras.forEach((name) => {
+        const opt = el("option", "", name);
+        opt.value = name;
+        addSelect.append(opt);
+      });
+    } catch (e) {
+      console.warn("[AIPromptStudioLora] 获取本地 LoRA 列表失败:", e);
+    }
+
+    // 2. Fetch Presets from SQLite
+    try {
+      const presRes = await api.listLoraPresets();
+      presetsList = presRes.presets || [];
+      updatePresetDropdown();
+    } catch (e) {
+      console.warn("[AIPromptStudioLora] 获取 LoRA 预设库失败:", e);
+    }
+
+    // 3. Load initial stack from widgets
+    loadStackFromWidgets();
+  }
+
+  function updatePresetDropdown() {
+    presetSelect.innerHTML = "";
+    if (presetsList.length === 0) {
+      const opt = el("option", "", "暂无保存的预设");
+      opt.value = "";
+      presetSelect.append(opt);
+      return;
+    }
+
+    presetsList.forEach((p) => {
+      const opt = el("option", "", `${p.name} (${p.category || "通用"})`);
+      opt.value = p.name;
+      presetSelect.append(opt);
+    });
+
+    if (presetWidget?.value) {
+      presetSelect.value = presetWidget.value;
+    }
+  }
+
+  function loadStackFromWidgets() {
+    let parsedStack = [];
+
+    // Try custom_stack_json
+    if (customJsonWidget?.value) {
+      try {
+        const raw = JSON.parse(customJsonWidget.value);
+        if (Array.isArray(raw)) {
+          parsedStack = raw;
+        } else if (raw && Array.isArray(raw.loras)) {
+          parsedStack = raw.loras;
+        }
+      } catch {}
+    }
+
+    // If custom stack has items, use them
+    if (parsedStack.length > 0) {
+      currentStack = parsedStack.map((item) => ({
+        name: item.name || "未命名",
+        strength_model: Number(item.strength_model ?? 1.0),
+        strength_clip: Number(item.strength_clip ?? item.strength_model ?? 1.0),
+        enabled: item.enabled !== false,
+        trigger_words: item.trigger_words || (loraDetails[item.name]?.trigger_words) || "",
+        linked: item.strength_model === item.strength_clip,
+      }));
+      renderStackList();
+      return;
+    }
+
+    // Otherwise load from active preset
+    const targetPresetName = presetWidget?.value || (presetsList[0]?.name);
+    if (targetPresetName) {
+      const found = presetsList.find((p) => p.name === targetPresetName || p.id === targetPresetName);
+      if (found) {
+        currentPresetData = found;
+        presetSelect.value = found.name;
+        currentStack = (found.loras || []).map((item) => ({
+          name: item.name || "未命名",
+          strength_model: Number(item.strength_model ?? 1.0),
+          strength_clip: Number(item.strength_clip ?? item.strength_model ?? 1.0),
+          enabled: item.enabled !== false,
+          trigger_words: item.trigger_words || (loraDetails[item.name]?.trigger_words) || "",
+          linked: item.strength_model === item.strength_clip,
+        }));
+        renderStackList();
+        return;
+      }
+    }
+
+    // Empty fallback
+    currentStack = [];
+    renderStackList();
+  }
+
+  // ---------------------------------------------------------------------------
+  // Event Listeners
+  // ---------------------------------------------------------------------------
+  // 1. Preset Dropdown Switch
+  presetSelect.addEventListener("change", () => {
+    const selName = presetSelect.value;
+    const found = presetsList.find((p) => p.name === selName || p.id === selName);
+    if (found) {
+      currentPresetData = found;
+      if (presetWidget) presetWidget.value = found.name;
+      currentStack = (found.loras || []).map((item) => ({
+        name: item.name,
+        strength_model: Number(item.strength_model ?? 1.0),
+        strength_clip: Number(item.strength_clip ?? item.strength_model ?? 1.0),
+        enabled: item.enabled !== false,
+        trigger_words: item.trigger_words || (loraDetails[item.name]?.trigger_words) || "",
+        linked: item.strength_model === item.strength_clip,
+      }));
+      renderStackList();
     }
   });
 
-  saveBtn.addEventListener("click", () => {
-    let loras = [];
-    if (customJsonWidget?.value) {
-      try {
-        const p = JSON.parse(customJsonWidget.value);
-        loras = Array.isArray(p) ? p : p.loras || [];
-      } catch {}
-    } else if (currentPresetData?.loras) {
-      loras = currentPresetData.loras;
-    }
+  // 2. Add LoRA Button
+  addBtn.addEventListener("click", () => {
+    const name = addSelect.value;
+    if (!name) return;
 
+    // Detect trigger words
+    const tw = loraDetails[name]?.trigger_words || "";
+
+    currentStack.push({
+      name,
+      strength_model: 1.0,
+      strength_clip: 1.0,
+      enabled: true,
+      trigger_words: tw,
+      linked: true,
+    });
+
+    addSelect.value = "";
+    renderStackList();
+  });
+
+  // 3. Clear Stack
+  clearBtn.addEventListener("click", () => {
+    if (currentStack.length === 0) return;
+    currentStack = [];
+    renderStackList();
+  });
+
+  // 4. Save Preset Button
+  saveBtn.addEventListener("click", () => {
     openSaveLoraPresetModal({
       api,
       preset: currentPresetData,
-      initialLoras: loras,
-      initialTriggerWords: twSnippet.textContent !== "（暂无触发词）" ? twSnippet.textContent : "",
-      onSaved: (saved) => {
+      initialLoras: currentStack,
+      initialTriggerWords: getActiveTriggerWords(),
+      onSaved: async (saved) => {
         currentPresetData = saved;
-        if (presetWidget) {
-          if (!presetWidget.options?.values?.includes(saved.name)) {
-            presetWidget.options?.values?.push(saved.name);
-          }
-          presetWidget.value = saved.name;
-        }
-        if (customJsonWidget) {
-          customJsonWidget.value = JSON.stringify(saved);
-        }
-        refreshDisplay();
+        // Refresh preset list
+        try {
+          const presRes = await api.listLoraPresets();
+          presetsList = presRes.presets || [];
+          updatePresetDropdown();
+          presetSelect.value = saved.name;
+          if (presetWidget) presetWidget.value = saved.name;
+        } catch {}
+        syncStateToNode();
       },
     });
   });
 
+  // 5. Open Full Library Drawer
   libBtn.addEventListener("click", () => {
     openLoraPresetLibraryModal({
       api,
       onApply: (preset) => {
         currentPresetData = preset;
-        if (presetWidget) {
-          if (!presetWidget.options?.values?.includes(preset.name)) {
-            presetWidget.options?.values?.push(preset.name);
-          }
-          presetWidget.value = preset.name;
-        }
-        if (customJsonWidget) {
-          customJsonWidget.value = JSON.stringify(preset);
-        }
-        refreshDisplay();
+        updatePresetDropdown();
+        presetSelect.value = preset.name;
+        if (presetWidget) presetWidget.value = preset.name;
+        currentStack = (preset.loras || []).map((item) => ({
+          name: item.name,
+          strength_model: Number(item.strength_model ?? 1.0),
+          strength_clip: Number(item.strength_clip ?? item.strength_model ?? 1.0),
+          enabled: item.enabled !== false,
+          trigger_words: item.trigger_words || (loraDetails[item.name]?.trigger_words) || "",
+          linked: item.strength_model === item.strength_clip,
+        }));
+        renderStackList();
       },
     });
   });
 
-  // Attach card as DOM widget if supported
+  // 6. Copy Trigger Words
+  copyTwBtn.addEventListener("click", () => {
+    const tw = getActiveTriggerWords();
+    if (tw) {
+      navigator.clipboard.writeText(tw);
+      copyTwBtn.textContent = "✓ 已复制";
+      setTimeout(() => { copyTwBtn.textContent = "📋 复制触发词"; }, 1500);
+    }
+  });
+
+  // 7. Copy Syntax <lora:...>
+  copySyntaxBtn.addEventListener("click", () => {
+    const syntax = buildLoraSyntaxString(currentStack);
+    if (syntax) {
+      navigator.clipboard.writeText(syntax);
+      copySyntaxBtn.textContent = "✓ 已复制语法";
+      setTimeout(() => { copySyntaxBtn.textContent = "📋 复制语法"; }, 1500);
+    }
+  });
+
+  // 8. Fold/Unfold Extra Trigger Words
+  toggleExtraBtn.addEventListener("click", () => {
+    showExtraInput = !showExtraInput;
+    extraRow.style.display = showExtraInput ? "block" : "none";
+    toggleExtraBtn.textContent = showExtraInput ? "▲ 折叠词" : "➕ 附加词";
+  });
+
+  extraInput.addEventListener("input", () => {
+    syncStateToNode();
+  });
+
+  // Attach card as DOM widget
   if (typeof node.addDOMWidget === "function") {
     node.addDOMWidget("aps_lora_card", "custom", card, {
       serialize: false,
       hideOnZoom: false,
-      getMinHeight: () => 220,
+      getMinHeight: () => 360,
     });
   }
 
-  // Initial refresh
-  setTimeout(() => {
-    refreshDisplay();
-  }, 100);
+  // Load data
+  initData();
 }
 
 const extension = {
