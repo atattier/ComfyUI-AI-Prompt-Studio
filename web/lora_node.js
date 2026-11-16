@@ -12,14 +12,128 @@
  */
 
 import { app } from "../../scripts/app.js";
-import { StudioApi } from "./lib/api.js";
+import { StudioApi } from "./lib/api.js?v=20261116_v35";
 import {
   openSaveLoraPresetModal,
   openLoraPresetLibraryModal,
   buildLoraSyntaxString,
-} from "./lib/lora_editor.js";
+} from "./lib/lora_editor.js?v=20261116_v35";
 
 const NODE_TYPE = "AIPromptStudioLora";
+const STYLE_VERSION = "20261116_v35";
+
+function mountStyles() {
+  if (typeof document === "undefined") return;
+  const existing = document.querySelector("link[data-aps-style]");
+  if (!existing || existing.dataset.apsStyle !== STYLE_VERSION) {
+    existing?.remove();
+    const link = document.createElement("link");
+    link.rel = "stylesheet";
+    link.href = new URL(`./style.css?v=${STYLE_VERSION}`, import.meta.url).href;
+    link.dataset.apsStyle = STYLE_VERSION;
+    document.head.append(link);
+  }
+}
+
+function parseRgbLuminance(colorStr) {
+  if (!colorStr) return null;
+  const m = String(colorStr).match(/rgba?\s*\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/i);
+  if (m) {
+    const [, r, g, b] = m.map(Number);
+    return (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+  }
+  return null;
+}
+
+function detectIsLightTheme(elRef) {
+  if (typeof document === "undefined" || typeof getComputedStyle !== "function") return false;
+  try {
+    const rootStyle = getComputedStyle(elRef || document.documentElement);
+    const menuBg = rootStyle.getPropertyValue("--comfy-menu-bg").trim();
+    const bgLum = parseRgbLuminance(menuBg);
+    if (bgLum !== null) return bgLum > 0.55;
+    const fgColor = rootStyle.getPropertyValue("--fg-color").trim();
+    const fgLum = parseRgbLuminance(fgColor);
+    if (fgLum !== null) return fgLum < 0.45;
+    const bodyBg = parseRgbLuminance(getComputedStyle(document.body).backgroundColor);
+    if (bodyBg !== null) return bodyBg > 0.55;
+  } catch {}
+  return false;
+}
+
+function getNodeSize(node) {
+  if (Array.isArray(node?.size) && node.size.length >= 2) {
+    return [Math.max(10, Number(node.size[0]) || 0), Math.max(10, Number(node.size[1]) || 0)];
+  }
+  return [410, 490];
+}
+
+function hideRawWidgets(node) {
+  if (!node || !node.widgets) return;
+  const isBrowser = typeof document !== "undefined";
+  for (const w of node.widgets) {
+    if (!w || w.name === "aps_lora_card") continue;
+    w._apsHidden = true;
+    w.hidden = true;
+    if (w.options && typeof w.options === "object") {
+      w.options.hidden = true;
+    }
+    if (w.visibility?.suppression) {
+      w.visibility.suppression.byExtension = true;
+    }
+    if (w._visibility?.suppression) {
+      w._visibility.suppression.byExtension = true;
+    }
+    w.computeSize = () => [0, -4];
+    w.computeLayoutSize = () => ({ minHeight: 0, maxHeight: 0, minWidth: 0 });
+    w.draw = () => {};
+    if (w.inputEl) {
+      w.inputEl.style.display = "none";
+      if (w.inputEl.parentElement) {
+        w.inputEl.parentElement.style.display = "none";
+      }
+    }
+    if (w.element) {
+      w.element.style.display = "none";
+      if (w.element.parentElement && w.element.parentElement !== node) {
+        w.element.parentElement.style.display = "none";
+      }
+    }
+  }
+}
+
+function computeTargetCardHeight(node, domWidget) {
+  const [, nodeH] = getNodeSize(node);
+  const widgetY = (domWidget && Number(domWidget.y || domWidget.last_y)) || 36;
+  return Math.max(340, Math.round(nodeH - widgetY - 12));
+}
+
+function ensureParentOverflowVisible(card) {
+  card.dataset.theme = detectIsLightTheme(card) ? "light" : "dark";
+  let p = card.parentElement;
+  let depth = 0;
+  while (p && p !== document.body && depth < 5) {
+    if (p.style) {
+      p.style.overflow = "visible";
+      p.style.contain = "none";
+      if (depth === 0) {
+        p.style.display = "flex";
+        p.style.flexDirection = "column";
+      }
+    }
+    p = p.parentElement;
+    depth++;
+  }
+}
+
+function applyCardGeometry(node, card, domWidget) {
+  const targetH = computeTargetCardHeight(node, domWidget);
+  card.style.setProperty("height", `${targetH}px`, "important");
+  card.style.setProperty("min-height", `${targetH}px`, "important");
+  if (domWidget) {
+    domWidget.computedHeight = targetH + 12;
+  }
+}
 
 function el(tag, cls = "", text = "") {
   const node = document.createElement(tag);
@@ -32,6 +146,8 @@ export function setupLoraNode(node) {
   if (node._apsLoraInitialized) return;
   node._apsLoraInitialized = true;
 
+  mountStyles();
+
   const api = new StudioApi();
 
   // Find standard widgets
@@ -42,27 +158,14 @@ export function setupLoraNode(node) {
   const extraTwWidget = getWidget("extra_trigger_words");
   const customJsonWidget = getWidget("custom_stack_json");
 
-  // Hide raw/cluttering widgets from canvas draw
-  const hideWidgets = [
-    presetWidget,
-    modelScaleWidget,
-    clipScaleWidget,
-    extraTwWidget,
-    customJsonWidget,
-  ];
-  for (const w of hideWidgets) {
-    if (w) {
-      w.type = "hidden";
-      w.hidden = true;
-      w.computeSize = () => [0, -4];
-      w.draw = () => {};
-    }
-  }
+  // Hide raw/cluttering widgets immediately
+  hideRawWidgets(node);
 
   // Adjust node dimensions
-  const currentW = node.size ? node.size[0] : 390;
-  const currentH = node.size ? node.size[1] : 440;
-  node.setSize([Math.max(currentW, 390), Math.max(currentH, 440)]);
+  const [currentW, currentH] = getNodeSize(node);
+  if (currentW < 410 || currentH < 490) {
+    node.setSize([Math.max(currentW, 410), Math.max(currentH, 490)]);
+  }
 
   // State
   let currentStack = []; // array of { id, name, strength_model, strength_clip, enabled, trigger_words, linked }
@@ -72,8 +175,9 @@ export function setupLoraNode(node) {
   let currentPresetData = null;
   let showExtraInput = false;
 
-  // Root Card Element
-  const card = el("div", "aps-lora-node-card notranslate");
+  // Root Card Element with full Prompt Studio theme support
+  const card = el("div", "aps-node-card aps-lora-node-card notranslate");
+  card.dataset.theme = detectIsLightTheme(card) ? "light" : "dark";
 
   // Prevent canvas dragging / zooming when interacting inside card
   card.addEventListener("wheel", (e) => e.stopPropagation(), { passive: true });
@@ -85,14 +189,14 @@ export function setupLoraNode(node) {
   // ---------------------------------------------------------------------------
   const topBar = el("div", "aps-lora-top-bar");
   const brand = el("div", "aps-lora-brand");
-  brand.append(el("span", "", "🥞"), el("span", "", "LoRA 预设与堆叠"));
+  brand.append(el("span", "", "🥞"), el("span", "", "LoRA 预设与多重堆叠"));
 
   const topActions = el("div", "aps-lora-actions");
   const inspectBtn = el("button", "aps-btn aps-btn-xs", "📷 识图");
   inspectBtn.type = "button";
   inspectBtn.title = "选择或直接拖入包含生成参数的图片，自动提取其中的 LoRA 堆叠与权重";
 
-  const saveBtn = el("button", "aps-btn aps-btn-xs aps-btn-primary", "💾 存为预设");
+  const saveBtn = el("button", "aps-btn aps-btn-xs aps-primary", "💾 存为预设");
   saveBtn.type = "button";
   saveBtn.title = "将当前堆叠保存为新预设或覆盖现有预设";
 
@@ -100,7 +204,7 @@ export function setupLoraNode(node) {
   libBtn.type = "button";
   libBtn.title = "打开 LoRA 资产与堆叠预设库浏览器（分类、封面、导入导出）";
 
-  const clearBtn = el("button", "aps-btn aps-btn-xs aps-btn-text", "🗑️");
+  const clearBtn = el("button", "aps-btn aps-btn-xs", "🗑️");
   clearBtn.type = "button";
   clearBtn.title = "清空当前堆叠";
 
@@ -132,7 +236,7 @@ export function setupLoraNode(node) {
   const addSelect = el("select", "aps-lora-add-select");
   addSelect.title = "选择本地已安装的 LoRA 模型";
 
-  const addBtn = el("button", "aps-btn aps-btn-xs aps-btn-primary aps-lora-add-btn", "➕ 添加");
+  const addBtn = el("button", "aps-btn aps-btn-xs aps-primary aps-lora-add-btn", "➕ 添加");
   addBtn.type = "button";
   addBtn.title = "将所选 LoRA 添加到当前堆叠列表";
 
@@ -172,7 +276,7 @@ export function setupLoraNode(node) {
   const copySyntaxBtn = el("button", "aps-btn aps-btn-xs", "📋 复制语法");
   copySyntaxBtn.type = "button";
 
-  const toggleExtraBtn = el("button", "aps-btn aps-btn-xs aps-btn-text", "➕ 附加词");
+  const toggleExtraBtn = el("button", "aps-btn aps-btn-xs", "➕ 附加词");
   toggleExtraBtn.type = "button";
   toggleExtraBtn.title = "展开/折叠附加触发词输入框";
 
@@ -716,20 +820,65 @@ export function setupLoraNode(node) {
   });
 
   // Attach card as DOM widget
+  let domWidget = null;
   if (typeof node.addDOMWidget === "function") {
-    node.addDOMWidget("aps_lora_card", "custom", card, {
+    domWidget = node.addDOMWidget("aps_lora_card", "custom", card, {
       serialize: false,
       hideOnZoom: false,
-      getMinHeight: () => 360,
+      getMinHeight: () => 340,
     });
+    if (domWidget) {
+      delete domWidget.computeSize;
+      domWidget.computeLayoutSize = () => ({
+        minHeight: 340,
+        maxHeight: undefined,
+        minWidth: 0,
+      });
+    }
   }
+
+  node._apsOnResize = () => {
+    hideRawWidgets(node);
+    ensureParentOverflowVisible(card);
+    applyCardGeometry(node, card, domWidget);
+  };
+
+  const origDraw = node.onDrawForeground;
+  node.onDrawForeground = function (...args) {
+    hideRawWidgets(node);
+    const [curW, curH] = getNodeSize(node);
+    if (curW !== node._apsLastW || curH !== node._apsLastH) {
+      node._apsLastW = curW;
+      node._apsLastH = curH;
+      node._apsOnResize?.();
+    }
+    return origDraw?.apply(this, args);
+  };
+
+  // Immediate layout sync
+  hideRawWidgets(node);
+  ensureParentOverflowVisible(card);
+  applyCardGeometry(node, card, domWidget);
+  setTimeout(() => {
+    hideRawWidgets(node);
+    ensureParentOverflowVisible(card);
+    applyCardGeometry(node, card, domWidget);
+  }, 80);
 
   // Load data
   initData();
 }
 
-const extension = {
+export const extension = {
   name: "AIPromptStudio.LoraNode",
+  async setup() {
+    mountStyles();
+    for (const node of app?.graph?._nodes || []) {
+      if (node.comfyClass === NODE_TYPE || node.type === NODE_TYPE) {
+        setupLoraNode(node);
+      }
+    }
+  },
   async beforeRegisterNodeDef(nodeType, nodeData) {
     if (nodeData?.name !== NODE_TYPE) return;
     const origCreated = nodeType.prototype.onNodeCreated;
@@ -738,10 +887,23 @@ const extension = {
       setupLoraNode(this);
       return r;
     };
+    const origConfig = nodeType.prototype.onConfigure;
+    nodeType.prototype.onConfigure = function (...args) {
+      const r = origConfig?.apply(this, args);
+      setupLoraNode(this);
+      return r;
+    };
   },
   async nodeCreated(node) {
     if (node.comfyClass === NODE_TYPE || node.type === NODE_TYPE) {
       setupLoraNode(node);
+    }
+  },
+  async afterConfigureGraph() {
+    for (const node of app?.graph?._nodes || []) {
+      if (node.comfyClass === NODE_TYPE || node.type === NODE_TYPE) {
+        setupLoraNode(node);
+      }
     }
   },
 };

@@ -5,7 +5,27 @@
  * editing, category organization, and 1-click application to canvas nodes.
  */
 
-import { StudioApi } from "./api.js";
+import { StudioApi } from "./api.js?v=20261116_v35";
+
+function detectIsLightTheme() {
+  if (typeof document === "undefined" || typeof getComputedStyle !== "function") return false;
+  try {
+    const rootStyle = getComputedStyle(document.documentElement);
+    const menuBg = rootStyle.getPropertyValue("--comfy-menu-bg").trim();
+    const m = menuBg.match(/rgba?\s*\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/i);
+    if (m) {
+      const [, r, g, b] = m.map(Number);
+      return (0.299 * r + 0.587 * g + 0.114 * b) / 255 > 0.55;
+    }
+    const bodyBg = getComputedStyle(document.body).backgroundColor;
+    const mb = bodyBg.match(/rgba?\s*\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/i);
+    if (mb) {
+      const [, r, g, b] = mb.map(Number);
+      return (0.299 * r + 0.587 * g + 0.114 * b) / 255 > 0.55;
+    }
+  } catch {}
+  return false;
+}
 
 function el(tag, cls = "", text = "") {
   const node = document.createElement(tag);
@@ -48,6 +68,7 @@ export function openSaveLoraPresetModal({
   let coverDataUrl = preset?.thumbnail || "";
 
   const overlay = el("div", "aps-modal-overlay aps-preset-modal-overlay notranslate");
+  overlay.dataset.theme = detectIsLightTheme() ? "light" : "dark";
   overlay.setAttribute("role", "dialog");
   overlay.setAttribute("aria-modal", "true");
 
@@ -437,6 +458,7 @@ export function openLoraPresetLibraryModal({
   const api = suppliedApi || new StudioApi();
 
   const overlay = el("div", "aps-modal-overlay aps-preset-gallery-overlay notranslate");
+  overlay.dataset.theme = detectIsLightTheme() ? "light" : "dark";
   overlay.setAttribute("role", "dialog");
   overlay.setAttribute("aria-modal", "true");
 
