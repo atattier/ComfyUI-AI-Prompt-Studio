@@ -25,9 +25,9 @@ from typing import Any, Iterable
 
 from .errors import StudioError
 
-MAX_OPS = 24
-MAX_TEXT_CHARS = 40_000
-MAX_PART_CHARS = 8_000
+MAX_OPS = 48
+MAX_TEXT_CHARS = 80_000
+MAX_PART_CHARS = 80_000
 
 
 class EditValidationError(StudioError):

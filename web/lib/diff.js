@@ -269,7 +269,17 @@ export function formatFriendlyError(err, actionName = "操作") {
     return `❌ 当前模型不支持此能力：${excerpt(readableUpstream || msg, 120)}，请在「设置」更换支持视觉或对话的模型。`;
   }
   if (code === "invalid_edit") {
-    return `❌ AI 生成的改词指令未通过校验：${excerpt(msg, 130)}，请重试或换个说法描述需求。`;
+    let readableMsg = msg;
+    if (/A single edit is too large/i.test(msg)) {
+      readableMsg = "单次改动字符量超出安全限制";
+    } else if (/Too many changes/i.test(msg)) {
+      readableMsg = "改动指令项数过多";
+    } else if (/ambiguous/i.test(msg)) {
+      readableMsg = "目标文本在原文中有多处重复，无法唯一定位";
+    } else if (/not present in the prompt/i.test(msg)) {
+      readableMsg = "待修改文本在当前提示词中不存在";
+    }
+    return `❌ AI 生成的改词指令未通过校验：${excerpt(readableMsg, 130)}，请重试或换个说法描述需求。`;
   }
 
   // 4. Stream interrupted (pre-first-token reset vs mid-stream partial loss)

@@ -17,7 +17,7 @@
 
 import { app } from "../../scripts/app.js";
 
-import { StudioApi } from "./lib/api.js?v=20261116_v35";
+import { StudioApi } from "./lib/api.js?v=20261116_v36";
 import {
   blobToDataUrl,
   fileToDataUrl,
@@ -47,13 +47,13 @@ import {
   compileLayoutDraftForMoss,
   decompileMossLayoutToDraft,
   cleanCaptionPreserveQuotesJs,
-} from "./lib/layout_editor.js?v=20261116_v35";
+} from "./lib/layout_editor.js?v=20261116_v36";
 import {
   anyStudioModalOpen,
   isEscapeKey,
   removeRegion,
   shouldDeleteSelection,
-} from "./lib/hotkeys.js?v=20261116_v35";
+} from "./lib/hotkeys.js?v=20261116_v36";
 import { UndoStack } from "./lib/undo.js";
 import {
   excerpt,
@@ -61,12 +61,12 @@ import {
   formatFriendlyError,
   formatErrorTechnicalDetail,
   wordDiffRanges,
-} from "./lib/diff.js?v=20261116_v35";
+} from "./lib/diff.js?v=20261116_v36";
 import {
   imageMetadataSummary,
   mergeImageMetadataIntoState,
   openImageMetadataDialog,
-} from "./lib/image_metadata.js?v=20261116_v35";
+} from "./lib/image_metadata.js?v=20261116_v36";
 import {
   ensureChatThreads,
   createChatThread,
@@ -78,7 +78,7 @@ import {
   setThreadSessionId,
   preserveChatThreads,
   stripChatStateForRollback,
-} from "./lib/chat_threads.js?v=20261116_v35";
+} from "./lib/chat_threads.js?v=20261116_v36";
 
 const NODE_TYPES = ["AIPromptStudioCaption", "AIPromptStudioImagine"];
 const ALL_MODES = ["caption", "layout", "danbooru"];
@@ -227,7 +227,7 @@ function el(tag, className, text) {
   return node;
 }
 
-const STYLE_VERSION = "20261116_v35";
+const STYLE_VERSION = "20261116_v36";
 
 function hasNodeSize(node) {
   return Boolean(node?.size && typeof node.size.length === "number" && node.size.length >= 2);

@@ -19,7 +19,13 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+import logging
+from urllib.parse import quote
+
 from .credentials import default_home
+
+logger = logging.getLogger("ai_prompt_studio.lora_presets")
+
 
 MAX_LORA_PRESET_IMAGE_BYTES = 20 * 1024 * 1024
 MAX_THUMBNAIL_CHARS = 600_000
@@ -231,14 +237,78 @@ def get_lora_trigger_words(lora_rel_path: str) -> str:
     return ""
 
 
+def find_lora_preview_path(lora_rel_path: str) -> str | None:
+    """Find local preview image for a given LoRA (e.g. .preview.png, .jpeg, .png)."""
+    possible_roots = []
+    try:
+        import folder_paths
+        lora_full = folder_paths.get_full_path("loras", lora_rel_path)
+        if lora_full:
+            possible_roots.append(os.path.dirname(lora_full))
+    except Exception:
+        pass
+
+    possible_roots.extend([
+        r"E:\AI_vedios\ComfyUI_aki\ComfyUI-aki-v3.2\ComfyUI\models\loras",
+        os.path.join(os.getcwd(), "models", "loras"),
+    ])
+
+    for root_dir in possible_roots:
+        if not os.path.isdir(root_dir):
+            continue
+        full_path = os.path.join(root_dir, lora_rel_path)
+        base = os.path.splitext(full_path)[0]
+        candidates = [
+            base + ".preview.png",
+            base + ".jpeg",
+            base + ".jpg",
+            base + ".png",
+            base + ".webp",
+            full_path + ".preview.png",
+            full_path + ".preview.jpeg",
+            full_path + ".jpeg",
+            full_path + ".png",
+            base + ".thumb.jpg",
+        ]
+        for c in candidates:
+            if os.path.isfile(c) and os.path.getsize(c) > 0:
+                return os.path.abspath(c)
+    return None
+
+
 def scan_available_loras_metadata() -> dict[str, dict[str, Any]]:
-    """Scan available LoRA files along with sidecar trigger words."""
+    """Scan available LoRA files along with sidecar trigger words and preview image URLs."""
     loras = scan_available_loras()
     result = {}
     for lora_name in loras:
         tw = get_lora_trigger_words(lora_name)
-        result[lora_name] = {"trigger_words": tw}
+        preview_path = find_lora_preview_path(lora_name)
+        has_preview = bool(preview_path)
+        result[lora_name] = {
+            "trigger_words": tw,
+            "has_preview": has_preview,
+            "preview_url": f"/ai_prompt_studio/lora_presets/preview_image?name={quote(lora_name)}" if has_preview else "",
+        }
     return result
+
+
+def _clean_exif_val(val: Any) -> str:
+    """Safely decode EXIF byte string / unicode payload."""
+    if isinstance(val, str):
+        return val.strip()
+    if isinstance(val, bytes):
+        for prefix in (b"UNICODE\x00", b"ASCII\x00\x00\x00", b"ASCII\x00"):
+            if val.startswith(prefix):
+                val = val[len(prefix):]
+                break
+        for enc in ("utf-8", "utf-16le", "latin-1", "gbk"):
+            try:
+                decoded = val.decode(enc).strip()
+                if decoded:
+                    return decoded
+            except Exception:
+                pass
+    return ""
 
 
 def extract_loras_from_image_bytes(raw: bytes, filename: str = "") -> dict[str, Any]:
@@ -246,34 +316,29 @@ def extract_loras_from_image_bytes(raw: bytes, filename: str = "") -> dict[str, 
     import io
     from PIL import Image
 
-    im = Image.open(io.BytesIO(raw))
-    width, height = im.size
-
-    # Generate 360px JPEG thumbnail for preview
-    thumb_im = im.copy()
-    thumb_im.thumbnail((360, 360), Image.Resampling.LANCZOS)
-    if thumb_im.mode in ("RGBA", "P"):
-        thumb_im = thumb_im.convert("RGB")
-    buf = io.BytesIO()
-    thumb_im.save(buf, format="JPEG", quality=82)
-    thumb_b64 = base64.b64encode(buf.getvalue()).decode("ascii")
-    thumbnail = f"data:image/jpeg;base64,{thumb_b64}"
-
-    info = getattr(im, "info", {}) or {}
-    text_chunks = getattr(im, "text", {}) or {}
-    all_meta = {**text_chunks, **info}
-
     found_loras: list[dict[str, Any]] = []
     seen_names: set[str] = set()
+    thumbnail = ""
 
-    def add_lora(name: str, sm: float, sc: float, enabled: bool = True, source: str = ""):
+    def add_lora(name: Any, sm: Any = 1.0, sc: Any = None, enabled: bool = True, source: str = ""):
+        if not name:
+            return
         name_clean = str(name).strip().replace("\\", "/")
-        if not name_clean:
+        if not name_clean or name_clean.lower() in ("none", "null", "undefined"):
             return
         norm_key = name_clean.lower()
         if norm_key in seen_names:
             return
         seen_names.add(norm_key)
+
+        try:
+            f_sm = round(float(sm), 3)
+        except (ValueError, TypeError):
+            f_sm = 1.0
+        try:
+            f_sc = round(float(sc if sc is not None else sm), 3)
+        except (ValueError, TypeError):
+            f_sc = f_sm
 
         # Match local LoRA and get trigger words
         tw = get_lora_trigger_words(name_clean)
@@ -289,119 +354,207 @@ def extract_loras_from_image_bytes(raw: bytes, filename: str = "") -> dict[str, 
 
         found_loras.append({
             "name": name_clean,
-            "strength_model": round(float(sm), 3),
-            "strength_clip": round(float(sc), 3),
+            "strength_model": f_sm,
+            "strength_clip": f_sc,
             "enabled": bool(enabled),
             "trigger_words": tw,
             "source": source,
         })
 
-    # 1. ComfyUI prompt (execution graph)
-    prompt_raw = all_meta.get("prompt")
-    if prompt_raw and isinstance(prompt_raw, str):
+    try:
+        im = Image.open(io.BytesIO(raw))
+
+        # 0. Generate 360px JPEG thumbnail for preview safely
         try:
-            p_data = json.loads(prompt_raw)
-            if isinstance(p_data, dict):
-                for nid, node in p_data.items():
-                    if not isinstance(node, dict):
-                        continue
-                    ctype = str(node.get("class_type", ""))
-                    inputs = node.get("inputs", {})
+            thumb_im = im.copy()
+            resample_filter = getattr(getattr(Image, "Resampling", None), "LANCZOS", getattr(Image, "ANTIALIAS", None))
+            if resample_filter:
+                thumb_im.thumbnail((360, 360), resample_filter)
+            else:
+                thumb_im.thumbnail((360, 360))
+            if thumb_im.mode != "RGB":
+                thumb_im = thumb_im.convert("RGB")
+            buf = io.BytesIO()
+            thumb_im.save(buf, format="JPEG", quality=82)
+            thumb_b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+            thumbnail = f"data:image/jpeg;base64,{thumb_b64}"
+        except Exception as exc:
+            logger.warning(f"Failed to generate thumbnail: {exc}")
+            thumbnail = ""
 
-                    # Lora Loader (LoraManager) / Lora Stacker
-                    if "loras" in inputs:
-                        raw_loras = inputs.get("loras")
-                        if isinstance(raw_loras, dict) and "__value__" in raw_loras:
-                            raw_loras = raw_loras["__value__"]
-                        if isinstance(raw_loras, list):
-                            for l in raw_loras:
-                                if isinstance(l, dict) and l.get("name"):
-                                    add_lora(
-                                        l["name"],
-                                        float(l.get("strength", 1.0)),
-                                        float(l.get("clipStrength", l.get("strength", 1.0))),
-                                        bool(l.get("active", True)),
-                                        ctype,
-                                    )
+        # Collect raw metadata texts across all channels
+        meta_texts: list[str] = []
+        info = getattr(im, "info", {}) or {}
+        text_chunks = getattr(im, "text", {}) or {}
 
-                    # Standard LoraLoader / LoraLoaderModelOnly / etc.
-                    if "lora" in ctype.lower():
-                        lname = inputs.get("lora_name") or inputs.get("lora")
-                        if lname and isinstance(lname, str):
-                            sm = float(inputs.get("strength_model", inputs.get("strength", 1.0)))
-                            sc = float(inputs.get("strength_clip", sm))
-                            add_lora(lname, sm, sc, True, ctype)
+        for k, v in {**text_chunks, **info}.items():
+            if isinstance(v, str) and v.strip():
+                meta_texts.append(v.strip())
+            elif isinstance(v, bytes):
+                dec = _clean_exif_val(v)
+                if dec:
+                    meta_texts.append(dec)
 
-                    # AIPromptStudioLora
-                    if "aipromptstudiolora" in ctype.lower():
-                        stack_json = inputs.get("custom_stack_json")
-                        if stack_json and isinstance(stack_json, str):
-                            try:
-                                s = json.loads(stack_json)
-                                s_list = s if isinstance(s, list) else s.get("loras", [])
-                                for item in s_list:
-                                    if isinstance(item, dict) and item.get("name"):
-                                        add_lora(
-                                            item["name"],
-                                            float(item.get("strength_model", 1.0)),
-                                            float(item.get("strength_clip", 1.0)),
-                                            bool(item.get("enabled", True)),
-                                            "AIPromptStudioLora",
-                                        )
-                            except Exception:
-                                pass
+        # Inspect EXIF tags (specifically for JPEG / WebP)
+        try:
+            exif_data = im._getexif() if hasattr(im, "_getexif") else None
+            if exif_data and isinstance(exif_data, dict):
+                # 37510 is UserComment, 270 is ImageDescription
+                for tag_id in (37510, 270, 0x9286, 0x010E):
+                    val = exif_data.get(tag_id)
+                    dec = _clean_exif_val(val)
+                    if dec and dec not in meta_texts:
+                        meta_texts.append(dec)
         except Exception:
             pass
 
-    # 2. ComfyUI workflow
-    wf_raw = all_meta.get("workflow")
-    if wf_raw and isinstance(wf_raw, str):
-        try:
-            wf_data = json.loads(wf_raw)
-            if isinstance(wf_data, dict):
-                for node in wf_data.get("nodes", []):
-                    if not isinstance(node, dict):
-                        continue
-                    ntype = str(node.get("type", ""))
-                    wv = node.get("widgets_values")
-                    if isinstance(wv, list):
-                        for val in wv:
-                            if isinstance(val, list):
-                                for item in val:
-                                    if isinstance(item, dict) and item.get("name") and ("strength" in item or "clipStrength" in item):
-                                        add_lora(
-                                            item["name"],
-                                            float(item.get("strength", 1.0)),
-                                            float(item.get("clipStrength", item.get("strength", 1.0))),
-                                            bool(item.get("active", True)),
-                                            ntype,
-                                        )
-                            elif isinstance(val, str) and "custom_stack_json" in ntype.lower():
-                                try:
-                                    s = json.loads(val)
-                                    s_list = s if isinstance(s, list) else s.get("loras", [])
-                                    for item in s_list:
-                                        if isinstance(item, dict) and item.get("name"):
+        # 1. Inspect structured ComfyUI prompt & workflow JSON
+        for txt in meta_texts:
+            if "class_type" in txt or "nodes" in txt:
+                try:
+                    p_data = json.loads(txt)
+                    if isinstance(p_data, dict):
+                        # 1a. prompt format: { nid: { class_type, inputs } }
+                        for nid, node in p_data.items():
+                            if not isinstance(node, dict):
+                                continue
+                            ctype = str(node.get("class_type", ""))
+                            inputs = node.get("inputs", {})
+                            if not isinstance(inputs, dict):
+                                continue
+
+                            # Lora Loader (LoraManager) / Lora Stacker
+                            if "loras" in inputs:
+                                raw_loras = inputs.get("loras")
+                                if isinstance(raw_loras, dict) and "__value__" in raw_loras:
+                                    raw_loras = raw_loras["__value__"]
+                                if isinstance(raw_loras, list):
+                                    for l in raw_loras:
+                                        if isinstance(l, dict) and l.get("name"):
                                             add_lora(
-                                                item["name"],
-                                                float(item.get("strength_model", 1.0)),
-                                                float(item.get("strength_clip", 1.0)),
-                                                bool(item.get("enabled", True)),
-                                                ntype,
+                                                l["name"],
+                                                l.get("strength", 1.0),
+                                                l.get("clipStrength", l.get("strength", 1.0)),
+                                                l.get("active", True),
+                                                ctype,
                                             )
-                                except Exception:
-                                    pass
-        except Exception:
-            pass
 
-    # 3. Text prompt parsing: <lora:name:strength> or <lora:name:model_str:clip_str>
-    for meta_key, meta_val in all_meta.items():
-        if isinstance(meta_val, str):
-            for m in re.finditer(r'<lora:([^>:\s]+)(?::([^>:\s]+))?(?::([^>:\s]+))?>', meta_val):
+                            # Standard LoraLoader / LoraLoaderModelOnly / Efficiency Loaders
+                            if any(k in ctype.lower() for k in ("loraloader", "lora_loader")):
+                                lname = inputs.get("lora_name") or inputs.get("lora")
+                                if lname and isinstance(lname, str):
+                                    sm = inputs.get("strength_model", inputs.get("strength", 1.0))
+                                    sc = inputs.get("strength_clip", sm)
+                                    add_lora(lname, sm, sc, True, ctype)
+
+                            # Comfyroll CR LoRA Stack (lora_name_1, lora_name_2 ...)
+                            for idx in range(1, 12):
+                                lname_k = f"lora_name_{idx}"
+                                if lname_k in inputs:
+                                    lname = inputs.get(lname_k)
+                                    if lname and isinstance(lname, str) and lname.lower() != "none":
+                                        sm = inputs.get(f"model_weight_{idx}", 1.0)
+                                        sc = inputs.get(f"clip_weight_{idx}", sm)
+                                        sw = inputs.get(f"switch_{idx}", "On")
+                                        enabled = str(sw).lower() in ("on", "true", "1")
+                                        add_lora(lname, sm, sc, enabled, ctype)
+
+                            # Power Lora Loader (rgthree)
+                            for idx in range(1, 10):
+                                lk = f"lora_{idx}"
+                                if lk in inputs and isinstance(inputs[lk], dict):
+                                    sub = inputs[lk]
+                                    if sub.get("on") is not False and sub.get("lora"):
+                                        add_lora(sub["lora"], sub.get("strength", 1.0), sub.get("strength", 1.0), True, ctype)
+
+                            # AIPromptStudioLora
+                            if "aipromptstudiolora" in ctype.lower():
+                                stack_json = inputs.get("custom_stack_json")
+                                if stack_json and isinstance(stack_json, str):
+                                    try:
+                                        s = json.loads(stack_json)
+                                        s_list = s if isinstance(s, list) else s.get("loras", [])
+                                        for item in s_list:
+                                            if isinstance(item, dict) and item.get("name"):
+                                                add_lora(
+                                                    item["name"],
+                                                    item.get("strength_model", 1.0),
+                                                    item.get("strength_clip", 1.0),
+                                                    item.get("enabled", True),
+                                                    "AIPromptStudioLora",
+                                                )
+                                    except Exception:
+                                        pass
+
+                        # 1b. workflow format: { nodes: [ { type, widgets_values } ] }
+                        if "nodes" in p_data and isinstance(p_data["nodes"], list):
+                            for node in p_data["nodes"]:
+                                if not isinstance(node, dict):
+                                    continue
+                                ntype = str(node.get("type", ""))
+                                wv = node.get("widgets_values")
+                                if isinstance(wv, list):
+                                    for val in wv:
+                                        if isinstance(val, list):
+                                            for item in val:
+                                                if isinstance(item, dict) and item.get("name") and ("strength" in item or "clipStrength" in item):
+                                                    add_lora(
+                                                        item["name"],
+                                                        item.get("strength", 1.0),
+                                                        item.get("clipStrength", item.get("strength", 1.0)),
+                                                        item.get("active", True),
+                                                        ntype,
+                                                    )
+                                        elif isinstance(val, str) and ("loras" in val or "custom_stack_json" in ntype.lower()):
+                                            try:
+                                                s = json.loads(val)
+                                                s_list = s if isinstance(s, list) else s.get("loras", [])
+                                                for item in s_list:
+                                                    if isinstance(item, dict) and item.get("name"):
+                                                        add_lora(
+                                                            item["name"],
+                                                            item.get("strength_model", item.get("strength", 1.0)),
+                                                            item.get("strength_clip", item.get("clipStrength", 1.0)),
+                                                            item.get("enabled", item.get("active", True)),
+                                                            ntype,
+                                                        )
+                                            except Exception:
+                                                pass
+                except Exception:
+                    pass
+
+        # 2. Parse text prompts & parameters for <lora:name:strength> or <lora:name:model:clip>
+        # Supports spaces, dashes, dots, and unicode in LoRA name: <lora:My Clean LoRA:0.8>
+        lora_tag_pattern = re.compile(
+            r'<lora:([^\r\n>:]+?)(?::(-?\d+(?:\.\d+)?))?(?::(-?\d+(?:\.\d+)?))?>',
+            re.IGNORECASE,
+        )
+        for txt in meta_texts:
+            for m in lora_tag_pattern.finditer(txt):
                 name = m.group(1).strip()
                 sm = float(m.group(2)) if m.group(2) else 1.0
                 sc = float(m.group(3)) if m.group(3) else sm
-                add_lora(name, sm, sc, True, f"tag_in_{meta_key}")
+                add_lora(name, sm, sc, True, "prompt_tag")
+
+            # 3. Parse Civitai resources in WebUI parameters
+            # e.g.: Civitai resources: [{"type":"lora","weight":0.7,"model":{"name":"..."}}]
+            if "Civitai resources:" in txt:
+                try:
+                    civ_part = txt.split("Civitai resources:", 1)[1].strip()
+                    civ_json_str = civ_part.split("\n", 1)[0].strip()
+                    civ_list = json.loads(civ_json_str)
+                    if isinstance(civ_list, list):
+                        for item in civ_list:
+                            if isinstance(item, dict) and item.get("type") == "lora":
+                                model_name = item.get("modelName") or item.get("model", {}).get("name")
+                                if model_name:
+                                    w = item.get("weight", 1.0)
+                                    add_lora(model_name, w, w, True, "civitai_resources")
+                except Exception:
+                    pass
+
+    except Exception as exc:
+        logger.error(f"Error extracting LoRAs from image: {exc}", exc_info=True)
 
     # Build suggested title and aggregated trigger words
     clean_fn = Path(filename).stem if filename else ""

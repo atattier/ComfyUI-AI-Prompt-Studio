@@ -15,7 +15,7 @@ from typing import Any, Sequence
 
 from . import budget
 from .client import ChatClient, ChatResult
-from .diff import EditValidationError, parse_ops, preview_ops
+from .diff import MAX_OPS, EditValidationError, parse_ops, preview_ops
 
 EDIT_SYSTEM = """You are the collaborative prompt editor inside ComfyUI AI Prompt Studio.
 You modify an existing image-generation prompt according to the user's request, explain concisely what changed, or ask brief clarifying questions when the request is ambiguous.
@@ -443,6 +443,8 @@ def _layout_ops(current_text: str, merged_text: str, touched: list[dict[str, Any
         if current_text.count(old) != 1:
             return [{"op": "replace", "before": current_text, "after": merged_text, "why": "布局更新"}]
         ops.append({"op": "replace", "before": old, "after": new, "why": change.get("path", "")})
+    if len(ops) > MAX_OPS:
+        return [{"op": "replace", "before": current_text, "after": merged_text, "why": "布局更新"}]
     return ops
 
 

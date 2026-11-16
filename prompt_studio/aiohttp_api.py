@@ -68,6 +68,7 @@ from .lora_presets import (
     scan_available_loras,
     scan_available_loras_metadata,
     extract_loras_from_image_bytes,
+    find_lora_preview_path,
 )
 
 MAX_BODY = 25 * 1024 * 1024
@@ -1899,6 +1900,25 @@ def install_routes(
         data = await asyncio.to_thread(require().list_available_loras)
         details = await asyncio.to_thread(require().list_available_loras_metadata)
         return web.json_response({"loras": data, "lora_details": details})
+
+    @routes.get("/ai_prompt_studio/lora_presets/preview_image")
+    @guarded
+    async def lora_preview_image_route(request: web.Request) -> web.Response:
+        name = request.query.get("name", "").strip()
+        if not name:
+            return web.Response(status=400, text="name is required")
+        img_path = await asyncio.to_thread(find_lora_preview_path, name)
+        if not img_path or not os.path.isfile(img_path):
+            return web.Response(status=404, text="No preview image found")
+        ext = os.path.splitext(img_path)[1].lower()
+        content_type = "image/png"
+        if ext in (".jpg", ".jpeg"):
+            content_type = "image/jpeg"
+        elif ext == ".webp":
+            content_type = "image/webp"
+        with open(img_path, "rb") as fp:
+            img_data = fp.read()
+        return web.Response(body=img_data, content_type=content_type, headers={"Cache-Control": "public, max-age=3600"})
 
     @routes.post("/ai_prompt_studio/lora_presets/inspect_image_loras")
     @guarded

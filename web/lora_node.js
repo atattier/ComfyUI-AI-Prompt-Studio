@@ -12,15 +12,15 @@
  */
 
 import { app } from "../../scripts/app.js";
-import { StudioApi } from "./lib/api.js?v=20261116_v35";
+import { StudioApi } from "./lib/api.js?v=20261116_v36";
 import {
   openSaveLoraPresetModal,
   openLoraPresetLibraryModal,
   buildLoraSyntaxString,
-} from "./lib/lora_editor.js?v=20261116_v35";
+} from "./lib/lora_editor.js?v=20261116_v36";
 
 const NODE_TYPE = "AIPromptStudioLora";
-const STYLE_VERSION = "20261116_v35";
+const STYLE_VERSION = "20261116_v36";
 
 function mountStyles() {
   if (typeof document === "undefined") return;
@@ -142,6 +142,98 @@ function el(tag, cls = "", text = "") {
   return node;
 }
 
+let activeTooltip = null;
+let hoverTimer = null;
+
+function hideLoraPreviewTooltip() {
+  if (hoverTimer) {
+    clearTimeout(hoverTimer);
+    hoverTimer = null;
+  }
+  if (activeTooltip) {
+    const elToDel = activeTooltip;
+    elToDel.style.opacity = "0";
+    elToDel.style.transform = "scale(0.96) translateY(4px)";
+    setTimeout(() => {
+      elToDel.remove();
+    }, 140);
+    activeTooltip = null;
+  }
+}
+
+function showLoraPreviewTooltip(targetEl, info) {
+  if (hoverTimer) clearTimeout(hoverTimer);
+  hoverTimer = setTimeout(() => {
+    if (!targetEl || !document.body.contains(targetEl)) return;
+    hideLoraPreviewTooltip();
+
+    const tooltip = el("div", "aps-lora-hover-preview-tooltip notranslate");
+    tooltip.dataset.theme = detectIsLightTheme() ? "light" : "dark";
+
+    const rect = targetEl.getBoundingClientRect();
+    const previewUrl = info.preview_url;
+
+    // 1. Cover Image
+    if (previewUrl) {
+      const imgWrap = el("div", "aps-lora-preview-img-wrap");
+      const img = el("img", "aps-lora-preview-img");
+      img.src = previewUrl;
+      img.alt = info.name || "";
+      img.onerror = () => {
+        imgWrap.innerHTML = `<div class="aps-lora-preview-placeholder"><span style="font-size: 32px;">🥞</span><span style="font-size: 11px; opacity: 0.6; margin-top: 4px;">暂无本地封面</span></div>`;
+      };
+      imgWrap.append(img);
+      tooltip.append(imgWrap);
+    } else {
+      const placeholder = el("div", "aps-lora-preview-placeholder");
+      placeholder.innerHTML = `<span style="font-size: 32px;">🥞</span><span style="font-size: 11px; opacity: 0.6; margin-top: 4px;">暂无本地封面</span>`;
+      tooltip.append(placeholder);
+    }
+
+    // 2. Info Content
+    const content = el("div", "aps-lora-preview-content");
+    const nameEl = el("div", "aps-lora-preview-title", info.name || "未命名");
+    content.append(nameEl);
+
+    if (info.trigger_words && info.trigger_words.trim()) {
+      const twBox = el("div", "aps-lora-preview-tw-box");
+      const twLabel = el("div", "aps-lora-preview-tw-label", "💬 触发词 (点击复制):");
+      const twText = el("div", "aps-lora-preview-tw-text", info.trigger_words);
+      twBox.append(twLabel, twText);
+      twBox.addEventListener("click", () => {
+        navigator.clipboard.writeText(info.trigger_words);
+        twLabel.textContent = "✓ 已复制到剪贴板！";
+        setTimeout(() => { twLabel.textContent = "💬 触发词 (点击复制):"; }, 1500);
+      });
+      content.append(twBox);
+    }
+
+    tooltip.append(content);
+    document.body.append(tooltip);
+    activeTooltip = tooltip;
+
+    // Positioning
+    const tooltipRect = tooltip.getBoundingClientRect();
+    let left = rect.right + 12;
+    if (left + tooltipRect.width > window.innerWidth - 10) {
+      left = Math.max(10, rect.left - tooltipRect.width - 12);
+    }
+    let top = rect.top;
+    if (top + tooltipRect.height > window.innerHeight - 10) {
+      top = Math.max(10, window.innerHeight - tooltipRect.height - 10);
+    }
+
+    tooltip.style.left = `${Math.round(left)}px`;
+    tooltip.style.top = `${Math.round(top)}px`;
+
+    // Trigger transition
+    requestAnimationFrame(() => {
+      tooltip.style.opacity = "1";
+      tooltip.style.transform = "scale(1) translateY(0)";
+    });
+  }, 90);
+}
+
 export function setupLoraNode(node) {
   if (node._apsLoraInitialized) return;
   node._apsLoraInitialized = true;
@@ -170,7 +262,7 @@ export function setupLoraNode(node) {
   // State
   let currentStack = []; // array of { id, name, strength_model, strength_clip, enabled, trigger_words, linked }
   let availableLoras = []; // array of filenames
-  let loraDetails = {}; // map of { [name]: { trigger_words: string } }
+  let loraDetails = {}; // map of { [name]: { trigger_words: string, has_preview: bool, preview_url: string } }
   let presetsList = []; // array of preset objects from database
   let currentPresetData = null;
   let showExtraInput = false;
@@ -185,36 +277,26 @@ export function setupLoraNode(node) {
   card.addEventListener("mousedown", (e) => e.stopPropagation());
 
   // ---------------------------------------------------------------------------
-  // 1. Top Bar: Brand Title & Preset Hub / Clear Actions
+  // 1. Top Bar: Clean Brand Title & Preset Hub Actions (No clutter)
   // ---------------------------------------------------------------------------
   const topBar = el("div", "aps-lora-top-bar");
   const brand = el("div", "aps-lora-brand");
   brand.append(el("span", "", "🥞"), el("span", "", "LoRA 预设与多重堆叠"));
 
   const topActions = el("div", "aps-lora-actions");
-  const inspectBtn = el("button", "aps-btn aps-btn-xs", "📷 识图");
-  inspectBtn.type = "button";
-  inspectBtn.title = "选择或直接拖入包含生成参数的图片，自动提取其中的 LoRA 堆叠与权重";
-
   const saveBtn = el("button", "aps-btn aps-btn-xs aps-primary", "💾 存为预设");
   saveBtn.type = "button";
   saveBtn.title = "将当前堆叠保存为新预设或覆盖现有预设";
 
   const libBtn = el("button", "aps-btn aps-btn-xs", "📚 预设库");
   libBtn.type = "button";
-  libBtn.title = "打开 LoRA 资产与堆叠预设库浏览器（分类、封面、导入导出）";
+  libBtn.title = "打开 LoRA 资产与堆叠预设库浏览器（支持分类、封面、图片拖拽识图导入）";
 
   const clearBtn = el("button", "aps-btn aps-btn-xs", "🗑️");
   clearBtn.type = "button";
   clearBtn.title = "清空当前堆叠";
 
-  const fileInput = el("input");
-  fileInput.type = "file";
-  fileInput.accept = "image/png,image/webp,image/jpeg";
-  fileInput.style.display = "none";
-  card.append(fileInput);
-
-  topActions.append(inspectBtn, saveBtn, libBtn, clearBtn);
+  topActions.append(saveBtn, libBtn, clearBtn);
   topBar.append(brand, topActions);
   card.append(topBar);
 
@@ -355,14 +437,42 @@ export function setupLoraNode(node) {
       );
       toggleBtn.type = "button";
       toggleBtn.title = item.enabled === false ? "点击启用该 LoRA" : "点击禁用（静音）该 LoRA";
-      toggleBtn.addEventListener("click", () => {
+      toggleBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
         item.enabled = item.enabled === false ? true : false;
         renderStackList();
       });
 
+      // Thumbnail Badge
+      const details = loraDetails[item.name] || {};
+      const previewUrl = details.preview_url || "";
+      const thumbBadge = el("div", "aps-lora-item-thumb");
+      thumbBadge.title = "点击或悬停预览此 LoRA 封面与触发词";
+      if (previewUrl) {
+        const img = el("img");
+        img.src = previewUrl;
+        img.alt = item.name;
+        img.onerror = () => { thumbBadge.textContent = "🥞"; };
+        thumbBadge.append(img);
+      } else {
+        thumbBadge.textContent = "🥞";
+      }
+
       const nameSpan = el("span", "aps-lora-item-name", item.name || "未命名 LoRA");
       nameSpan.title = item.name;
-      nameGroup.append(toggleBtn, nameSpan);
+      nameGroup.append(toggleBtn, thumbBadge, nameSpan);
+
+      // Bind Hover preview
+      const previewInfo = {
+        name: item.name,
+        preview_url: previewUrl,
+        trigger_words: item.trigger_words || details.trigger_words || "",
+        strength_model: item.strength_model,
+        strength_clip: item.strength_clip,
+      };
+
+      itemRow.addEventListener("pointerenter", () => showLoraPreviewTooltip(itemRow, previewInfo));
+      itemRow.addEventListener("pointerleave", () => hideLoraPreviewTooltip());
 
       const tools = el("div", "aps-lora-item-tools");
 
@@ -628,6 +738,7 @@ export function setupLoraNode(node) {
   // ---------------------------------------------------------------------------
   // 1. Preset Dropdown Switch
   presetSelect.addEventListener("change", () => {
+    hideLoraPreviewTooltip();
     const selName = presetSelect.value;
     const found = presetsList.find((p) => p.name === selName || p.id === selName);
     if (found) {
@@ -668,84 +779,15 @@ export function setupLoraNode(node) {
 
   // 3. Clear Stack
   clearBtn.addEventListener("click", () => {
+    hideLoraPreviewTooltip();
     if (currentStack.length === 0) return;
     currentStack = [];
     renderStackList();
   });
 
-  // 3.5. Inspect Image LoRAs (Button & Drag/Drop)
-  inspectBtn.addEventListener("click", () => fileInput.click());
-
-  async function handleImageFile(file) {
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = async () => {
-      const b64 = reader.result;
-      try {
-        inspectBtn.textContent = "⏳ 解析中...";
-        const res = await api.inspectImageLoras({ image_data: b64, filename: file.name });
-        inspectBtn.textContent = "📷 识图";
-        if (!res.loras || res.loras.length === 0) {
-          alert("未在该图片的元数据中检测到 LoRA 信息。请确保图片包含 ComfyUI、WebUI 或 Civitai 生成参数。");
-          return;
-        }
-
-        currentStack = res.loras.map((l) => ({
-          name: l.name,
-          strength_model: Number(l.strength_model ?? 1.0),
-          strength_clip: Number(l.strength_clip ?? l.strength_model ?? 1.0),
-          enabled: l.enabled !== false,
-          trigger_words: l.trigger_words || (loraDetails[l.name]?.trigger_words) || "",
-          linked: l.strength_model === l.strength_clip,
-        }));
-
-        currentPresetData = {
-          name: res.suggested_name || "从图片提取的堆叠",
-          category: "通用",
-          loras: currentStack,
-          trigger_words: res.trigger_words || "",
-          thumbnail: res.thumbnail || "",
-        };
-
-        renderStackList();
-      } catch (err) {
-        inspectBtn.textContent = "📷 识图";
-        console.error(err);
-        alert("解析图片元数据失败: " + (err.message || err));
-      }
-    };
-    reader.readAsDataURL(file);
-  }
-
-  fileInput.addEventListener("change", (e) => {
-    const file = e.target.files?.[0];
-    if (file) handleImageFile(file);
-    fileInput.value = "";
-  });
-
-  // Drag and drop image directly onto node card
-  card.addEventListener("dragover", (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    card.classList.add("aps-drag-over");
-  });
-  card.addEventListener("dragleave", (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    card.classList.remove("aps-drag-over");
-  });
-  card.addEventListener("drop", (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    card.classList.remove("aps-drag-over");
-    const file = e.dataTransfer?.files?.[0];
-    if (file && (file.type?.startsWith("image/") || file.name?.match(/\.(png|webp|jpe?g)$/i))) {
-      handleImageFile(file);
-    }
-  });
-
   // 4. Save Preset Button
   saveBtn.addEventListener("click", () => {
+    hideLoraPreviewTooltip();
     openSaveLoraPresetModal({
       api,
       preset: currentPresetData,
@@ -768,6 +810,7 @@ export function setupLoraNode(node) {
 
   // 5. Open Full Library Drawer
   libBtn.addEventListener("click", () => {
+    hideLoraPreviewTooltip();
     openLoraPresetLibraryModal({
       api,
       onApply: (preset) => {

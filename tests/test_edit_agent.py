@@ -278,6 +278,43 @@ class RequestEditTests(unittest.TestCase):
         proposal = parse_layout_proposal(raw, json.dumps(layout, ensure_ascii=False), canvas=(800, 1200))
         self.assertEqual(json.loads(proposal.text)["items"][0]["bbox"], [-150.0, -200.0, 150.0, 200.0])
 
+    def test_layout_proposal_on_large_prompt_over_8000_chars_succeeds(self):
+        # 模拟包含 16 个框、长达 8500+ 字符且包含重复文本的布局
+        items = []
+        for i in range(16):
+            items.append({
+                "label": "text" if i >= 8 else "character",
+                "name": f"文字「MIKU」" if i >= 8 else f"初音「{i}」",
+                "caption": f"Detailed description of item {i} with Hatsune Miku vocaloid aesthetic and intricate cyber background elements. " * 4,
+                "text": "HATSUNE MIKU" if i >= 8 else "",
+                "bbox": [10 * i, 10 * i, 50 * i, 50 * i],
+            })
+        large_layout = {
+            "summary": {"caption": "Extensive complex concert scene with multiple Hatsune Miku typography boxes."},
+            "bbox_format": "yxyx",
+            "bbox_coord_space": "abs_centralized",
+            "items": items,
+        }
+        raw_current = json.dumps(large_layout, ensure_ascii=False, indent=2)
+        self.assertGreater(len(raw_current), 8500)
+
+        # 模拟 AI 修改了其中几个重复的文字框
+        patch_raw = json.dumps({
+            "reply": "已修改重复的文字框内容",
+            "patch": {
+                "items": [
+                    {"index": 8, "name": "主标题", "text": "VOCALOID 01", "caption": "Unique title banner"},
+                    {"index": 9, "name": "副标题", "text": "CONCERT LIVE", "caption": "Unique subtitle banner"},
+                ]
+            }
+        })
+        proposal = parse_layout_proposal(patch_raw, raw_current)
+        self.assertTrue(proposal.changed)
+        merged = json.loads(proposal.text)
+        self.assertEqual(merged["items"][8]["text"], "VOCALOID 01")
+        self.assertEqual(merged["items"][9]["text"], "CONCERT LIVE")
+
+
 
 if __name__ == "__main__":
     unittest.main()

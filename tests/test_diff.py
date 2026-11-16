@@ -3,6 +3,9 @@ from __future__ import annotations
 import unittest
 
 from prompt_studio.diff import (
+    MAX_OPS,
+    MAX_PART_CHARS,
+    MAX_TEXT_CHARS,
     EditOp,
     EditValidationError,
     apply_ops,
@@ -84,7 +87,20 @@ class ParseTests(unittest.TestCase):
 
     def test_rejects_too_many_ops(self):
         with self.assertRaises(EditValidationError):
-            parse_ops([{"op": "append", "after": "x"} for _ in range(25)])
+            parse_ops([{"op": "append", "after": "x"} for _ in range(MAX_OPS + 1)])
+
+    def test_allows_large_layout_replacement_up_to_part_limit(self):
+        large_before = "x" * 15_000
+        large_after = "y" * 15_000
+        ops = parse_ops([{"op": "replace", "before": large_before, "after": large_after}])
+        self.assertEqual(len(ops), 1)
+        self.assertEqual(apply_ops(large_before, ops), large_after)
+
+    def test_rejects_single_edit_exceeding_part_limit(self):
+        huge = "z" * (MAX_PART_CHARS + 1)
+        with self.assertRaises(EditValidationError) as ctx:
+            parse_ops([{"op": "replace", "before": huge, "after": "a"}])
+        self.assertIn("too large", str(ctx.exception))
 
 
 class BlockDiffTests(unittest.TestCase):

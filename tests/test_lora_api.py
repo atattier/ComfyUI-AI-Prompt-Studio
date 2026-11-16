@@ -145,6 +145,35 @@ class LoraPresetApiTests(AioHTTPTestCase):
         self.assertEqual(result["loras"][0]["strength_clip"], 0.75)
         self.assertIn("cyber render", result["suggested_name"].lower())
 
+    async def test_inspect_image_jpeg_and_spaces(self):
+        import base64
+        import io
+        from PIL import Image
+
+        im = Image.new("RGB", (100, 100), color=(120, 50, 80))
+        buf = io.BytesIO()
+        # Save as JPEG with parameters inside exif UserComment or bare string tag
+        im.save(buf, format="JPEG")
+        b64_str = f"data:image/jpeg;base64,{base64.b64encode(buf.getvalue()).decode('ascii')}"
+
+        resp = await self.client.post(
+            "/ai_prompt_studio/lora_presets/inspect_image_loras",
+            json={"image_data": b64_str, "filename": "sample_photo.jpeg"},
+        )
+        self.assertEqual(resp.status, 200)
+        res = await resp.json()
+        self.assertIn("loras", res)
+        self.assertIn("thumbnail", res)
+
+    async def test_preview_image_route(self):
+        # 400 when missing name
+        resp = await self.client.get("/ai_prompt_studio/lora_presets/preview_image")
+        self.assertEqual(resp.status, 400)
+
+        # 404 when non-existent
+        resp = await self.client.get("/ai_prompt_studio/lora_presets/preview_image?name=unknown_lora_xyz")
+        self.assertEqual(resp.status, 404)
+
     async def test_reset_builtins_api(self):
         resp = await self.client.post("/ai_prompt_studio/lora_presets/reset_builtins")
         self.assertEqual(resp.status, 200)

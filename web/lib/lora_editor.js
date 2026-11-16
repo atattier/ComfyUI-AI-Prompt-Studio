@@ -5,7 +5,7 @@
  * editing, category organization, and 1-click application to canvas nodes.
  */
 
-import { StudioApi } from "./api.js?v=20261116_v35";
+import { StudioApi } from "./api.js?v=20261116_v36";
 
 function detectIsLightTheme() {
   if (typeof document === "undefined" || typeof getComputedStyle !== "function") return false;
@@ -538,6 +538,29 @@ export function openLoraPresetLibraryModal({
   cardsContainer.style.gap = "14px";
   mainPane.append(cardsContainer);
 
+  // Full-pane Drag & Drop Overlay (matches prompt library)
+  const dropOverlay = el("div", "aps-explorer-drop-overlay");
+  dropOverlay.style.display = "none";
+  dropOverlay.style.position = "absolute";
+  dropOverlay.style.inset = "0";
+  dropOverlay.style.background = "rgba(0, 0, 0, 0.82)";
+  dropOverlay.style.backdropFilter = "blur(6px)";
+  dropOverlay.style.zIndex = "99";
+  dropOverlay.style.flexDirection = "column";
+  dropOverlay.style.alignItems = "center";
+  dropOverlay.style.justifyContent = "center";
+  dropOverlay.style.pointerEvents = "none";
+  dropOverlay.style.border = "2px dashed var(--aps-accent, #d97757)";
+  dropOverlay.style.borderRadius = "8px";
+  dropOverlay.style.margin = "8px";
+  dropOverlay.innerHTML = `
+    <div style="font-size: 40px; margin-bottom: 10px; animation: bounce 1s infinite;">📥</div>
+    <div class="aps-explorer-drop-title" style="font-size: 16px; font-weight: 700; color: #fff;">松开鼠标立即导入图片中的 LoRA 预设</div>
+    <div style="font-size: 12px; color: var(--aps-accent, #d97757); margin-top: 6px;">自动解析 ComfyUI / WebUI / Civitai 元数据与 LoRA 权重</div>
+  `;
+  mainPane.style.position = "relative";
+  mainPane.append(dropOverlay);
+
   explorerLayout.append(sidebar, mainPane);
   body.append(explorerLayout);
   modal.append(body);
@@ -784,10 +807,10 @@ export function openLoraPresetLibraryModal({
     });
   });
 
-  importImgBtn.addEventListener("click", () => imgPicker.click());
-
-  imgPicker.addEventListener("change", (e) => {
-    const file = e.target.files?.[0];
+  // -------------------------------------------------------------------------
+  // Drag & Drop Image Inspection (Explorer Style, matching prompt library)
+  // -------------------------------------------------------------------------
+  async function handleImportImageFile(file) {
     if (!file) return;
     const reader = new FileReader();
     reader.onload = async () => {
@@ -796,23 +819,28 @@ export function openLoraPresetLibraryModal({
         importImgBtn.textContent = "⏳ 解析中...";
         const res = await api.inspectImageLoras({ image_data: b64, filename: file.name });
         importImgBtn.textContent = "📷 识图导入";
-        if (!res.loras || res.loras.length === 0) {
-          alert("未在该图片的元数据中检测到 LoRA 信息。请确保图片包含生成工作流或参数。");
-          return;
-        }
+
+        const hasLoras = Array.isArray(res.loras) && res.loras.length > 0;
+        const targetCat = selectedCategory !== "全部" ? selectedCategory : "通用";
 
         openSaveLoraPresetModal({
           api,
           preset: {
-            name: res.suggested_name || "从图片提取的堆叠",
-            category: activeCategory !== "全部" ? activeCategory : "通用",
+            name: res.suggested_name || file.name.replace(/\.[^.]+$/, "") || "从图片提取的堆叠",
+            category: targetCat,
             trigger_words: res.trigger_words || "",
             thumbnail: res.thumbnail || "",
           },
-          initialLoras: res.loras,
+          initialLoras: hasLoras ? res.loras : [],
           initialTriggerWords: res.trigger_words || "",
           onSaved: () => loadPresets(),
         });
+
+        if (!hasLoras) {
+          setTimeout(() => {
+            alert("已提取图片作为预设封面！但图片中未检测到内置的 LoRA 参数标签，您可以直接在弹窗中手动添加需要的 LoRA。");
+          }, 300);
+        }
       } catch (err) {
         importImgBtn.textContent = "📷 识图导入";
         console.error(err);
@@ -820,7 +848,45 @@ export function openLoraPresetLibraryModal({
       }
     };
     reader.readAsDataURL(file);
+  }
+
+  importImgBtn.addEventListener("click", () => imgPicker.click());
+  imgPicker.addEventListener("change", (e) => {
+    const file = e.target.files?.[0];
+    if (file) handleImportImageFile(file);
     imgPicker.value = "";
+  });
+
+  // Drag and drop onto mainPane
+  let dragCounter = 0;
+  mainPane.addEventListener("dragenter", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragCounter++;
+    dropOverlay.style.display = "flex";
+  });
+  mainPane.addEventListener("dragover", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = "copy";
+  });
+  mainPane.addEventListener("dragleave", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragCounter = Math.max(0, dragCounter - 1);
+    if (dragCounter === 0) {
+      dropOverlay.style.display = "none";
+    }
+  });
+  mainPane.addEventListener("drop", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragCounter = 0;
+    dropOverlay.style.display = "none";
+    const file = e.dataTransfer?.files?.[0];
+    if (file && (file.type?.startsWith("image/") || file.name?.match(/\.(png|webp|jpe?g)$/i))) {
+      handleImportImageFile(file);
+    }
   });
 
   newCatBtn.addEventListener("click", async () => {
