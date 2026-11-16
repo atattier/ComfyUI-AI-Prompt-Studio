@@ -12,16 +12,16 @@
  */
 
 import { app } from "../../scripts/app.js";
-import { StudioApi } from "./lib/api.js?v=20261116_v40";
+import { StudioApi } from "./lib/api.js?v=20261116_v41";
 import {
   openSaveLoraPresetModal,
   openLoraPresetLibraryModal,
   openLoraPresetLightbox,
   buildLoraSyntaxString,
-} from "./lib/lora_editor.js?v=20261116_v40";
+} from "./lib/lora_editor.js?v=20261116_v41";
 
 const NODE_TYPE = "AIPromptStudioLora";
-const STYLE_VERSION = "20261116_v40";
+const STYLE_VERSION = "20261116_v41";
 
 function mountStyles() {
   if (typeof document === "undefined") return;
@@ -755,48 +755,58 @@ export function setupLoraNode(node) {
   }
 
   // ---------------------------------------------------------------------------
-  // Load initial data (presets, local loras, stack)
+  // Load initial data (presets, local loras, stack) & Live Sync
   // ---------------------------------------------------------------------------
-  async function initData() {
-    // 1. Fetch available local LoRAs
-    try {
-      const res = await api.getAvailableLoras();
-      availableLoras = res.loras || [];
-      loraDetails = res.lora_details || {};
-
-      addSelect.innerHTML = "";
-      const defaultOpt = el("option", "", `+ 从本地添加 LoRA... (共 ${availableLoras.length} 个)`);
-      defaultOpt.value = "";
-      addSelect.append(defaultOpt);
-
-      availableLoras.forEach((name) => {
-        const opt = el("option", "", name);
-        opt.value = name;
-        addSelect.append(opt);
-      });
-    } catch (e) {
-      console.warn("[AIPromptStudioLora] 获取本地 LoRA 列表失败:", e);
-    }
-
-    // 2. Fetch Presets from SQLite
+  async function refreshPresetsList(preferredName = null) {
     try {
       const presRes = await api.listLoraPresets();
-      presetsList = presRes.presets || [];
-      updatePresetDropdown();
+      presetsList = Array.isArray(presRes?.presets) ? presRes.presets : [];
+      updatePresetDropdown(preferredName);
+      return presetsList;
     } catch (e) {
       console.warn("[AIPromptStudioLora] 获取 LoRA 预设库失败:", e);
+      return [];
     }
+  }
 
-    // 3. Load initial stack from widgets
+  async function initData() {
+    // 1. Fetch Presets immediately & fetch local LoRAs in parallel
+    await Promise.allSettled([
+      refreshPresetsList(),
+      (async () => {
+        try {
+          const res = await api.getAvailableLoras();
+          availableLoras = res?.loras || [];
+          loraDetails = res?.lora_details || {};
+
+          addSelect.innerHTML = "";
+          const defaultOpt = el("option", "", `+ 从本地添加 LoRA... (共 ${availableLoras.length} 个)`);
+          defaultOpt.value = "";
+          addSelect.append(defaultOpt);
+
+          availableLoras.forEach((name) => {
+            const opt = el("option", "", name);
+            opt.value = name;
+            addSelect.append(opt);
+          });
+        } catch (e) {
+          console.warn("[AIPromptStudioLora] 获取本地 LoRA 列表失败:", e);
+        }
+      })(),
+    ]);
+
+    // 2. Load initial stack from widgets or active preset
     loadStackFromWidgets();
   }
 
-  function updatePresetDropdown() {
+  function updatePresetDropdown(preferredName = null) {
     presetSelect.innerHTML = "";
     if (presetsList.length === 0) {
       const opt = el("option", "", "暂无保存的预设");
       opt.value = "";
       presetSelect.append(opt);
+      currentPresetData = null;
+      updatePresetThumbBadge();
       return;
     }
 
@@ -806,8 +816,19 @@ export function setupLoraNode(node) {
       presetSelect.append(opt);
     });
 
-    if (presetWidget?.value) {
-      presetSelect.value = presetWidget.value;
+    // Check if preferredName, presetWidget.value, or fallback to first preset matches
+    const targetName = preferredName || presetWidget?.value || presetsList[0]?.name;
+    let matched = presetsList.find((p) => p.name === targetName || p.id === targetName);
+    if (!matched && presetsList.length > 0) {
+      matched = presetsList[0];
+    }
+
+    if (matched) {
+      presetSelect.value = matched.name;
+      if (presetWidget) presetWidget.value = matched.name;
+      currentPresetData = matched;
+    } else {
+      currentPresetData = null;
     }
     updatePresetThumbBadge();
   }
@@ -840,7 +861,16 @@ export function setupLoraNode(node) {
   function applyPresetObject(preset) {
     if (!preset) return;
     currentPresetData = preset;
-    presetSelect.value = preset.name;
+
+    // Ensure this preset is in presetsList
+    const idx = presetsList.findIndex((p) => p.id === preset.id || p.name === preset.name);
+    if (idx >= 0) {
+      presetsList[idx] = preset;
+    } else {
+      presetsList.unshift(preset);
+    }
+    updatePresetDropdown(preset.name);
+
     if (presetWidget) presetWidget.value = preset.name;
     currentStack = (preset.loras || []).map((item) => ({
       name: item.name,
@@ -883,24 +913,15 @@ export function setupLoraNode(node) {
       return;
     }
 
-    // Otherwise load from active preset
+    // Otherwise load from active preset or first available preset
     const targetPresetName = presetWidget?.value || (presetsList[0]?.name);
-    if (targetPresetName) {
-      const found = presetsList.find((p) => p.name === targetPresetName || p.id === targetPresetName);
-      if (found) {
-        currentPresetData = found;
-        presetSelect.value = found.name;
-        currentStack = (found.loras || []).map((item) => ({
-          name: item.name || "未命名",
-          strength_model: Number(item.strength_model ?? 1.0),
-          strength_clip: Number(item.strength_clip ?? item.strength_model ?? 1.0),
-          enabled: item.enabled !== false,
-          trigger_words: item.trigger_words || (loraDetails[item.name]?.trigger_words) || "",
-          linked: item.strength_model === item.strength_clip,
-        }));
-        renderStackList();
-        return;
-      }
+    let found = presetsList.find((p) => p.name === targetPresetName || p.id === targetPresetName);
+    if (!found && presetsList.length > 0) {
+      found = presetsList[0];
+    }
+    if (found) {
+      applyPresetObject(found);
+      return;
     }
 
     // Empty fallback
@@ -911,7 +932,7 @@ export function setupLoraNode(node) {
   // ---------------------------------------------------------------------------
   // Event Listeners
   // ---------------------------------------------------------------------------
-  // 1. Preset Dropdown Switch
+  // 1. Preset Dropdown Switch & Interactive Refresh
   presetSelect.addEventListener("change", () => {
     hideLoraPreviewTooltip();
     const selName = presetSelect.value;
@@ -922,6 +943,29 @@ export function setupLoraNode(node) {
       updatePresetThumbBadge();
     }
   });
+
+  const handleDropdownInteraction = () => {
+    if (presetsList.length === 0) {
+      refreshPresetsList();
+    }
+  };
+  presetSelect.addEventListener("pointerdown", handleDropdownInteraction);
+  presetSelect.addEventListener("focus", handleDropdownInteraction);
+
+  // Live Sync: Listen for global preset updates across all modals & nodes
+  const onPresetsUpdated = async (e) => {
+    const savedName = e?.detail?.result?.name || e?.detail?.presetName || e?.detail?.name;
+    await refreshPresetsList(savedName);
+  };
+  window.addEventListener("aps:lora-presets-updated", onPresetsUpdated);
+
+  const origOnRemoved = node.onRemoved;
+  node.onRemoved = function (...args) {
+    try {
+      window.removeEventListener("aps:lora-presets-updated", onPresetsUpdated);
+    } catch {}
+    return origOnRemoved?.apply(this, args);
+  };
 
   // 2. Add LoRA Button
   addBtn.addEventListener("click", () => {
@@ -961,15 +1005,10 @@ export function setupLoraNode(node) {
       initialLoras: currentStack,
       initialTriggerWords: getActiveTriggerWords(),
       onSaved: async (saved) => {
-        currentPresetData = saved;
-        // Refresh preset list
-        try {
-          const presRes = await api.listLoraPresets();
-          presetsList = presRes.presets || [];
-          updatePresetDropdown();
-          presetSelect.value = saved.name;
-          if (presetWidget) presetWidget.value = saved.name;
-        } catch {}
+        await refreshPresetsList(saved?.name);
+        if (saved) {
+          applyPresetObject(saved);
+        }
         syncStateToNode();
       },
     });
@@ -982,6 +1021,9 @@ export function setupLoraNode(node) {
       api,
       onApply: (preset) => {
         applyPresetObject(preset);
+      },
+      onClose: async () => {
+        await refreshPresetsList();
       },
     });
   });

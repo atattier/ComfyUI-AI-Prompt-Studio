@@ -387,6 +387,14 @@ export class StudioApi {
   }
 
   // ------------------------------------------------------------- LoRA Presets
+  _notifyLoraPresetsChanged(detail = {}) {
+    if (typeof window !== "undefined" && typeof window.dispatchEvent === "function") {
+      try {
+        window.dispatchEvent(new CustomEvent("aps:lora-presets-updated", { detail }));
+      } catch {}
+    }
+  }
+
   listLoraPresets({ category = "", search = "" } = {}) {
     const query = new URLSearchParams();
     if (category && category !== "全部") query.set("category", category);
@@ -404,11 +412,17 @@ export class StudioApi {
   }
 
   saveLoraPreset(body = {}) {
-    return this.request("/lora_presets", { method: "POST", body });
+    return this.request("/lora_presets", { method: "POST", body }).then((res) => {
+      this._notifyLoraPresetsChanged({ action: "save", result: res, body });
+      return res;
+    });
   }
 
   deleteLoraPreset(id) {
-    return this.request(`/lora_presets/${encodeURIComponent(id)}`, { method: "DELETE" });
+    return this.request(`/lora_presets/${encodeURIComponent(id)}`, { method: "DELETE" }).then((res) => {
+      this._notifyLoraPresetsChanged({ action: "delete", id });
+      return res;
+    });
   }
 
   listLoraPresetCategories() {
@@ -436,7 +450,10 @@ export class StudioApi {
   }
 
   resetBuiltinLoraPresets() {
-    return this.request("/lora_presets/reset_builtins", { method: "POST" });
+    return this.request("/lora_presets/reset_builtins", { method: "POST" }).then((res) => {
+      this._notifyLoraPresetsChanged({ action: "reset", result: res });
+      return res;
+    });
   }
 
   loraPresetImageUrl(id) {
@@ -450,7 +467,10 @@ export class StudioApi {
   }
 
   importLoraPresets(presets = []) {
-    return this.request("/lora_presets/import", { method: "POST", body: { presets } });
+    return this.request("/lora_presets/import", { method: "POST", body: { presets } }).then((res) => {
+      this._notifyLoraPresetsChanged({ action: "import", result: res });
+      return res;
+    });
   }
 
   inspectImageLoras({ image_data, filename = "" } = {}) {

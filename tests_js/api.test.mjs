@@ -228,6 +228,39 @@ test("lora presets api calls support list, save, delete, and available loras", a
   assert.equal(api.loraPreviewImageUrl(""), "");
 });
 
+test("lora presets api operations dispatch aps:lora-presets-updated events", async () => {
+  const events = [];
+  const handler = (e) => events.push(e.detail);
+  globalThis.window = {
+    dispatchEvent: (evt) => {
+      if (evt.type === "aps:lora-presets-updated") handler(evt);
+      return true;
+    },
+  };
+
+  const api = new StudioApi({
+    fetchImpl: async () => jsonResponse({ ok: true, name: "新预设" }),
+  });
+
+  await api.saveLoraPreset({ name: "新预设" });
+  assert.equal(events.length, 1);
+  assert.equal(events[0].action, "save");
+
+  await api.deleteLoraPreset("lora_1");
+  assert.equal(events.length, 2);
+  assert.equal(events[1].action, "delete");
+
+  await api.resetBuiltinLoraPresets();
+  assert.equal(events.length, 3);
+  assert.equal(events[2].action, "reset");
+
+  await api.importLoraPresets([{ name: "导入预设" }]);
+  assert.equal(events.length, 4);
+  assert.equal(events[3].action, "import");
+
+  delete globalThis.window;
+});
+
 test("completeFromPrompt calls POST /complete_from_prompt with finished prompt params", async () => {
   let calledUrl = null;
   let calledBody = null;

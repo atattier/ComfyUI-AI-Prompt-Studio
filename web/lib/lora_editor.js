@@ -62,6 +62,7 @@ export function openSaveLoraPresetModal({
   initialLoras = null,
   initialTriggerWords = "",
   onSaved = null,
+  onClose = null,
 } = {}) {
   const api = suppliedApi || new StudioApi();
   const isEditing = Boolean(preset && preset.id);
@@ -515,9 +516,15 @@ export function openSaveLoraPresetModal({
   overlay.append(modal);
   document.body.append(overlay);
 
+  let isCleanedUp = false;
   function cleanup() {
+    if (isCleanedUp) return;
+    isCleanedUp = true;
     overlay.remove();
     loraDatalist.remove();
+    if (typeof onClose === "function") {
+      try { onClose(); } catch {}
+    }
   }
 
   closeTopBtn.addEventListener("click", cleanup);
@@ -858,6 +865,7 @@ export function openLoraPresetLightbox(preset, { api: suppliedApi = null, onAppl
 export function openLoraPresetLibraryModal({
   api: suppliedApi = null,
   onApply = null,
+  onClose = null,
 } = {}) {
   const api = suppliedApi || new StudioApi();
 
@@ -971,8 +979,14 @@ export function openLoraPresetLibraryModal({
   overlay.append(modal);
   document.body.append(overlay);
 
+  let isCleanedUp = false;
   function cleanup() {
+    if (isCleanedUp) return;
+    isCleanedUp = true;
     overlay.remove();
+    if (typeof onClose === "function") {
+      try { onClose(); } catch (err) { console.warn("[AIPromptStudioLora] onClose error:", err); }
+    }
   }
 
   closeTopBtn.addEventListener("click", cleanup);
