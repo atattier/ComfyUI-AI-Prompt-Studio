@@ -5,7 +5,7 @@
  * editing, category organization, and 1-click application to canvas nodes.
  */
 
-import { StudioApi } from "./api.js?v=20261116_v37";
+import { StudioApi } from "./api.js?v=20261116_v38";
 
 function detectIsLightTheme() {
   if (typeof document === "undefined" || typeof getComputedStyle !== "function") return false;
@@ -140,6 +140,118 @@ export function openSaveLoraPresetModal({
   metaRow.append(catCol, tagsCol);
   formGroup.append(metaRow);
 
+  // 2.2 Cover / Preview Image Row
+  const coverRow = el("div", "aps-lora-cover-row");
+  const thumbWrap = el("div", "aps-lora-cover-thumb-wrap");
+  const thumbImg = el("img");
+  thumbImg.alt = "预设效果图";
+  const thumbPlaceholder = el("span", "", "🖼");
+  thumbPlaceholder.style.fontSize = "26px";
+  thumbPlaceholder.style.opacity = "0.5";
+  thumbWrap.append(thumbImg, thumbPlaceholder);
+
+  const coverInfo = el("div");
+  coverInfo.style.flex = "1";
+  coverInfo.style.display = "flex";
+  coverInfo.style.flexDirection = "column";
+  coverInfo.style.gap = "2px";
+
+  const coverTitle = el("div", "", "预设组效果图 (生成画面效果封面)");
+  coverTitle.style.fontSize = "12px";
+  coverTitle.style.fontWeight = "bold";
+
+  const coverHint = el("div", "", "识图提取时自动带入，或手动选择/拖入本地出图作为效果图");
+  coverHint.style.fontSize = "11px";
+  coverHint.style.color = "var(--aps-muted, #888)";
+  coverInfo.append(coverTitle, coverHint);
+
+  const coverBtnGroup = el("div");
+  coverBtnGroup.style.display = "flex";
+  coverBtnGroup.style.gap = "6px";
+
+  const selectCoverBtn = el("button", "aps-btn aps-btn-xs", "📷 更换效果图");
+  selectCoverBtn.type = "button";
+  selectCoverBtn.title = "选择本地图片作为此预设组的效果图封面";
+
+  const removeCoverBtn = el("button", "aps-btn aps-btn-xs", "✕ 移除");
+  removeCoverBtn.type = "button";
+  removeCoverBtn.style.color = "#ff6b6b";
+
+  const customCoverFileInput = el("input");
+  customCoverFileInput.type = "file";
+  customCoverFileInput.accept = "image/png,image/webp,image/jpeg";
+  customCoverFileInput.style.display = "none";
+  modal.append(customCoverFileInput);
+
+  coverBtnGroup.append(selectCoverBtn, removeCoverBtn);
+  coverRow.append(thumbWrap, coverInfo, coverBtnGroup);
+  formGroup.append(coverRow);
+
+  function updateCoverDisplay(src) {
+    if (src) {
+      thumbImg.src = src;
+      thumbImg.style.display = "block";
+      thumbPlaceholder.style.display = "none";
+      removeCoverBtn.style.display = "inline-block";
+      coverHint.textContent = "已设置效果图，将在预设库与悬停卡片中呈现";
+      coverHint.style.color = "#34d399";
+    } else {
+      thumbImg.src = "";
+      thumbImg.style.display = "none";
+      thumbPlaceholder.style.display = "inline-block";
+      removeCoverBtn.style.display = "none";
+      coverHint.textContent = "暂无效果图。识图提取时自动带入，或手动选择/拖入本地出图";
+      coverHint.style.color = "var(--aps-muted, #888)";
+    }
+  }
+
+  // 初始化已有封面
+  if (coverDataUrl || (preset && preset.has_image)) {
+    const initialCover = coverDataUrl || (preset?.id ? api.loraPresetImageUrl(preset.id) : "");
+    updateCoverDisplay(initialCover);
+  } else {
+    updateCoverDisplay("");
+  }
+
+  selectCoverBtn.addEventListener("click", () => customCoverFileInput.click());
+  removeCoverBtn.addEventListener("click", () => {
+    coverDataUrl = "";
+    updateCoverDisplay("");
+  });
+
+  customCoverFileInput.addEventListener("change", (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      coverDataUrl = reader.result;
+      updateCoverDisplay(coverDataUrl);
+    };
+    reader.readAsDataURL(file);
+    customCoverFileInput.value = "";
+  });
+
+  // 支持直接将图片拖拽到弹窗更换效果图
+  modal.addEventListener("dragover", (e) => {
+    e.preventDefault();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = "copy";
+  });
+  modal.addEventListener("drop", (e) => {
+    const file = e.dataTransfer?.files?.[0];
+    if (file && (file.type?.startsWith("image/") || file.name?.match(/\.(png|webp|jpe?g)$/i))) {
+      e.preventDefault();
+      e.stopPropagation();
+      const reader = new FileReader();
+      reader.onload = () => {
+        coverDataUrl = reader.result;
+        updateCoverDisplay(coverDataUrl);
+        statusMsg.textContent = `✓ 已从拖放图片更新效果图封面：${file.name}`;
+        statusMsg.style.color = "#34d399";
+      };
+      reader.readAsDataURL(file);
+    }
+  });
+
   // 3. LoRA Stack Editor Section
   const stackSection = el("div", "aps-lora-stack-section");
   stackSection.style.marginTop = "16px";
@@ -209,6 +321,7 @@ export function openSaveLoraPresetModal({
         }
         if (res.thumbnail) {
           coverDataUrl = res.thumbnail;
+          updateCoverDisplay(coverDataUrl);
         }
         statusMsg.textContent = `✓ 成功提取 ${res.loras.length} 个 LoRA`;
         statusMsg.style.color = "#34d399";
@@ -473,6 +586,271 @@ export function openSaveLoraPresetModal({
 }
 
 /**
+ * Render default placeholder for presets without cover image.
+ */
+function renderDefaultLoraStage(preset) {
+  const wrap = el("div");
+  wrap.style.display = "flex";
+  wrap.style.flexDirection = "column";
+  wrap.style.alignItems = "center";
+  wrap.style.justifyContent = "center";
+  wrap.style.gap = "4px";
+  wrap.style.opacity = "0.75";
+  wrap.innerHTML = `<span style="font-size: 34px;">🥞</span><span style="font-size: 11px; font-weight: bold; color: var(--aps-muted, #888);">${preset.name || "LoRA 预设"}</span>`;
+  return wrap;
+}
+
+/**
+ * Lightbox modal to view large preset cover, stack details, and change cover.
+ */
+export function openLoraPresetLightbox(preset, { api: suppliedApi = null, onApply = null, onUpdated = null } = {}) {
+  const api = suppliedApi || new StudioApi();
+  const overlay = el("div", "aps-modal-overlay aps-lora-lightbox-overlay notranslate");
+  overlay.setAttribute("role", "dialog");
+  overlay.setAttribute("aria-modal", "true");
+  overlay.addEventListener("wheel", (e) => e.stopPropagation(), { passive: true });
+
+  const card = el("div", "aps-lora-lightbox-card notranslate");
+  card.style.display = "flex";
+  card.style.flexDirection = "column";
+
+  // 1. Header
+  const head = el("div", "aps-modal-head aps-wb-head");
+  head.style.flexShrink = "0";
+  const titleWrap = el("div", "aps-wb-brand");
+  titleWrap.append(
+    el("span", "aps-logo", "🥞"),
+    el("div", "aps-modal-title", `${preset.name} · 预设效果图`)
+  );
+  const closeBtn = el("button", "aps-btn aps-btn-sm", "✕ 关闭");
+  closeBtn.type = "button";
+  head.append(titleWrap, closeBtn);
+  card.append(head);
+
+  // 2. Body: Left Media, Right Details
+  const body = el("div");
+  body.style.display = "flex";
+  body.style.flex = "1 1 auto";
+  body.style.minHeight = "0";
+  body.style.overflow = "hidden";
+
+  // Left Media
+  const mediaWrap = el("div", "aps-lora-lightbox-media");
+  mediaWrap.style.flex = "1.3";
+  mediaWrap.style.position = "relative";
+  mediaWrap.style.background = "#09090b";
+  mediaWrap.style.display = "flex";
+  mediaWrap.style.alignItems = "center";
+  mediaWrap.style.justifyContent = "center";
+
+  const img = el("img");
+  img.alt = preset.name;
+  let coverUrl = preset.thumbnail || (preset.has_image ? api.loraPresetImageUrl(preset.id) : "");
+  if (!coverUrl && preset.loras && preset.loras.length > 0) {
+    const firstL = preset.loras.find((l) => l.name);
+    if (firstL) coverUrl = api.loraPreviewImageUrl(firstL.name);
+  }
+
+  function renderMediaView() {
+    mediaWrap.innerHTML = "";
+    if (coverUrl) {
+      img.src = coverUrl;
+      mediaWrap.append(img);
+    } else {
+      const placeholder = el("div");
+      placeholder.style.textAlign = "center";
+      placeholder.style.padding = "30px";
+      placeholder.innerHTML = `<span style="font-size: 54px;">🥞</span><div style="margin-top: 10px; font-size: 13px; color: var(--aps-muted, #888);">暂无大图封面<br>可点下方「更换效果图」上传</div>`;
+      mediaWrap.append(placeholder);
+    }
+  }
+  renderMediaView();
+
+  // Right Info Pane
+  const infoPane = el("div");
+  infoPane.style.flex = "1";
+  infoPane.style.padding = "16px";
+  infoPane.style.display = "flex";
+  infoPane.style.flexDirection = "column";
+  infoPane.style.gap = "12px";
+  infoPane.style.overflowY = "auto";
+  infoPane.style.borderLeft = "1px solid var(--aps-border)";
+
+  // Badges
+  const metaBar = el("div");
+  metaBar.style.display = "flex";
+  metaBar.style.gap = "6px";
+  metaBar.append(
+    el("span", "aps-badge aps-badge-blue", preset.category || "通用"),
+    el("span", "aps-badge aps-badge-purple", `🥞 ${(preset.loras || []).length} 个 LoRA 堆叠`)
+  );
+  if (preset.is_builtin) {
+    metaBar.append(el("span", "aps-badge", "官方内置"));
+  }
+  infoPane.append(metaBar);
+
+  // LoRA Stack List
+  const lorasSec = el("div");
+  lorasSec.append(el("div", "aps-form-label", "🥞 堆叠 LoRA 列表与权重:"));
+  const lorasBox = el("div");
+  lorasBox.style.display = "flex";
+  lorasBox.style.flexDirection = "column";
+  lorasBox.style.gap = "4px";
+  lorasBox.style.background = "var(--aps-surface-0, rgba(0,0,0,0.2))";
+  lorasBox.style.padding = "8px 10px";
+  lorasBox.style.borderRadius = "6px";
+  lorasBox.style.maxHeight = "160px";
+  lorasBox.style.overflowY = "auto";
+
+  (preset.loras || []).forEach((item) => {
+    const row = el("div");
+    row.style.display = "flex";
+    row.style.justifyContent = "space-between";
+    row.style.fontSize = "12px";
+    row.style.opacity = item.enabled !== false ? "1" : "0.5";
+    row.append(
+      el("span", "", `• ${item.name || "未命名"}`),
+      el("span", "", `M: ${item.strength_model}  C: ${item.strength_clip}`)
+    );
+    lorasBox.append(row);
+  });
+  lorasSec.append(lorasBox);
+  infoPane.append(lorasSec);
+
+  // Trigger words
+  if (preset.trigger_words) {
+    const twSec = el("div");
+    const twHead = el("div");
+    twHead.style.display = "flex";
+    twHead.style.justifyContent = "space-between";
+    twHead.style.alignItems = "center";
+    twHead.append(el("div", "aps-form-label", "💬 搭配触发词:"));
+    const copyBtn = el("button", "aps-btn aps-btn-xs", "📋 复制触发词");
+    copyBtn.type = "button";
+    copyBtn.addEventListener("click", () => {
+      navigator.clipboard.writeText(preset.trigger_words);
+      copyBtn.textContent = "✓ 已复制";
+      setTimeout(() => { copyBtn.textContent = "📋 复制触发词"; }, 1500);
+    });
+    twHead.append(copyBtn);
+    twSec.append(twHead);
+
+    const twContent = el("div", "aps-input");
+    twContent.style.fontSize = "12px";
+    twContent.style.lineHeight = "1.4";
+    twContent.style.padding = "8px";
+    twContent.style.maxHeight = "90px";
+    twContent.style.overflowY = "auto";
+    twContent.textContent = preset.trigger_words;
+    twSec.append(twContent);
+    infoPane.append(twSec);
+  }
+
+  // Notes
+  if (preset.notes) {
+    const notesSec = el("div");
+    notesSec.append(el("div", "aps-form-label", "📝 使用建议与备注:"));
+    const notesContent = el("div");
+    notesContent.style.fontSize = "12px";
+    notesContent.style.opacity = "0.75";
+    notesContent.textContent = preset.notes;
+    notesSec.append(notesContent);
+    infoPane.append(notesSec);
+  }
+
+  body.append(mediaWrap, infoPane);
+  card.append(body);
+
+  // Hidden File input for changing cover
+  const changeCoverInput = el("input");
+  changeCoverInput.type = "file";
+  changeCoverInput.accept = "image/png,image/webp,image/jpeg";
+  changeCoverInput.style.display = "none";
+  card.append(changeCoverInput);
+
+  changeCoverInput.addEventListener("change", (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = async () => {
+      try {
+        const b64 = reader.result;
+        const updated = await api.saveLoraPreset({
+          id: preset.id,
+          name: preset.name,
+          category: preset.category,
+          tags: preset.tags,
+          loras: preset.loras,
+          trigger_words: preset.trigger_words,
+          notes: preset.notes,
+          image_data: b64,
+        });
+        preset.thumbnail = updated.thumbnail || b64;
+        preset.has_image = true;
+        coverUrl = preset.thumbnail;
+        renderMediaView();
+        onUpdated?.();
+      } catch (err) {
+        alert(`更换效果图失败：${err.message || err}`);
+      }
+    };
+    reader.readAsDataURL(file);
+    changeCoverInput.value = "";
+  });
+
+  // Footer Buttons
+  const foot = el("div", "aps-modal-foot");
+  foot.style.flexShrink = "0";
+  foot.style.padding = "10px 16px";
+  foot.style.display = "flex";
+  foot.style.justifyContent = "space-between";
+
+  const leftBtns = el("div");
+  leftBtns.style.display = "flex";
+  leftBtns.style.gap = "8px";
+
+  const uploadBtn = el("button", "aps-btn aps-btn-sm", "🖼 更换效果图");
+  uploadBtn.type = "button";
+  uploadBtn.addEventListener("click", () => changeCoverInput.click());
+  leftBtns.append(uploadBtn);
+
+  if (coverUrl) {
+    const dlBtn = el("button", "aps-btn aps-btn-sm", "📥 下载效果图");
+    dlBtn.type = "button";
+    dlBtn.addEventListener("click", () => {
+      const a = document.createElement("a");
+      a.href = coverUrl;
+      a.download = `${preset.name}_效果图.png`;
+      a.click();
+    });
+    leftBtns.append(dlBtn);
+  }
+
+  const rightBtns = el("div");
+  rightBtns.style.display = "flex";
+  rightBtns.style.gap = "8px";
+
+  const applyBtn = el("button", "aps-btn aps-btn-sm aps-primary", "⚡ 应用此预设到节点");
+  applyBtn.type = "button";
+  applyBtn.addEventListener("click", () => {
+    overlay.remove();
+    onApply?.(preset);
+  });
+
+  rightBtns.append(applyBtn);
+  foot.append(leftBtns, rightBtns);
+  card.append(foot);
+
+  overlay.append(card);
+  document.body.append(overlay);
+
+  closeBtn.addEventListener("click", () => overlay.remove());
+  overlay.addEventListener("click", (e) => {
+    if (e.target === overlay) overlay.remove();
+  });
+}
+
+/**
  * Explorer-style LoRA Preset Hub Gallery Modal.
  */
 export function openLoraPresetLibraryModal({
@@ -671,12 +1049,101 @@ export function openLoraPresetLibraryModal({
     card.style.background = "var(--aps-bg-card, #1e1e24)";
     card.style.border = "1px solid var(--aps-border, #333)";
     card.style.borderRadius = "8px";
-    card.style.padding = "14px";
+    card.style.padding = "10px";
     card.style.display = "flex";
     card.style.flexDirection = "column";
     card.style.gap = "8px";
 
-    // Header: Title & Badges
+    const loras = Array.isArray(preset.loras) ? preset.loras : [];
+
+    // 1. Stage Wrap (Visual Cover Showcase)
+    const stageWrap = el("div", "aps-lora-card-stage");
+    let coverUrl = preset.thumbnail || (preset.has_image ? api.loraPresetImageUrl(preset.id) : "");
+    if (!coverUrl && loras.length > 0) {
+      const firstWithPreview = loras.find((l) => l.name);
+      if (firstWithPreview) {
+        coverUrl = api.loraPreviewImageUrl(firstWithPreview.name);
+      }
+    }
+
+    if (coverUrl) {
+      const img = el("img");
+      img.src = coverUrl;
+      img.alt = preset.name;
+      img.loading = "lazy";
+      img.onerror = () => {
+        img.remove();
+        stageWrap.append(renderDefaultLoraStage(preset));
+      };
+      stageWrap.append(img);
+
+      const overlayShade = el("div", "aps-lora-stage-overlay");
+      stageWrap.append(overlayShade);
+    } else {
+      stageWrap.append(renderDefaultLoraStage(preset));
+    }
+
+    // Badge on stage
+    const countBadge = el("span", "aps-lora-stage-badge", `🥞 ${loras.length} 个 LoRA`);
+    stageWrap.append(countBadge);
+
+    // Quick Change Cover Button
+    const quickCoverBtn = el("button", "aps-lora-stage-change-btn", "📷 换效果图");
+    quickCoverBtn.type = "button";
+    quickCoverBtn.title = "点击上传更换此预设的效果图";
+    const cardCoverFileInput = el("input");
+    cardCoverFileInput.type = "file";
+    cardCoverFileInput.accept = "image/png,image/webp,image/jpeg";
+    cardCoverFileInput.style.display = "none";
+    card.append(cardCoverFileInput);
+
+    quickCoverBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      cardCoverFileInput.click();
+    });
+
+    cardCoverFileInput.addEventListener("change", (e) => {
+      const file = e.target.files?.[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = async () => {
+        try {
+          const b64 = reader.result;
+          await api.saveLoraPreset({
+            id: preset.id,
+            name: preset.name,
+            category: preset.category,
+            tags: preset.tags,
+            loras: preset.loras,
+            trigger_words: preset.trigger_words,
+            notes: preset.notes,
+            image_data: b64,
+          });
+          loadPresets();
+        } catch (err) {
+          alert(`更换效果图失败：${err.message || err}`);
+        }
+      };
+      reader.readAsDataURL(file);
+      cardCoverFileInput.value = "";
+    });
+
+    stageWrap.append(quickCoverBtn);
+
+    stageWrap.addEventListener("click", () => {
+      openLoraPresetLightbox(preset, {
+        api,
+        onApply: (p) => {
+          cleanup();
+          if (typeof onApply === "function") onApply(p);
+        },
+        onUpdated: () => loadPresets(),
+      });
+    });
+
+    card.append(stageWrap);
+
+    // 2. Header: Title & Badges
     const headRow = el("div");
     headRow.style.display = "flex";
     headRow.style.justifyContent = "space-between";
@@ -706,7 +1173,6 @@ export function openLoraPresetLibraryModal({
     card.append(headRow);
 
     // LoRA stack list overview
-    const loras = Array.isArray(preset.loras) ? preset.loras : [];
     const stackOverview = el("div");
     stackOverview.style.background = "rgba(0, 0, 0, 0.2)";
     stackOverview.style.borderRadius = "4px";
@@ -787,6 +1253,20 @@ export function openLoraPresetLibraryModal({
       }
     });
 
+    const viewImgBtn = el("button", "aps-btn aps-btn-sm", "🖼");
+    viewImgBtn.type = "button";
+    viewImgBtn.title = "查看效果大图与全套参数";
+    viewImgBtn.addEventListener("click", () => {
+      openLoraPresetLightbox(preset, {
+        api,
+        onApply: (p) => {
+          cleanup();
+          if (typeof onApply === "function") onApply(p);
+        },
+        onUpdated: () => loadPresets(),
+      });
+    });
+
     const editBtn = el("button", "aps-btn aps-btn-sm", "✏");
     editBtn.type = "button";
     editBtn.title = "编辑该预设";
@@ -812,7 +1292,7 @@ export function openLoraPresetLibraryModal({
       }
     });
 
-    footRow.append(applyBtn, editBtn, delBtn);
+    footRow.append(applyBtn, viewImgBtn, editBtn, delBtn);
     card.append(footRow);
 
     return card;

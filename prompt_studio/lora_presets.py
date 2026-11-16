@@ -689,6 +689,7 @@ class LoraPresetStore:
             "notes": row["notes"] or "",
             "thumbnail": row["thumbnail"] or "",
             "image_file": row["image_file"] or "",
+            "has_image": bool(row["image_file"] or (row["thumbnail"] and len(str(row["thumbnail"])) > 100)),
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],
         }

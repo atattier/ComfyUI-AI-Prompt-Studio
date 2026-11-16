@@ -4,7 +4,16 @@ import assert from "node:assert/strict";
 import {
   formatLoraStackSummary,
   buildLoraSyntaxString,
+  openLoraPresetLightbox,
+  openSaveLoraPresetModal,
+  openLoraPresetLibraryModal,
 } from "../web/lib/lora_editor.js";
+
+test("lora_editor exports required preset and lightbox functions", () => {
+  assert.equal(typeof openLoraPresetLightbox, "function");
+  assert.equal(typeof openSaveLoraPresetModal, "function");
+  assert.equal(typeof openLoraPresetLibraryModal, "function");
+});
 
 test("formatLoraStackSummary formats counts correctly", () => {
   assert.equal(formatLoraStackSummary([]), "无 LoRA");

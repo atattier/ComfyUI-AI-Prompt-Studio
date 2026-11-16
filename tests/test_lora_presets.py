@@ -134,6 +134,27 @@ class LoraPresetStoreTests(unittest.TestCase):
         loras = scan_available_loras()
         self.assertIsInstance(loras, list)
 
+    def test_save_with_image_data_and_get_image(self):
+        # 1x1 transparent PNG base64
+        tiny_png = (
+            "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+        )
+        saved = self.store.save({
+            "name": "带效果图预设",
+            "category": "通用",
+            "loras": [{"name": "test.safetensors", "strength_model": 1.0}],
+            "image_data": tiny_png,
+        })
+        self.assertTrue(saved.get("has_image"))
+        self.assertTrue(saved.get("thumbnail"))
+
+        # Verify get_image returns binary bytes
+        img_res = self.store.get_image(saved["id"])
+        self.assertIsNotNone(img_res)
+        raw, mime, fn = img_res
+        self.assertEqual(mime, "image/png")
+        self.assertGreater(len(raw), 10)
+
 
 if __name__ == "__main__":
     unittest.main()

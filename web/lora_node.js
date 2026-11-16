@@ -12,15 +12,16 @@
  */
 
 import { app } from "../../scripts/app.js";
-import { StudioApi } from "./lib/api.js?v=20261116_v37";
+import { StudioApi } from "./lib/api.js?v=20261116_v38";
 import {
   openSaveLoraPresetModal,
   openLoraPresetLibraryModal,
+  openLoraPresetLightbox,
   buildLoraSyntaxString,
-} from "./lib/lora_editor.js?v=20261116_v37";
+} from "./lib/lora_editor.js?v=20261116_v38";
 
 const NODE_TYPE = "AIPromptStudioLora";
-const STYLE_VERSION = "20261116_v37";
+const STYLE_VERSION = "20261116_v38";
 
 function mountStyles() {
   if (typeof document === "undefined") return;
@@ -234,6 +235,114 @@ function showLoraPreviewTooltip(targetEl, info) {
   }, 90);
 }
 
+function showLoraPresetPreviewTooltip(targetEl, preset, api) {
+  if (hoverTimer) clearTimeout(hoverTimer);
+  hoverTimer = setTimeout(() => {
+    if (!targetEl || !document.body.contains(targetEl) || !preset) return;
+    hideLoraPreviewTooltip();
+
+    const tooltip = el("div", "aps-lora-hover-preview-tooltip notranslate");
+    tooltip.dataset.theme = detectIsLightTheme() ? "light" : "dark";
+    tooltip.style.width = "290px";
+
+    const rect = targetEl.getBoundingClientRect();
+    const loras = Array.isArray(preset.loras) ? preset.loras : [];
+
+    let coverUrl = preset.thumbnail || (preset.has_image ? api.loraPresetImageUrl(preset.id) : "");
+    if (!coverUrl && loras.length > 0) {
+      const firstWithPreview = loras.find((l) => l.name);
+      if (firstWithPreview) {
+        coverUrl = api.loraPreviewImageUrl(firstWithPreview.name);
+      }
+    }
+
+    // 1. Cover Image
+    if (coverUrl) {
+      const imgWrap = el("div", "aps-lora-preview-img-wrap");
+      imgWrap.style.maxHeight = "180px";
+      const img = el("img", "aps-lora-preview-img");
+      img.src = coverUrl;
+      img.alt = preset.name || "";
+      img.onerror = () => {
+        imgWrap.innerHTML = `<div class="aps-lora-preview-placeholder"><span style="font-size: 32px;">🥞</span><span style="font-size: 11px; opacity: 0.6; margin-top: 4px;">暂无效果图</span></div>`;
+      };
+      imgWrap.append(img);
+      tooltip.append(imgWrap);
+    } else {
+      const placeholder = el("div", "aps-lora-preview-placeholder");
+      placeholder.innerHTML = `<span style="font-size: 32px;">🥞</span><span style="font-size: 11px; opacity: 0.6; margin-top: 4px;">暂无预设效果图</span>`;
+      tooltip.append(placeholder);
+    }
+
+    // 2. Info Content
+    const content = el("div", "aps-lora-preview-content");
+    const titleRow = el("div");
+    titleRow.style.display = "flex";
+    titleRow.style.justifyContent = "space-between";
+    titleRow.style.alignItems = "center";
+    titleRow.append(
+      el("div", "aps-lora-preview-title", preset.name || "未命名预设"),
+      el("span", "aps-badge aps-badge-blue", preset.category || "通用")
+    );
+    content.append(titleRow);
+
+    // LoRA stack list summary
+    if (loras.length > 0) {
+      const listWrap = el("div");
+      listWrap.style.fontSize = "11px";
+      listWrap.style.color = "var(--aps-muted, #aaa)";
+      listWrap.style.display = "flex";
+      listWrap.style.flexDirection = "column";
+      listWrap.style.gap = "2px";
+      listWrap.style.marginTop = "4px";
+      loras.slice(0, 3).forEach((item) => {
+        listWrap.append(el("div", "", `• ${item.name} (M:${item.strength_model})`));
+      });
+      if (loras.length > 3) {
+        listWrap.append(el("div", "", `…还有 ${loras.length - 3} 个 LoRA`));
+      }
+      content.append(listWrap);
+    }
+
+    if (preset.trigger_words && preset.trigger_words.trim()) {
+      const twBox = el("div", "aps-lora-preview-tw-box");
+      twBox.style.marginTop = "4px";
+      const twLabel = el("div", "aps-lora-preview-tw-label", "💬 预设搭配触发词 (点击复制):");
+      const twText = el("div", "aps-lora-preview-tw-text", preset.trigger_words);
+      twBox.append(twLabel, twText);
+      twBox.addEventListener("click", () => {
+        navigator.clipboard.writeText(preset.trigger_words);
+        twLabel.textContent = "✓ 已复制到剪贴板！";
+        setTimeout(() => { twLabel.textContent = "💬 预设搭配触发词 (点击复制):"; }, 1500);
+      });
+      content.append(twBox);
+    }
+
+    tooltip.append(content);
+    document.body.append(tooltip);
+    activeTooltip = tooltip;
+
+    // Positioning
+    const tooltipRect = tooltip.getBoundingClientRect();
+    let left = rect.right + 12;
+    if (left + tooltipRect.width > window.innerWidth - 10) {
+      left = Math.max(10, rect.left - tooltipRect.width - 12);
+    }
+    let top = rect.top;
+    if (top + tooltipRect.height > window.innerHeight - 10) {
+      top = Math.max(10, window.innerHeight - tooltipRect.height - 10);
+    }
+
+    tooltip.style.left = `${Math.round(left)}px`;
+    tooltip.style.top = `${Math.round(top)}px`;
+
+    requestAnimationFrame(() => {
+      tooltip.style.opacity = "1";
+      tooltip.style.transform = "scale(1) translateY(0)";
+    });
+  }, 100);
+}
+
 export function setupLoraNode(node) {
   if (node._apsLoraInitialized) return;
   node._apsLoraInitialized = true;
@@ -301,15 +410,38 @@ export function setupLoraNode(node) {
   card.append(topBar);
 
   // ---------------------------------------------------------------------------
-  // 2. Preset Row: Clean Dropdown to Switch Saved Presets
+  // 2. Preset Row: Clean Dropdown to Switch Saved Presets + Cover Thumbnail
   // ---------------------------------------------------------------------------
   const presetBar = el("div", "aps-lora-preset-bar");
+  const presetThumbBadge = el("div", "aps-lora-preset-thumb");
+  presetThumbBadge.title = "点击查看预设效果大图；悬停预览生成效果与触发词";
+  presetThumbBadge.innerHTML = "<span>🥞</span>";
+
   const presetLabel = el("span", "aps-lora-preset-label", "预设:");
   const presetSelect = el("select", "aps-lora-preset-select");
   presetSelect.title = "切换已保存的 LoRA 预设组合";
 
-  presetBar.append(presetLabel, presetSelect);
+  presetBar.append(presetThumbBadge, presetLabel, presetSelect);
   card.append(presetBar);
+
+  // Hover & Click on presetBar / thumbBadge
+  presetThumbBadge.addEventListener("pointerenter", () => {
+    if (currentPresetData) {
+      showLoraPresetPreviewTooltip(presetBar, currentPresetData, api);
+    }
+  });
+  presetThumbBadge.addEventListener("pointerleave", () => hideLoraPreviewTooltip());
+
+  presetThumbBadge.addEventListener("click", () => {
+    if (currentPresetData) {
+      openLoraPresetLightbox(currentPresetData, {
+        api,
+        onApply: (p) => {
+          applyPresetObject(p);
+        },
+      });
+    }
+  });
 
   // ---------------------------------------------------------------------------
   // 3. Quick Add Row: Pick local LoRA to add immediately
@@ -677,6 +809,49 @@ export function setupLoraNode(node) {
     if (presetWidget?.value) {
       presetSelect.value = presetWidget.value;
     }
+    updatePresetThumbBadge();
+  }
+
+  function updatePresetThumbBadge() {
+    presetThumbBadge.innerHTML = "";
+    const activeName = presetSelect.value;
+    const found = presetsList.find((p) => p.name === activeName);
+    currentPresetData = found || null;
+
+    let coverUrl = found?.thumbnail || (found?.has_image ? api.loraPresetImageUrl(found.id) : "");
+    if (!coverUrl && found?.loras && found.loras.length > 0) {
+      const firstL = found.loras.find((l) => l.name);
+      if (firstL && loraDetails[firstL.name]?.preview_url) {
+        coverUrl = loraDetails[firstL.name].preview_url;
+      }
+    }
+
+    if (coverUrl) {
+      const img = el("img");
+      img.src = coverUrl;
+      img.alt = activeName;
+      img.onerror = () => { presetThumbBadge.innerHTML = "<span>🥞</span>"; };
+      presetThumbBadge.append(img);
+    } else {
+      presetThumbBadge.innerHTML = "<span>🥞</span>";
+    }
+  }
+
+  function applyPresetObject(preset) {
+    if (!preset) return;
+    currentPresetData = preset;
+    presetSelect.value = preset.name;
+    if (presetWidget) presetWidget.value = preset.name;
+    currentStack = (preset.loras || []).map((item) => ({
+      name: item.name,
+      strength_model: Number(item.strength_model ?? 1.0),
+      strength_clip: Number(item.strength_clip ?? item.strength_model ?? 1.0),
+      enabled: item.enabled !== false,
+      trigger_words: item.trigger_words || (loraDetails[item.name]?.trigger_words) || "",
+      linked: item.strength_model === item.strength_clip,
+    }));
+    updatePresetThumbBadge();
+    renderStackList();
   }
 
   function loadStackFromWidgets() {
@@ -742,17 +917,9 @@ export function setupLoraNode(node) {
     const selName = presetSelect.value;
     const found = presetsList.find((p) => p.name === selName || p.id === selName);
     if (found) {
-      currentPresetData = found;
-      if (presetWidget) presetWidget.value = found.name;
-      currentStack = (found.loras || []).map((item) => ({
-        name: item.name,
-        strength_model: Number(item.strength_model ?? 1.0),
-        strength_clip: Number(item.strength_clip ?? item.strength_model ?? 1.0),
-        enabled: item.enabled !== false,
-        trigger_words: item.trigger_words || (loraDetails[item.name]?.trigger_words) || "",
-        linked: item.strength_model === item.strength_clip,
-      }));
-      renderStackList();
+      applyPresetObject(found);
+    } else {
+      updatePresetThumbBadge();
     }
   });
 
@@ -814,19 +981,7 @@ export function setupLoraNode(node) {
     openLoraPresetLibraryModal({
       api,
       onApply: (preset) => {
-        currentPresetData = preset;
-        updatePresetDropdown();
-        presetSelect.value = preset.name;
-        if (presetWidget) presetWidget.value = preset.name;
-        currentStack = (preset.loras || []).map((item) => ({
-          name: item.name,
-          strength_model: Number(item.strength_model ?? 1.0),
-          strength_clip: Number(item.strength_clip ?? item.strength_model ?? 1.0),
-          enabled: item.enabled !== false,
-          trigger_words: item.trigger_words || (loraDetails[item.name]?.trigger_words) || "",
-          linked: item.strength_model === item.strength_clip,
-        }));
-        renderStackList();
+        applyPresetObject(preset);
       },
     });
   });
