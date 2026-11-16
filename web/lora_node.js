@@ -88,6 +88,10 @@ export function setupLoraNode(node) {
   brand.append(el("span", "", "🥞"), el("span", "", "LoRA 预设与堆叠"));
 
   const topActions = el("div", "aps-lora-actions");
+  const inspectBtn = el("button", "aps-btn aps-btn-xs", "📷 识图");
+  inspectBtn.type = "button";
+  inspectBtn.title = "选择或直接拖入包含生成参数的图片，自动提取其中的 LoRA 堆叠与权重";
+
   const saveBtn = el("button", "aps-btn aps-btn-xs aps-btn-primary", "💾 存为预设");
   saveBtn.type = "button";
   saveBtn.title = "将当前堆叠保存为新预设或覆盖现有预设";
@@ -100,7 +104,13 @@ export function setupLoraNode(node) {
   clearBtn.type = "button";
   clearBtn.title = "清空当前堆叠";
 
-  topActions.append(saveBtn, libBtn, clearBtn);
+  const fileInput = el("input");
+  fileInput.type = "file";
+  fileInput.accept = "image/png,image/webp,image/jpeg";
+  fileInput.style.display = "none";
+  card.append(fileInput);
+
+  topActions.append(inspectBtn, saveBtn, libBtn, clearBtn);
   topBar.append(brand, topActions);
   card.append(topBar);
 
@@ -557,6 +567,77 @@ export function setupLoraNode(node) {
     if (currentStack.length === 0) return;
     currentStack = [];
     renderStackList();
+  });
+
+  // 3.5. Inspect Image LoRAs (Button & Drag/Drop)
+  inspectBtn.addEventListener("click", () => fileInput.click());
+
+  async function handleImageFile(file) {
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = async () => {
+      const b64 = reader.result;
+      try {
+        inspectBtn.textContent = "⏳ 解析中...";
+        const res = await api.inspectImageLoras({ image_data: b64, filename: file.name });
+        inspectBtn.textContent = "📷 识图";
+        if (!res.loras || res.loras.length === 0) {
+          alert("未在该图片的元数据中检测到 LoRA 信息。请确保图片包含 ComfyUI、WebUI 或 Civitai 生成参数。");
+          return;
+        }
+
+        currentStack = res.loras.map((l) => ({
+          name: l.name,
+          strength_model: Number(l.strength_model ?? 1.0),
+          strength_clip: Number(l.strength_clip ?? l.strength_model ?? 1.0),
+          enabled: l.enabled !== false,
+          trigger_words: l.trigger_words || (loraDetails[l.name]?.trigger_words) || "",
+          linked: l.strength_model === l.strength_clip,
+        }));
+
+        currentPresetData = {
+          name: res.suggested_name || "从图片提取的堆叠",
+          category: "通用",
+          loras: currentStack,
+          trigger_words: res.trigger_words || "",
+          thumbnail: res.thumbnail || "",
+        };
+
+        renderStackList();
+      } catch (err) {
+        inspectBtn.textContent = "📷 识图";
+        console.error(err);
+        alert("解析图片元数据失败: " + (err.message || err));
+      }
+    };
+    reader.readAsDataURL(file);
+  }
+
+  fileInput.addEventListener("change", (e) => {
+    const file = e.target.files?.[0];
+    if (file) handleImageFile(file);
+    fileInput.value = "";
+  });
+
+  // Drag and drop image directly onto node card
+  card.addEventListener("dragover", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    card.classList.add("aps-drag-over");
+  });
+  card.addEventListener("dragleave", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    card.classList.remove("aps-drag-over");
+  });
+  card.addEventListener("drop", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    card.classList.remove("aps-drag-over");
+    const file = e.dataTransfer?.files?.[0];
+    if (file && (file.type?.startsWith("image/") || file.name?.match(/\.(png|webp|jpe?g)$/i))) {
+      handleImageFile(file);
+    }
   });
 
   // 4. Save Preset Button

@@ -5824,3 +5824,10 @@ details.aps-adv[open] > summary { margin-bottom: 8px; }
   color: #f1f5f9;
   box-sizing: border-box;
 }
+
+/* Drag and drop visual cue on LoRA node */
+.aps-lora-node-card.aps-drag-over {
+  border-color: #10b981 !important;
+  background: rgba(16, 185, 129, 0.08) !important;
+  box-shadow: 0 0 16px rgba(16, 185, 129, 0.4) !important;
+}

@@ -16,18 +16,49 @@ test("summary lists prompt types and box count", () => {
   assert.equal(summary.captionSnippet.length, 91); // 90 chars + "…"
 });
 
-test("merge only writes slots present in metadata", () => {
+test("merge only writes slots present in metadata when overwriteAll is false", () => {
   const state = { width: 1024, height: 1024, caption_text: "旧散文", layout_prompt: "旧布局" };
-  const result = mergeImageMetadataIntoState(state, {
-    width: 800,
-    height: 600,
-    prompts: { caption: "新散文" },
-    draft: { width: 800, height: 600, items: [] },
-  });
+  const result = mergeImageMetadataIntoState(
+    state,
+    {
+      width: 800,
+      height: 600,
+      prompts: { caption: "新散文" },
+      draft: { width: 800, height: 600, items: [] },
+    },
+    { overwriteAll: false },
+  );
   assert.deepEqual(result.applied, ["caption"]);
   assert.equal(state.caption_text, "新散文");
   assert.equal(state.layout_prompt, "旧布局");
   assert.equal(state.draft, undefined);
+});
+
+test("merge with overwriteAll=true cleanly clears absent slots and leftover boxes", () => {
+  const oldDraft = { width: 1024, height: 1024, items: [{ bbox: [10, 10, 50, 50] }] };
+  const state = {
+    width: 1024,
+    height: 1024,
+    caption_text: "旧散文",
+    layout_prompt: "旧布局",
+    danbooru_prompt: "旧标签",
+    draft: oldDraft,
+  };
+  const result = mergeImageMetadataIntoState(
+    state,
+    {
+      width: 800,
+      height: 600,
+      prompts: { danbooru: "1girl, solo" },
+      draft: { width: 800, height: 600, items: [] },
+    },
+    { overwriteAll: true },
+  );
+  assert.deepEqual(result.applied, ["danbooru"]);
+  assert.equal(state.danbooru_prompt, "1girl, solo");
+  assert.equal(state.caption_text, "");
+  assert.equal(state.layout_prompt, "");
+  assert.deepEqual(state.draft.items, []);
 });
 
 test("merge scales boxes once from draft coords to canvas", () => {
@@ -52,20 +83,25 @@ test("merge scales boxes once from draft coords to canvas", () => {
   assert.equal(state.width, 1024); // 画布尺寸不由合并函数改动
 });
 
-test("merge without items leaves existing draft untouched", () => {
+test("merge without items leaves existing draft untouched when overwriteAll is false", () => {
   const old = { width: 1024, height: 1024, items: [{ bbox: [1, 2, 3, 4] }] };
   const state = { width: 1024, height: 1024, draft: old, layout_prompt: "旧布局" };
-  const result = mergeImageMetadataIntoState(state, {
-    width: 1024,
-    height: 1024,
-    prompts: {},
-    draft: { width: 1024, height: 1024, items: [] },
-  });
+  const result = mergeImageMetadataIntoState(
+    state,
+    {
+      width: 1024,
+      height: 1024,
+      prompts: {},
+      draft: { width: 1024, height: 1024, items: [] },
+    },
+    { overwriteAll: false },
+  );
   assert.equal(state.draft, old);
   assert.equal(state.layout_prompt, "旧布局");
   assert.deepEqual(result.applied, []);
 });
-test("layout-only metadata does not overwrite a hand-written caption", () => {
+
+test("layout-only metadata does not overwrite a hand-written caption when overwriteAll is false", () => {
   const state = { width: 1024, height: 1024, caption_text: "用户手写的散文，别动我" };
   const meta = {
     width: 512,
@@ -78,7 +114,11 @@ test("layout-only metadata does not overwrite a hand-written caption", () => {
       items: [{ label: "object", caption: "x", bbox: [0, 0, 512, 512] }],
     },
   };
-  const result = mergeImageMetadataIntoState(state, meta, { width: 1024, height: 1024 });
+  const result = mergeImageMetadataIntoState(state, meta, {
+    width: 1024,
+    height: 1024,
+    overwriteAll: false,
+  });
   assert.equal(state.caption_text, "用户手写的散文，别动我");
   assert.ok(!result.applied.includes("caption"));
   assert.ok(result.applied.includes("boxes"));

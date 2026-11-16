@@ -1186,6 +1186,7 @@ async function maybeOfferImageMetadata(node, meta, filename, statusEl, imageSeq 
     const { applied, boxCount } = mergeImageMetadataIntoState(next, meta, {
       width: Number(next.width) || 1024,
       height: Number(next.height) || 1024,
+      overwriteAll: true,
     });
     node._apsUndo?.record({
       key: "payload_state",
@@ -1194,8 +1195,25 @@ async function maybeOfferImageMetadata(node, meta, filename, statusEl, imageSeq 
       label: "应用图片自带提示词",
       source: "stage",
     });
+
+    // 自动切换到图片自带的提示词模式并同步更新对应输出通道
+    const promptModes = applied.filter((kind) => kind !== "boxes");
+    let targetMode = "caption";
+    if (promptModes.includes("layout") || boxCount > 0) {
+      targetMode = "layout";
+    } else if (promptModes.includes("danbooru") && !promptModes.includes("caption")) {
+      targetMode = "danbooru";
+    } else if (promptModes.includes("caption")) {
+      targetMode = "caption";
+    } else if (promptModes.length > 0) {
+      targetMode = promptModes[0];
+    }
+    const targetModes = promptModes.length > 0 ? promptModes : [targetMode];
+    syncModeWidgets(node, targetModes, targetMode);
+
     setPayload(node, next);
     node._apsDirty = false;
+    node._apsSyncCard?.();
     node.setDirtyCanvas?.(true, true);
     const labels = { caption: "散文", layout: "布局", danbooru: "Danbooru" };
     const parts = applied
@@ -1203,7 +1221,10 @@ async function maybeOfferImageMetadata(node, meta, filename, statusEl, imageSeq 
       .map((kind) => labels[kind])
       .filter(Boolean);
     if (boxCount) parts.push(`${boxCount} 个画框`);
-    setNodeStatus(statusEl, `✓ 已应用图片自带提示词${parts.length ? `：${parts.join(" · ")}` : ""}`);
+    setNodeStatus(
+      statusEl,
+      `✓ 已应用图片自带提示词${parts.length ? `：${parts.join(" · ")}` : ""}（已清空旧提示词与画框）`,
+    );
     return true;
   } catch (err) {
     console.warn("[ai-prompt-studio] 应用图片元数据失败:", err);

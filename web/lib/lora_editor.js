@@ -45,6 +45,7 @@ export function openSaveLoraPresetModal({
 } = {}) {
   const api = suppliedApi || new StudioApi();
   const isEditing = Boolean(preset && preset.id);
+  let coverDataUrl = preset?.thumbnail || "";
 
   const overlay = el("div", "aps-modal-overlay aps-preset-modal-overlay notranslate");
   overlay.setAttribute("role", "dialog");
@@ -118,10 +119,72 @@ export function openSaveLoraPresetModal({
   const stackTitle = el("div", "aps-form-label", "🥞 堆叠 LoRA 列表（按自上而下顺序加载应用）：");
   stackTitle.style.fontWeight = "bold";
 
+  const btnGroup = el("div");
+  btnGroup.style.display = "flex";
+  btnGroup.style.gap = "6px";
+
+  const inspectImgBtn = el("button", "aps-btn aps-btn-xs", "📷 识图提取");
+  inspectImgBtn.type = "button";
+  inspectImgBtn.title = "选择包含生成参数的图片，自动提取 LoRA 列表、权重与封面";
+
   const addRowBtn = el("button", "aps-btn aps-btn-xs aps-primary", "＋ 添加 LoRA");
   addRowBtn.type = "button";
-  stackHeader.append(stackTitle, addRowBtn);
+
+  const imgFileInput = el("input");
+  imgFileInput.type = "file";
+  imgFileInput.accept = "image/png,image/webp,image/jpeg";
+  imgFileInput.style.display = "none";
+  modal.append(imgFileInput);
+
+  btnGroup.append(inspectImgBtn, addRowBtn);
+  stackHeader.append(stackTitle, btnGroup);
   stackSection.append(stackHeader);
+
+  inspectImgBtn.addEventListener("click", () => imgFileInput.click());
+
+  imgFileInput.addEventListener("change", (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = async () => {
+      const b64 = reader.result;
+      try {
+        inspectImgBtn.textContent = "⏳ 识别中...";
+        const res = await api.inspectImageLoras({ image_data: b64, filename: file.name });
+        inspectImgBtn.textContent = "📷 识图提取";
+        if (!res.loras || res.loras.length === 0) {
+          alert("未在该图片的元数据中检测到 LoRA 信息。请确保图片包含生成工作流或参数。");
+          return;
+        }
+
+        currentLoras = res.loras.map((l) => ({
+          name: l.name,
+          strength_model: Number(l.strength_model ?? 1.0),
+          strength_clip: Number(l.strength_clip ?? l.strength_model ?? 1.0),
+          enabled: l.enabled !== false,
+        }));
+        renderStackRows();
+
+        if (res.suggested_name && (!nameInput.value || nameInput.value === "新建 LoRA 堆叠预设")) {
+          nameInput.value = res.suggested_name;
+        }
+        if (res.trigger_words && !twTextarea.value) {
+          twTextarea.value = res.trigger_words;
+        }
+        if (res.thumbnail) {
+          coverDataUrl = res.thumbnail;
+        }
+        statusMsg.textContent = `✓ 成功提取 ${res.loras.length} 个 LoRA`;
+        statusMsg.style.color = "#34d399";
+      } catch (err) {
+        inspectImgBtn.textContent = "📷 识图提取";
+        console.error(err);
+        alert("识别失败: " + (err.message || err));
+      }
+    };
+    reader.readAsDataURL(file);
+    imgFileInput.value = "";
+  });
 
   // Datalist for available local LoRAs
   const loraDatalist = el("datalist");
@@ -340,6 +403,9 @@ export function openSaveLoraPresetModal({
       trigger_words: twTextarea.value.trim(),
       notes: notesTextarea.value.trim(),
     };
+    if (coverDataUrl) {
+      payload.image_data = coverDataUrl;
+    }
 
     saveBtn.disabled = true;
     statusMsg.textContent = "正在保存…";
@@ -423,13 +489,23 @@ export function openLoraPresetLibraryModal({
   const newPresetBtn = el("button", "aps-btn aps-btn-sm aps-primary", "＋ 新建预设");
   newPresetBtn.type = "button";
 
+  const importImgBtn = el("button", "aps-btn aps-btn-sm", "📷 识图导入");
+  importImgBtn.type = "button";
+  importImgBtn.title = "选择包含生成参数的图片，自动提取 LoRA 列表并保存为预设";
+
+  const imgPicker = el("input");
+  imgPicker.type = "file";
+  imgPicker.accept = "image/png,image/webp,image/jpeg";
+  imgPicker.style.display = "none";
+  modal.append(imgPicker);
+
   const importJsonBtn = el("button", "aps-btn aps-btn-sm", "📥 导入 JSON");
   importJsonBtn.type = "button";
 
   const exportJsonBtn = el("button", "aps-btn aps-btn-sm", "📤 导出 JSON");
   exportJsonBtn.type = "button";
 
-  topActionsWrap.append(searchInput, newPresetBtn, importJsonBtn, exportJsonBtn);
+  topActionsWrap.append(searchInput, newPresetBtn, importImgBtn, importJsonBtn, exportJsonBtn);
   topBar.append(breadcrumbWrap, topActionsWrap);
   mainPane.append(topBar);
 
@@ -684,6 +760,45 @@ export function openLoraPresetLibraryModal({
       api,
       onSaved: () => loadPresets(),
     });
+  });
+
+  importImgBtn.addEventListener("click", () => imgPicker.click());
+
+  imgPicker.addEventListener("change", (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = async () => {
+      const b64 = reader.result;
+      try {
+        importImgBtn.textContent = "⏳ 解析中...";
+        const res = await api.inspectImageLoras({ image_data: b64, filename: file.name });
+        importImgBtn.textContent = "📷 识图导入";
+        if (!res.loras || res.loras.length === 0) {
+          alert("未在该图片的元数据中检测到 LoRA 信息。请确保图片包含生成工作流或参数。");
+          return;
+        }
+
+        openSaveLoraPresetModal({
+          api,
+          preset: {
+            name: res.suggested_name || "从图片提取的堆叠",
+            category: activeCategory !== "全部" ? activeCategory : "通用",
+            trigger_words: res.trigger_words || "",
+            thumbnail: res.thumbnail || "",
+          },
+          initialLoras: res.loras,
+          initialTriggerWords: res.trigger_words || "",
+          onSaved: () => loadPresets(),
+        });
+      } catch (err) {
+        importImgBtn.textContent = "📷 识图导入";
+        console.error(err);
+        alert("解析图片失败: " + (err.message || err));
+      }
+    };
+    reader.readAsDataURL(file);
+    imgPicker.value = "";
   });
 
   newCatBtn.addEventListener("click", async () => {

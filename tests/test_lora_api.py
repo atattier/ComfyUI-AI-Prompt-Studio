@@ -110,6 +110,41 @@ class LoraPresetApiTests(AioHTTPTestCase):
         self.assertIn("loras", loras_data)
         self.assertIsInstance(loras_data["loras"], list)
 
+    async def test_inspect_image_loras_api(self):
+        import io, base64, json
+        from PIL import Image, PngImagePlugin
+
+        # Create an in-memory PNG with ComfyUI prompt chunk
+        im = Image.new("RGB", (64, 64), color="blue")
+        pnginfo = PngImagePlugin.PngInfo()
+        mock_prompt = {
+            "3": {
+                "class_type": "LoraLoader",
+                "inputs": {
+                    "lora_name": "cyber_girl_v2.safetensors",
+                    "strength_model": 0.85,
+                    "strength_clip": 0.75,
+                },
+            }
+        }
+        pnginfo.add_text("prompt", json.dumps(mock_prompt))
+        buf = io.BytesIO()
+        im.save(buf, format="PNG", pnginfo=pnginfo)
+        b64_str = f"data:image/png;base64,{base64.b64encode(buf.getvalue()).decode('ascii')}"
+
+        resp = await self.client.post(
+            "/ai_prompt_studio/lora_presets/inspect_image_loras",
+            json={"image_data": b64_str, "filename": "cyber_render_001.png"},
+        )
+        self.assertEqual(resp.status, 200)
+        result = await resp.json()
+        self.assertIn("loras", result)
+        self.assertEqual(len(result["loras"]), 1)
+        self.assertEqual(result["loras"][0]["name"], "cyber_girl_v2.safetensors")
+        self.assertEqual(result["loras"][0]["strength_model"], 0.85)
+        self.assertEqual(result["loras"][0]["strength_clip"], 0.75)
+        self.assertIn("cyber render", result["suggested_name"].lower())
+
     async def test_reset_builtins_api(self):
         resp = await self.client.post("/ai_prompt_studio/lora_presets/reset_builtins")
         self.assertEqual(resp.status, 200)

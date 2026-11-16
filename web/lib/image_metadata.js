@@ -45,11 +45,17 @@ export function imageMetadataSummary(meta) {
 }
 
 /**
- * Write the metadata into `state` (mutates it).  Slots absent from the image
- * keep their current value; boxes are rescaled once from the draft's own
- * coordinate space to the canvas the node is currently using.
+ * Write the metadata into `state` (mutates it).
+ * If `overwriteAll` is true (the default when user selects "应用并覆盖"),
+ * prompt slots and boxes absent from the incoming image are cleanly cleared,
+ * ensuring no leftover boxes or prompts from the previous image linger.
+ * Boxes are rescaled once from the draft's own coordinate space to the canvas.
  */
-export function mergeImageMetadataIntoState(state, meta, { width, height } = {}) {
+export function mergeImageMetadataIntoState(
+  state,
+  meta,
+  { width, height, overwriteAll = true } = {},
+) {
   if (!state || !meta) return { applied: [], boxCount: 0 };
   const prompts = meta.prompts || {};
   const applied = [];
@@ -59,6 +65,9 @@ export function mergeImageMetadataIntoState(state, meta, { width, height } = {})
     state.caption = caption;
     state.caption_text = caption;
     applied.push("caption");
+  } else if (overwriteAll) {
+    state.caption = "";
+    state.caption_text = "";
   }
 
   const danbooru = String(prompts.danbooru || "").trim();
@@ -68,6 +77,11 @@ export function mergeImageMetadataIntoState(state, meta, { width, height } = {})
     state.danbooru_text = danbooru;
     state.tags = danbooru;
     applied.push("danbooru");
+  } else if (overwriteAll) {
+    state.danbooru = "";
+    state.danbooru_prompt = "";
+    state.danbooru_text = "";
+    state.tags = "";
   }
 
   const layout = String(prompts.layout || "").trim();
@@ -76,14 +90,19 @@ export function mergeImageMetadataIntoState(state, meta, { width, height } = {})
     state.layout_prompt = layout;
     state.layout_text = layout;
     applied.push("layout");
+  } else if (overwriteAll) {
+    state.layout = "";
+    state.layout_prompt = "";
+    state.layout_text = "";
   }
 
   const draft = meta.draft;
   const items = Array.isArray(draft?.items) ? draft.items : [];
   let boxCount = 0;
+  const w = Number(width) || Number(state.width) || 1024;
+  const h = Number(height) || Number(state.height) || 1024;
+
   if (items.length) {
-    const w = Number(width) || Number(state.width) || 1024;
-    const h = Number(height) || Number(state.height) || 1024;
     const srcW = Number(draft.width) || Number(meta.width) || w;
     const srcH = Number(draft.height) || Number(meta.height) || h;
     const scaled = rescaleLayoutDraft(draft, w, h, srcW, srcH);
@@ -98,6 +117,11 @@ export function mergeImageMetadataIntoState(state, meta, { width, height } = {})
     };
     boxCount = Array.isArray(scaled.items) ? scaled.items.length : 0;
     applied.push("boxes");
+  } else if (overwriteAll) {
+    const emptyDraft = { width: w, height: h, summary: {}, items: [] };
+    state.draft = emptyDraft;
+    state.layout_draft = emptyDraft;
+    state.hybrid_draft = emptyDraft;
   }
 
   return { applied, boxCount };

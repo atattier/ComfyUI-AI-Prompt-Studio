@@ -447,6 +447,13 @@ export class StudioApi {
     return this.request("/lora_presets/import", { method: "POST", body: { presets } });
   }
 
+  inspectImageLoras({ image_data, filename = "" } = {}) {
+    return this.request("/lora_presets/inspect_image_loras", {
+      method: "POST",
+      body: { image_data, filename },
+    });
+  }
+
   exportLoraPresets() {
     return this.request("/lora_presets/export");
   }

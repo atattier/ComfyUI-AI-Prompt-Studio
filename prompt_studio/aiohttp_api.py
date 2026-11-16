@@ -63,7 +63,12 @@ from .redaction import Redactor, mask_secret
 from .sessions import MediaStore, SessionStore
 from .versions import VersionStore
 from .presets import PresetStore
-from .lora_presets import LoraPresetStore, scan_available_loras, scan_available_loras_metadata
+from .lora_presets import (
+    LoraPresetStore,
+    scan_available_loras,
+    scan_available_loras_metadata,
+    extract_loras_from_image_bytes,
+)
 
 MAX_BODY = 25 * 1024 * 1024
 
@@ -1047,6 +1052,13 @@ class StudioBackend:
     def list_available_loras_metadata(self) -> dict[str, Any]:
         return scan_available_loras_metadata()
 
+    def inspect_image_loras(self, body: dict[str, Any]) -> dict[str, Any]:
+        """Extract LoRA stack and weights out of image bytes without saving a preset."""
+        from .presets import _decode_image_payload
+        raw = _decode_image_payload(body.get("image_data") or body.get("image"))
+        filename = str(body.get("filename") or "")
+        return extract_loras_from_image_bytes(raw, filename)
+
 
 # ----------------------------------------------------------------- aiohttp
 def _as_int(value: Any, default: int = 0) -> int:
@@ -1887,6 +1899,13 @@ def install_routes(
         data = await asyncio.to_thread(require().list_available_loras)
         details = await asyncio.to_thread(require().list_available_loras_metadata)
         return web.json_response({"loras": data, "lora_details": details})
+
+    @routes.post("/ai_prompt_studio/lora_presets/inspect_image_loras")
+    @guarded
+    async def inspect_image_loras_route(request: web.Request) -> web.Response:
+        body = await _json_body(request)
+        res = await asyncio.to_thread(require().inspect_image_loras, body)
+        return web.json_response(res)
 
     @routes.get("/ai_prompt_studio/lora_presets/categories")
     @guarded

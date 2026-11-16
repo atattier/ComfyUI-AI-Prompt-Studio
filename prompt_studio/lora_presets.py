@@ -241,6 +241,186 @@ def scan_available_loras_metadata() -> dict[str, dict[str, Any]]:
     return result
 
 
+def extract_loras_from_image_bytes(raw: bytes, filename: str = "") -> dict[str, Any]:
+    """Inspect image bytes (PNG, WebP, JPEG) and extract all embedded LoRAs & weights."""
+    import io
+    from PIL import Image
+
+    im = Image.open(io.BytesIO(raw))
+    width, height = im.size
+
+    # Generate 360px JPEG thumbnail for preview
+    thumb_im = im.copy()
+    thumb_im.thumbnail((360, 360), Image.Resampling.LANCZOS)
+    if thumb_im.mode in ("RGBA", "P"):
+        thumb_im = thumb_im.convert("RGB")
+    buf = io.BytesIO()
+    thumb_im.save(buf, format="JPEG", quality=82)
+    thumb_b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+    thumbnail = f"data:image/jpeg;base64,{thumb_b64}"
+
+    info = getattr(im, "info", {}) or {}
+    text_chunks = getattr(im, "text", {}) or {}
+    all_meta = {**text_chunks, **info}
+
+    found_loras: list[dict[str, Any]] = []
+    seen_names: set[str] = set()
+
+    def add_lora(name: str, sm: float, sc: float, enabled: bool = True, source: str = ""):
+        name_clean = str(name).strip().replace("\\", "/")
+        if not name_clean:
+            return
+        norm_key = name_clean.lower()
+        if norm_key in seen_names:
+            return
+        seen_names.add(norm_key)
+
+        # Match local LoRA and get trigger words
+        tw = get_lora_trigger_words(name_clean)
+        if not tw:
+            for ext in (".safetensors", ".ckpt", ".pt", ".bin"):
+                if norm_key.endswith(ext):
+                    tw = get_lora_trigger_words(name_clean[:-len(ext)])
+                    break
+                else:
+                    tw = get_lora_trigger_words(f"{name_clean}{ext}")
+                    if tw:
+                        break
+
+        found_loras.append({
+            "name": name_clean,
+            "strength_model": round(float(sm), 3),
+            "strength_clip": round(float(sc), 3),
+            "enabled": bool(enabled),
+            "trigger_words": tw,
+            "source": source,
+        })
+
+    # 1. ComfyUI prompt (execution graph)
+    prompt_raw = all_meta.get("prompt")
+    if prompt_raw and isinstance(prompt_raw, str):
+        try:
+            p_data = json.loads(prompt_raw)
+            if isinstance(p_data, dict):
+                for nid, node in p_data.items():
+                    if not isinstance(node, dict):
+                        continue
+                    ctype = str(node.get("class_type", ""))
+                    inputs = node.get("inputs", {})
+
+                    # Lora Loader (LoraManager) / Lora Stacker
+                    if "loras" in inputs:
+                        raw_loras = inputs.get("loras")
+                        if isinstance(raw_loras, dict) and "__value__" in raw_loras:
+                            raw_loras = raw_loras["__value__"]
+                        if isinstance(raw_loras, list):
+                            for l in raw_loras:
+                                if isinstance(l, dict) and l.get("name"):
+                                    add_lora(
+                                        l["name"],
+                                        float(l.get("strength", 1.0)),
+                                        float(l.get("clipStrength", l.get("strength", 1.0))),
+                                        bool(l.get("active", True)),
+                                        ctype,
+                                    )
+
+                    # Standard LoraLoader / LoraLoaderModelOnly / etc.
+                    if "lora" in ctype.lower():
+                        lname = inputs.get("lora_name") or inputs.get("lora")
+                        if lname and isinstance(lname, str):
+                            sm = float(inputs.get("strength_model", inputs.get("strength", 1.0)))
+                            sc = float(inputs.get("strength_clip", sm))
+                            add_lora(lname, sm, sc, True, ctype)
+
+                    # AIPromptStudioLora
+                    if "aipromptstudiolora" in ctype.lower():
+                        stack_json = inputs.get("custom_stack_json")
+                        if stack_json and isinstance(stack_json, str):
+                            try:
+                                s = json.loads(stack_json)
+                                s_list = s if isinstance(s, list) else s.get("loras", [])
+                                for item in s_list:
+                                    if isinstance(item, dict) and item.get("name"):
+                                        add_lora(
+                                            item["name"],
+                                            float(item.get("strength_model", 1.0)),
+                                            float(item.get("strength_clip", 1.0)),
+                                            bool(item.get("enabled", True)),
+                                            "AIPromptStudioLora",
+                                        )
+                            except Exception:
+                                pass
+        except Exception:
+            pass
+
+    # 2. ComfyUI workflow
+    wf_raw = all_meta.get("workflow")
+    if wf_raw and isinstance(wf_raw, str):
+        try:
+            wf_data = json.loads(wf_raw)
+            if isinstance(wf_data, dict):
+                for node in wf_data.get("nodes", []):
+                    if not isinstance(node, dict):
+                        continue
+                    ntype = str(node.get("type", ""))
+                    wv = node.get("widgets_values")
+                    if isinstance(wv, list):
+                        for val in wv:
+                            if isinstance(val, list):
+                                for item in val:
+                                    if isinstance(item, dict) and item.get("name") and ("strength" in item or "clipStrength" in item):
+                                        add_lora(
+                                            item["name"],
+                                            float(item.get("strength", 1.0)),
+                                            float(item.get("clipStrength", item.get("strength", 1.0))),
+                                            bool(item.get("active", True)),
+                                            ntype,
+                                        )
+                            elif isinstance(val, str) and "custom_stack_json" in ntype.lower():
+                                try:
+                                    s = json.loads(val)
+                                    s_list = s if isinstance(s, list) else s.get("loras", [])
+                                    for item in s_list:
+                                        if isinstance(item, dict) and item.get("name"):
+                                            add_lora(
+                                                item["name"],
+                                                float(item.get("strength_model", 1.0)),
+                                                float(item.get("strength_clip", 1.0)),
+                                                bool(item.get("enabled", True)),
+                                                ntype,
+                                            )
+                                except Exception:
+                                    pass
+        except Exception:
+            pass
+
+    # 3. Text prompt parsing: <lora:name:strength> or <lora:name:model_str:clip_str>
+    for meta_key, meta_val in all_meta.items():
+        if isinstance(meta_val, str):
+            for m in re.finditer(r'<lora:([^>:\s]+)(?::([^>:\s]+))?(?::([^>:\s]+))?>', meta_val):
+                name = m.group(1).strip()
+                sm = float(m.group(2)) if m.group(2) else 1.0
+                sc = float(m.group(3)) if m.group(3) else sm
+                add_lora(name, sm, sc, True, f"tag_in_{meta_key}")
+
+    # Build suggested title and aggregated trigger words
+    clean_fn = Path(filename).stem if filename else ""
+    suggested_title = clean_fn.replace("_", " ").strip() if clean_fn else (
+        f"{found_loras[0]['name']} 堆叠预设" if found_loras else "从图片提取的 LoRA 堆叠"
+    )
+
+    all_tws = [l["trigger_words"].strip() for l in found_loras if l.get("trigger_words")]
+    aggregated_tw = ", ".join(dict.fromkeys(filter(None, all_tws)))
+
+    return {
+        "loras": found_loras,
+        "suggested_name": suggested_title,
+        "trigger_words": aggregated_tw,
+        "thumbnail": thumbnail,
+        "count": len(found_loras),
+    }
+
+
 class LoraPresetStore:
     """SQLite-backed store for LoRA stack presets."""
 
