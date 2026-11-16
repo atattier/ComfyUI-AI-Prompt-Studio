@@ -5,7 +5,7 @@
  * editing, category organization, and 1-click application to canvas nodes.
  */
 
-import { StudioApi } from "./api.js?v=20261116_v39";
+import { StudioApi } from "./api.js?v=20261116_v40";
 
 function detectIsLightTheme() {
   if (typeof document === "undefined" || typeof getComputedStyle !== "function") return false;
@@ -983,24 +983,86 @@ export function openLoraPresetLibraryModal({
   let selectedCategory = "全部";
   let searchKeyword = "";
   let allPresets = [];
+  let categoryCounts = {};
+
+  async function updateCategoryCounts() {
+    try {
+      const res = await api.listLoraPresets();
+      const list = res.presets || [];
+      const counts = { "全部": list.length };
+      for (const p of list) {
+        const cat = p.category || "通用";
+        counts[cat] = (counts[cat] || 0) + 1;
+      }
+      categoryCounts = counts;
+    } catch {}
+  }
 
   async function loadCategories() {
     try {
+      await updateCategoryCounts();
       const info = await api.listLoraPresetCategories();
       const cats = (info && info.categories) ? info.categories : ["全部", "通用", "画风风格", "人物角色", "光影质感", "细节增强", "服饰姿态"];
       treeContainer.innerHTML = "";
 
       for (const c of cats) {
-        const item = el("div", "aps-explorer-tree-item" + (c === selectedCategory ? " active" : ""));
+        const isActive = c === selectedCategory;
+        const item = el("div", `aps-tree-item aps-explorer-tree-item${isActive ? " is-active active" : ""}`);
         item.style.cursor = "pointer";
-        item.style.padding = "6px 10px";
-        item.style.borderRadius = "4px";
+        item.style.padding = "7px 10px";
+        item.style.borderRadius = "6px";
         item.style.display = "flex";
         item.style.justifyContent = "space-between";
         item.style.alignItems = "center";
+        item.style.marginBottom = "3px";
+        item.style.transition = "all 0.15s ease";
 
-        const label = el("span", "", (c === "全部" ? "🗂 " : "📁 ") + c);
-        item.append(label);
+        if (isActive) {
+          item.style.background = "color-mix(in srgb, var(--aps-accent, #6366f1) 24%, rgba(255, 255, 255, 0.08))";
+          item.style.borderLeft = "3px solid var(--aps-accent, #6366f1)";
+          item.style.color = "#ffffff";
+          item.style.fontWeight = "600";
+        } else {
+          item.style.background = "transparent";
+          item.style.borderLeft = "3px solid transparent";
+          item.style.color = "var(--aps-fg, #e2e8f0)";
+          item.style.fontWeight = "normal";
+        }
+
+        item.addEventListener("mouseenter", () => {
+          if (c !== selectedCategory) {
+            item.style.background = "rgba(255, 255, 255, 0.08)";
+          }
+        });
+        item.addEventListener("mouseleave", () => {
+          if (c !== selectedCategory) {
+            item.style.background = "transparent";
+          }
+        });
+
+        const leftWrap = el("div");
+        leftWrap.style.display = "flex";
+        leftWrap.style.alignItems = "center";
+        leftWrap.style.gap = "6px";
+        const iconSpan = el("span", "", c === "全部" ? "🗂" : "📁");
+        const nameSpan = el("span", "", c);
+        leftWrap.append(iconSpan, nameSpan);
+
+        const count = categoryCounts[c] ?? 0;
+        const countBadge = el("span", "aps-tree-count-badge", String(count));
+        countBadge.style.fontSize = "11px";
+        countBadge.style.padding = "1px 6px";
+        countBadge.style.borderRadius = "10px";
+        if (isActive) {
+          countBadge.style.background = "var(--aps-accent, #6366f1)";
+          countBadge.style.color = "#ffffff";
+          countBadge.style.fontWeight = "bold";
+        } else {
+          countBadge.style.background = "rgba(0, 0, 0, 0.28)";
+          countBadge.style.color = "var(--aps-muted, #94a3b8)";
+        }
+
+        item.append(leftWrap, countBadge);
 
         item.addEventListener("click", () => {
           selectedCategory = c;
@@ -1017,7 +1079,13 @@ export function openLoraPresetLibraryModal({
 
   async function loadPresets() {
     cardsContainer.innerHTML = "";
-    breadcrumbWrap.textContent = `分类：${selectedCategory}`;
+    breadcrumbWrap.innerHTML = "";
+    const bcIcon = el("span", "", "🗂 分类: ");
+    bcIcon.style.opacity = "0.75";
+    const bcCurrent = el("span", "aps-badge aps-badge-blue", selectedCategory);
+    bcCurrent.style.fontSize = "12px";
+    bcCurrent.style.padding = "2px 8px";
+    breadcrumbWrap.append(bcIcon, bcCurrent);
 
     try {
       const res = await api.listLoraPresets({

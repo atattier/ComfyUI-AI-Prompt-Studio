@@ -133,7 +133,8 @@ class ModelLayoutTests(unittest.TestCase):
         self.assertIn("Main subject", [it["caption"] for it in draft["items"]])
 
     def test_instruction_limits_regions(self):
-        self.assertIn("3–6 个框", layout_instruction("layout", 1024, 1024))
+        self.assertIn("3–6 个框", layout_instruction("layout", 1024, 1024, max_regions=6))
+        self.assertIn("3–12 个框", layout_instruction("layout", 1024, 1024))
 
     def test_instruction(self):
         text = layout_instruction("hybrid", 1248, 832, "强调构图")

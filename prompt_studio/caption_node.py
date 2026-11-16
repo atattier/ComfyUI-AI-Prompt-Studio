@@ -669,7 +669,7 @@ def _generate_state(*, mode: str, raw: bytes, mime: str,
             model=resolved_model,
             caption_hint=ref_cap,
         )
-        raw_lay, lay_finish = _invoke(lay_instr, budget.OUTPUT_BUDGET, _gridded_part(part))
+        raw_lay, lay_finish = _invoke(lay_instr, budget.OUTPUT_BUDGET, part)
         draft, lay_warning = resolve_layout_output(
             raw_text=str(raw_lay or ""),
             finish_reason=lay_finish,
@@ -684,8 +684,10 @@ def _generate_state(*, mode: str, raw: bytes, mime: str,
 
         draft_caption = str(draft["summary"]["caption"]).strip()
         full_caption = str(state.get("caption_text") or draft_caption).strip()
+        # 优先使用保留完整视角特征与构图边框的散文摘要，防止 summary.caption 泛化丢失视角与边框设计
+        best_summary_caption = full_caption if (full_caption and len(full_caption) > len(draft_caption) + 30) else (draft_caption or full_caption)
         layout_draft = copy.deepcopy(draft)
-        layout_draft["summary"]["caption"] = draft_caption or full_caption
+        layout_draft["summary"]["caption"] = best_summary_caption
         hybrid_draft = copy.deepcopy(draft)
         hybrid_draft["summary"]["caption"] = full_caption or draft_caption
 

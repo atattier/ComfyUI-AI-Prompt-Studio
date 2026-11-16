@@ -19,20 +19,13 @@ FORMATS = ("prose", "tags", "moss", "danbooru")
 
 _INSTRUCTIONS = {
     "prose": (
-        "Describe this image in one continuous English paragraph of three or four sentences, "
-        "written for use as an image-generation prompt.\n"
-        "Start the paragraph with a complete sentence that names the shot and the subject "
-        "(e.g. 'A full-body shot of a girl in a white shirt and blue pinafore dress'), and let that "
-        "same sentence place the setting. Carry the paragraph forward through what the subject looks "
-        "like — face, eye colour, expression, exact hairstyle — and through what they are wearing, "
-        "layer by layer from the outermost garment inward, including fabric, hardware and accessories. "
-        "Then move to what they hold or carry and how they stand or move, naming each symmetrical-"
-        "breaking element on the viewer's left or the viewer's right so the composition cannot be "
-        "mirrored. Close with the surroundings and the light: the architecture or scenery, the quality "
-        "of the illumination, the colour mood.\n"
-        "Write running sentences joined by commas and full stops only — no headings, no numbering, "
-        "no line-by-line lists. Quote any legible text in the picture verbatim inside double quotes. "
-        "Stay faithful to what is visible and invent nothing."
+        "Describe this image in one cohesive, richly detailed English description written for use as an image-generation prompt.\n"
+        "1. Composition Framing & Camera Perspective: state the overall presentation medium (e.g. poster-like frame with decorative borders/scratches, split panel, or standalone artwork) and precise camera viewpoint and angle (e.g. dramatic low-angle worm's-eye view looking upward, high-angle view, eye-level shot, Dutch tilt, close-up, or panoramic wide shot).\n"
+        "2. Main Subjects & Key Features: describe primary characters (expression, gaze, hairstyle) and prominent vehicles, machinery, or architectural structures, detailing specific materials (polished chrome, weathered metal, leather) and prominent mechanical parts (exhaust pipes, headlights, engine, wheels, suspension).\n"
+        "3. Attire, Layers & Props: detail visible clothing layers from outermost inward, fabrics, hardware, and held props, anchoring asymmetrical elements explicitly to the viewer's left or viewer's right to avoid mirror ambiguity.\n"
+        "4. Visible Typography & Text: preserve all legible visible text verbatim inside double quotes (e.g. \"TITLE\", \"SUBTITLE\"), noting their layout, relative position, font style, and hierarchy.\n"
+        "5. Environment & Lighting: describe the surrounding scenery, lighting direction, reflections, highlights, and overall color atmosphere.\n"
+        "Write flowing running sentences joined by commas and periods — no bullet points, no markdown headers, no code blocks. Stay strictly faithful to visible visual details and invent nothing."
     ),
     "tags": (
         "Convert the image into image-generation tags. Output ONE comma-separated line "

@@ -17,7 +17,7 @@
 
 import { app } from "../../scripts/app.js";
 
-import { StudioApi } from "./lib/api.js?v=20261116_v39";
+import { StudioApi } from "./lib/api.js?v=20261116_v40";
 import {
   blobToDataUrl,
   fileToDataUrl,
@@ -47,13 +47,13 @@ import {
   compileLayoutDraftForMoss,
   decompileMossLayoutToDraft,
   cleanCaptionPreserveQuotesJs,
-} from "./lib/layout_editor.js?v=20261116_v39";
+} from "./lib/layout_editor.js?v=20261116_v40";
 import {
   anyStudioModalOpen,
   isEscapeKey,
   removeRegion,
   shouldDeleteSelection,
-} from "./lib/hotkeys.js?v=20261116_v39";
+} from "./lib/hotkeys.js?v=20261116_v40";
 import { UndoStack } from "./lib/undo.js";
 import {
   excerpt,
@@ -61,12 +61,12 @@ import {
   formatFriendlyError,
   formatErrorTechnicalDetail,
   wordDiffRanges,
-} from "./lib/diff.js?v=20261116_v39";
+} from "./lib/diff.js?v=20261116_v40";
 import {
   imageMetadataSummary,
   mergeImageMetadataIntoState,
   openImageMetadataDialog,
-} from "./lib/image_metadata.js?v=20261116_v39";
+} from "./lib/image_metadata.js?v=20261116_v40";
 import {
   ensureChatThreads,
   createChatThread,
@@ -78,7 +78,7 @@ import {
   setThreadSessionId,
   preserveChatThreads,
   stripChatStateForRollback,
-} from "./lib/chat_threads.js?v=20261116_v39";
+} from "./lib/chat_threads.js?v=20261116_v40";
 
 const NODE_TYPES = ["AIPromptStudioCaption", "AIPromptStudioImagine"];
 const ALL_MODES = ["caption", "layout", "danbooru"];
@@ -227,7 +227,7 @@ function el(tag, className, text) {
   return node;
 }
 
-const STYLE_VERSION = "20261116_v39";
+const STYLE_VERSION = "20261116_v40";
 
 function hasNodeSize(node) {
   return Boolean(node?.size && typeof node.size.length === "number" && node.size.length >= 2);
@@ -524,8 +524,29 @@ function mountStyles() {
       .aps-menu-row .aps-menu-sub { margin-left: 0; }
       .aps-mode-dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; opacity: .25; display: inline-block; margin-right: 5px; }
       .aps-mode-multi-btn.is-checked .aps-mode-dot { opacity: .9; background: #22c55e; }
-      .aps-node-topbar { display: flex; align-items: center; gap: 6px; flex-wrap: nowrap; }
+      .aps-node-topbar { display: flex; align-items: center; gap: 6px; flex-wrap: nowrap; width: 100%; box-sizing: border-box; }
       .aps-node-topbar .aps-node-wb-btn { margin-left: auto; }
+      .aps-node-topbar-left { display: none; min-width: 0; }
+      .aps-node-topbar-right { display: flex; align-items: center; gap: 6px; flex-wrap: nowrap; width: 100%; min-width: 0; }
+      .aps-node-topbar-right .aps-node-wb-btn { margin-left: auto; }
+      .aps-node-card[data-dock="split"] .aps-node-topbar {
+        display: grid !important;
+        grid-template-rows: auto !important;
+        gap: 10px !important;
+        align-items: center !important;
+      }
+      .aps-node-card[data-dock="split"] .aps-node-topbar-left {
+        display: flex !important;
+        align-items: center !important;
+        min-width: 0 !important;
+      }
+      .aps-node-card[data-dock="split"] .aps-node-topbar-right {
+        display: flex !important;
+        align-items: center !important;
+        gap: 6px !important;
+        width: 100% !important;
+        min-width: 0 !important;
+      }
       .aps-chat-diff-sum::-webkit-details-marker { display: none; }
       .aps-prompt-markview { overflow: auto; white-space: pre-wrap; word-break: break-word; cursor: text; position: relative; }
       .aps-prompt-markview[hidden] { display: none !important; }
@@ -2084,7 +2105,10 @@ function mountRichCard(node, statusEl) {
   const moreWrap = makeMenuButton(moreBtn, moreMenu);
   moreMenu.classList.add("is-right");
 
-  topBar.append(modeGroup, outputWrap, expandBtn, moreWrap);
+  const topBarLeft = el("div", "aps-node-topbar-left");
+  const topBarRight = el("div", "aps-node-topbar-right");
+  topBarRight.append(modeGroup, outputWrap, expandBtn, moreWrap);
+  topBar.append(topBarLeft, topBarRight);
 
   // 2) Main Workspace Split Container (holds Stage Panel + Main Prompt Column)
   const workspaceWrap = el("div", "aps-node-workspace");
@@ -2132,9 +2156,12 @@ function mountRichCard(node, statusEl) {
       stagePanel.style.removeProperty("bottom");
       stagePanel.style.transform = "";
       const ratio = clampVal(Number(stageBox.splitRatio) || 0.52, 0.22, 0.8);
-      workspaceWrap.style.gridTemplateColumns = `minmax(240px, ${ratio.toFixed(3)}fr) minmax(240px, ${(1 - ratio).toFixed(3)}fr)`;
+      const cols = `minmax(240px, ${ratio.toFixed(3)}fr) minmax(240px, ${(1 - ratio).toFixed(3)}fr)`;
+      workspaceWrap.style.gridTemplateColumns = cols;
+      topBar.style.gridTemplateColumns = cols;
     } else {
       workspaceWrap.style.gridTemplateColumns = "";
+      topBar.style.gridTemplateColumns = "";
       const effectiveStageH = stageBox.customHeight
         ? clampVal(Number(stageBox.height) || 450, 220, 1600)
         : Math.max(clampVal(Number(stageBox.height) || 450, 220, 1600), targetCardH + 38);

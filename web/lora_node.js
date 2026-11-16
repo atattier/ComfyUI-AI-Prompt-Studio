@@ -12,16 +12,16 @@
  */
 
 import { app } from "../../scripts/app.js";
-import { StudioApi } from "./lib/api.js?v=20261116_v39";
+import { StudioApi } from "./lib/api.js?v=20261116_v40";
 import {
   openSaveLoraPresetModal,
   openLoraPresetLibraryModal,
   openLoraPresetLightbox,
   buildLoraSyntaxString,
-} from "./lib/lora_editor.js?v=20261116_v39";
+} from "./lib/lora_editor.js?v=20261116_v40";
 
 const NODE_TYPE = "AIPromptStudioLora";
-const STYLE_VERSION = "20261116_v39";
+const STYLE_VERSION = "20261116_v40";
 
 function mountStyles() {
   if (typeof document === "undefined") return;

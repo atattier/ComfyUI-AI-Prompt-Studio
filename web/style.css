@@ -1620,9 +1620,28 @@
 .aps-node-topbar {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: 6px;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.aps-node-topbar-left {
+  display: none;
+  min-width: 0;
+}
+
+.aps-node-topbar-right {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: nowrap;
+  width: 100%;
+  min-width: 0;
+}
+
+.aps-node-topbar-right .aps-node-wb-btn {
+  margin-left: auto;
 }
 
 .aps-node-top-right {
@@ -1833,6 +1852,31 @@
 }
 
 /* Internal Split Column: side-by-side inside a wider node */
+.aps-node-card[data-dock="split"] .aps-node-topbar {
+  display: grid;
+  grid-template-columns: minmax(290px, 1.08fr) minmax(260px, 1fr);
+  gap: 10px;
+  align-items: center;
+}
+
+.aps-node-card[data-dock="split"] .aps-node-topbar-left {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.aps-node-card[data-dock="split"] .aps-node-topbar-right {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-width: 0;
+}
+
+.aps-node-card[data-dock="split"] .aps-node-topbar-right .aps-node-wb-btn {
+  margin-left: auto;
+}
+
 .aps-node-card[data-dock="split"] .aps-node-workspace {
   display: grid;
   grid-template-columns: minmax(290px, 1.08fr) minmax(260px, 1fr);
@@ -6331,4 +6375,34 @@ details.aps-adv[open] > summary { margin-bottom: 8px; }
   object-fit: contain;
   display: block;
 }
+
+/* Category Sidebar Tree Active Styles */
+.aps-explorer-tree-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  user-select: none;
+  font-size: var(--aps-text-md);
+  color: var(--aps-fg, #e2e8f0);
+  transition: all 0.15s ease;
+  margin-bottom: 3px;
+  border-left: 3px solid transparent;
+}
+
+.aps-explorer-tree-item:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.aps-explorer-tree-item.is-active,
+.aps-explorer-tree-item.active {
+  background: color-mix(in srgb, var(--aps-accent, #6366f1) 24%, rgba(255, 255, 255, 0.08)) !important;
+  border-left: 3px solid var(--aps-accent, #6366f1) !important;
+  color: #ffffff !important;
+  font-weight: 600 !important;
+  box-shadow: inset 0 0 12px rgba(99, 102, 241, 0.12);
+}
+
 

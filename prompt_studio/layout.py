@@ -961,14 +961,14 @@ def compile_layout_prompt(draft: dict[str, Any], *, include_depth: bool = True) 
 
 
 CAPTION_HINT_BLOCK = """
-散文参考（同一张图先单独做了一次 Caption 反推；它对动作、姿态、人物交互和服装层次的理解比直接框更准）：
+散文参考（同一张图先单独做了一次 Caption 反推；它对视角、构图、动作、姿态、人物交互和关键物体的理解比直接框更准）：
 \"\"\"
 {caption}
 \"\"\"
-- 动作 / 姿态 / 朝向 / 谁在跟谁互动，沿用上面散文的理解与方位（viewer's left / right），不要自己另起一套。
+- 视角 / 构图 / 边框 / 动作 / 姿态 / 朝向 / 谁在跟谁互动，沿用上面散文的理解与方位（viewer's left / right），不要自己另起一套；用词也尽量沿用散文。
 - 每个 item 的 caption 仍然只写这个元素**在图上真实可见**的内容，别把散文里别处的描述搬过来。
 - 散文没提到、框里却看得见的细节照常写；散文与图上明显不一致时，以图上看到的为准。
-- summary.caption 用 1–2 句凝练、客观、简洁的英文概括整体构图与视觉焦点（约 25–60 词，适度中性化措辞；完整细节已保留在散文通道）。
+- summary.caption 必须忠实沿用散文的叙述、镜头视角（如低角度仰拍/低机位）、边框质感与核心用词，写成一段生动、具体的完整英文描述；绝对不要写成泛化的空话，更不要丢掉散文里的机位视角与边框设计。
 - 坐标只能来自图上看到的位置：不要因为散文提到某物就补一个框。
 """
 
@@ -1083,7 +1083,7 @@ def layout_instruction(
     height: int,
     extra: str = "",
     *,
-    max_regions: int = 6,
+    max_regions: int = 12,
     model: str = "",
     caption_hint: str = "",
 ) -> str:
@@ -1091,7 +1091,7 @@ def layout_instruction(
     
     Exactly matches the clean, proven architecture of moss-prompt-studio's reverse_rules.
     """
-    region_limit = max(1, min(16, int(max_regions or 10)))
+    region_limit = max(1, min(16, int(max_regions or 12)))
     fmt = box_format_for(model)
     if fmt == "box_2d":
         coord = (
@@ -1117,17 +1117,18 @@ def layout_instruction(
 - 每个 item 用 {coord}。
 - 框要紧贴该元素在图中**真实可见**的范围：人物包含头发、四肢、手持物和衣摆；不要把阴影、背景算进去。
 - 不要输出画布像素坐标的 bbox，坐标换算由程序完成。
-{GRID_HINT}
 
 框哪些东西：
-- 只框图里真实看得见的东西，不要编造。每个主要人物单独一个框（label:"character"）；重要物体 / 动物 / 载具 / 建筑 / 服饰用 "object"；看得清的文字（标题、招牌、logo 字样）用 "text"，原文写进 text 字段。
-- 天空、远景、墙面等大面积背景如果对画面重要，可以给一个覆盖它的 object 框。
+- 只框图里真实看得见的东西，不要编造。
+- 每个主要人物单独一个框（label:"character"）；重要物体 / 动物 / 载具 / 建筑 / 服饰用 "object"；若载具或关键主体有显著的机械独立部件（如车头灯、引擎、排气管、后避震弹簧、前后轮），鼓励细分为独立 object 框。
+- 看得清的文字（标题、副标、招牌、logo 字样）用 "text"，原文写进 text 字段，精准标出文字排版范围。
+- 天空、远景、道路、墙面等大面积背景如果对画面重要，可以给一个覆盖它的 object 框。
 - 一般 3–{region_limit} 个框，按从远到近（背景在前、前景在后）排列。
-- 每个 item 加 "name"：2–6 个字的中文短名（如 "女孩"、"大衣"、"背包"、"招牌"），用于界面显示与遮挡引用。
+- 每个 item 加 "name"：2–6 个字的中文短名（如 "天空"、"道路"、"主标题"、"副标题"、"骑手"、"车头灯"、"引擎"、"排气管"），用于界面显示与遮挡引用。
 
 {hint}描述要求（Detail level: LONG）：
-- 为每个 item.caption 编写具体、客观的英文视觉描述（涵盖外观、材质质感、版型层次、光影氛围）；summary.caption 保持凝练流畅。
-- summary 额外包含 "canvas":"single", "meta":["outdoors","portrait"...], "palette":["sage green","cream white"...]。
+- 为每个 item.caption 编写具体、客观的英文视觉描述（涵盖外观、材质质感、光影氛围）；summary.caption 必须保持生动详实，完整继承散文中的镜头视角、边框构图与环境光感。
+- summary 额外包含 "canvas":"single", "meta":["outdoors","poster"...], "palette":["crimson red","charcoal black"...]。
 - 不要使用 markdown 代码块包裹，直接输出合法 JSON；字符串值内若需引号请改用单引号，避免未转义半角双引号导致 JSON 解析失败。
 
 只输出一个 JSON 对象，不要 Markdown：

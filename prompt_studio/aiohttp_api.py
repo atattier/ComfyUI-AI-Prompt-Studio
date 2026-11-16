@@ -654,7 +654,7 @@ class StudioBackend:
             )
             lay_res: ChatResult = budget.call(
                 self.client,
-                [{"role": "user", "content": [{"type": "text", "text": lay_text_prompt}, _gridded_part(part)]}],
+                [{"role": "user", "content": [{"type": "text", "text": lay_text_prompt}, part]}],
                 model=req_model,
                 temperature=0.3,
                 retry_when=budget.truncated,
@@ -676,8 +676,10 @@ class StudioBackend:
                 warnings.append(lay_warning)
             draft_caption = str(draft["summary"]["caption"]).strip()
             full_caption = str(state.get("caption_text") or draft_caption).strip()
+            # 优先使用保留完整视角特征与构图边框的散文摘要，防止 summary.caption 泛化丢失视角与边框设计
+            best_summary_caption = full_caption if (full_caption and len(full_caption) > len(draft_caption) + 30) else (draft_caption or full_caption)
             layout_draft = copy.deepcopy(draft)
-            layout_draft["summary"]["caption"] = draft_caption or full_caption
+            layout_draft["summary"]["caption"] = best_summary_caption
             hybrid_draft = copy.deepcopy(draft)
             hybrid_draft["summary"]["caption"] = full_caption or draft_caption
 
