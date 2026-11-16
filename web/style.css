@@ -911,6 +911,8 @@
   backdrop-filter: blur(4px);
   color: var(--aps-fg);
   font-family: inherit;
+  overflow-y: auto;
+  box-sizing: border-box;
 }
 
 .aps-modal {
@@ -3863,8 +3865,109 @@
 }
 
 .aps-preset-save-modal {
-  width: 580px;
-  max-width: 95vw;
+  width: min(720px, 94vw);
+  max-width: 720px;
+  min-width: 320px;
+  height: min(88vh, 820px);
+  max-height: 88vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  box-sizing: border-box;
+}
+
+.aps-preset-save-modal .aps-modal-head {
+  flex-shrink: 0;
+}
+
+.aps-preset-modal-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 4px 10px 4px 4px;
+  margin: 6px 0 8px 0;
+  scrollbar-width: thin;
+  scrollbar-color: var(--aps-border-strong, rgba(255, 255, 255, 0.2)) transparent;
+}
+
+.aps-preset-modal-body::-webkit-scrollbar {
+  width: 6px;
+}
+
+.aps-preset-modal-body::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.aps-preset-modal-body::-webkit-scrollbar-thumb {
+  background: var(--aps-border-strong, rgba(255, 255, 255, 0.2));
+  border-radius: 4px;
+}
+
+.aps-preset-modal-body::-webkit-scrollbar-thumb:hover {
+  background: var(--aps-accent, #6366f1);
+}
+
+.aps-preset-save-modal .aps-modal-foot {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  padding-top: 10px;
+  margin-top: auto;
+  border-top: 1px solid var(--aps-border);
+  background: var(--aps-bg);
+}
+
+/* LoRA 堆叠列表容器样式：给独立高度上限与顺畅滚动，避免十几个LoRA把整个弹窗撑满 */
+.aps-lora-rows-container {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 280px;
+  min-height: 48px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 6px 8px;
+  background: color-mix(in srgb, var(--aps-panel) 60%, var(--aps-bg));
+  border: 1px solid var(--aps-border);
+  border-radius: var(--aps-radius-sm);
+  scrollbar-width: thin;
+  scrollbar-color: var(--aps-border-strong, rgba(255, 255, 255, 0.2)) transparent;
+}
+
+.aps-lora-rows-container::-webkit-scrollbar {
+  width: 6px;
+}
+
+.aps-lora-rows-container::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.aps-lora-rows-container::-webkit-scrollbar-thumb {
+  background: var(--aps-border-strong, rgba(255, 255, 255, 0.2));
+  border-radius: 4px;
+}
+
+.aps-lora-rows-container::-webkit-scrollbar-thumb:hover {
+  background: var(--aps-accent, #6366f1);
+}
+
+.aps-lora-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  background: var(--aps-bg-subtle, rgba(255, 255, 255, 0.04));
+  border: 1px solid transparent;
+  border-radius: 4px;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.aps-lora-row:hover {
+  border-color: var(--aps-border);
+  background: var(--aps-surface-0, rgba(255, 255, 255, 0.08));
 }
 
 .aps-preset-gallery-modal {

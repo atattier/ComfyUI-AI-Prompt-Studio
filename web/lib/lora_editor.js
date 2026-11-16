@@ -5,7 +5,7 @@
  * editing, category organization, and 1-click application to canvas nodes.
  */
 
-import { StudioApi } from "./api.js?v=20261116_v36";
+import { StudioApi } from "./api.js?v=20261116_v37";
 
 function detectIsLightTheme() {
   if (typeof document === "undefined" || typeof getComputedStyle !== "function") return false;
@@ -71,12 +71,22 @@ export function openSaveLoraPresetModal({
   overlay.dataset.theme = detectIsLightTheme() ? "light" : "dark";
   overlay.setAttribute("role", "dialog");
   overlay.setAttribute("aria-modal", "true");
+  overlay.addEventListener("wheel", (e) => e.stopPropagation(), { passive: true });
 
   const modal = el("div", "aps-modal aps-preset-save-modal notranslate");
-  modal.style.maxWidth = "780px";
+  modal.style.width = "min(720px, 94vw)";
+  modal.style.maxWidth = "720px";
+  modal.style.height = "min(88vh, 820px)";
+  modal.style.maxHeight = "88vh";
+  modal.style.display = "flex";
+  modal.style.flexDirection = "column";
+  modal.style.overflow = "hidden";
+  modal.style.boxSizing = "border-box";
+  modal.addEventListener("wheel", (e) => e.stopPropagation(), { passive: true });
 
   // 1. Header
   const head = el("div", "aps-modal-head aps-wb-head");
+  head.style.flexShrink = "0";
   const titleWrap = el("div", "aps-wb-brand");
   titleWrap.append(
     el("span", "aps-logo", "🥞"),
@@ -89,6 +99,11 @@ export function openSaveLoraPresetModal({
 
   // 2. Body
   const body = el("div", "aps-modal-body aps-preset-modal-body");
+  body.style.flex = "1 1 auto";
+  body.style.minHeight = "0";
+  body.style.overflowY = "auto";
+  body.style.overflowX = "hidden";
+  body.style.paddingRight = "6px";
 
   // Basic Info Form
   const formGroup = el("div", "aps-preset-form");
@@ -228,7 +243,11 @@ export function openSaveLoraPresetModal({
   const stackRowsContainer = el("div", "aps-lora-rows-container");
   stackRowsContainer.style.display = "flex";
   stackRowsContainer.style.flexDirection = "column";
-  stackRowsContainer.style.gap = "8px";
+  stackRowsContainer.style.gap = "6px";
+  stackRowsContainer.style.maxHeight = "280px";
+  stackRowsContainer.style.minHeight = "48px";
+  stackRowsContainer.style.overflowY = "auto";
+  stackRowsContainer.style.overflowX = "hidden";
   stackSection.append(stackRowsContainer);
 
   let currentLoras = [];
@@ -362,6 +381,11 @@ export function openSaveLoraPresetModal({
 
   // 5. Footer Buttons
   const foot = el("div", "aps-modal-foot");
+  foot.style.flexShrink = "0";
+  foot.style.marginTop = "auto";
+  foot.style.paddingTop = "10px";
+  foot.style.borderTop = "1px solid var(--aps-border)";
+  foot.style.background = "var(--aps-bg)";
   const cancelBtn = el("button", "aps-btn", "取消");
   cancelBtn.type = "button";
 

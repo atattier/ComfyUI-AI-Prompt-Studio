@@ -9,7 +9,7 @@
 
 import { app } from "../../scripts/app.js";
 
-import { StudioApi, ApiError } from "./lib/api.js?v=20261116_v36";
+import { StudioApi, ApiError } from "./lib/api.js?v=20261116_v37";
 import {
   collectTargets,
   currentTarget,
@@ -27,8 +27,8 @@ import {
   formatFriendlyError,
   formatErrorTechnicalDetail,
   selectOps,
-} from "./lib/diff.js?v=20261116_v36";
-import { openLayoutEditor } from "./lib/layout_editor.js?v=20261116_v36";
+} from "./lib/diff.js?v=20261116_v37";
+import { openLayoutEditor } from "./lib/layout_editor.js?v=20261116_v37";
 import { UndoStack } from "./lib/undo.js";
 import { fileToDataUrl, sourceToDataUrl } from "./lib/images.js";
 
@@ -109,12 +109,12 @@ function iconButton(label, title, onClick, className = "") {
 }
 
 function mountStyles() {
-  if (document.querySelector('link[data-aps-style="20261116_v36"]')) return;
+  if (document.querySelector('link[data-aps-style="20261116_v37"]')) return;
   document.querySelectorAll("link[data-aps-style]").forEach((n) => n.remove());
   const link = el("link", {
     rel: "stylesheet",
-    href: new URL("./style.css?v=20261116_v36", import.meta.url).href,
-    "data-aps-style": "20261116_v36",
+    href: new URL("./style.css?v=20261116_v37", import.meta.url).href,
+    "data-aps-style": "20261116_v37",
   });
   document.head.append(link);
 }
