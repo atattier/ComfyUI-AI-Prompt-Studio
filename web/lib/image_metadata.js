@@ -5,7 +5,7 @@
  * payload without touching slots the image does not carry.
  */
 
-import { rescaleLayoutDraft } from "./layout_editor.js?v=20261116_v40";
+import { rescaleLayoutDraft } from "./layout_editor.js?v=20261117_v45";
 
 const SNIPPET_LIMIT = 90;
 

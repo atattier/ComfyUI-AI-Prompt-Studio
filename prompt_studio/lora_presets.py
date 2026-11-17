@@ -41,6 +41,63 @@ DEFAULT_LORA_CATEGORIES = [
     "服饰姿态",
 ]
 
+LORA_MODEL_TYPE_OTHER = "其他"
+LORA_MODEL_TYPE_ORDER = [
+    "MOSS",
+    "Anima",
+    "Krea2",
+    "MiniMax H3",
+    "Flux",
+    "Huge",
+    "SD1.5",
+    "SDXL",
+    "Pony",
+    "Illustrious",
+    "NoobAI",
+    "Qwen-Image",
+    "Wan",
+    LORA_MODEL_TYPE_OTHER,
+]
+
+# 目录名 -> 模型种类（ComfyUI models/loras 下的一级文件夹）
+MODEL_TYPE_FOLDER_MAP: dict[str, str] = {
+    "moss": "MOSS",
+    "anima": "Anima",
+    "krea2": "Krea2",
+    "krea 2": "Krea2",
+    "krea": "Krea2",
+    "mmh3": "MiniMax H3",
+    "minimaxh3": "MiniMax H3",
+    "minimax h3": "MiniMax H3",
+    "flux": "Flux",
+    "huge": "Huge",
+}
+
+# civitai / sidecar 里的 baseModel 值 -> 统一显示名
+_BASE_MODEL_ALIASES: dict[str, str] = {
+    "moss image": "MOSS",
+    "mossimage": "MOSS",
+    "moss": "MOSS",
+    "anima": "Anima",
+    "krea 2": "Krea2",
+    "krea2": "Krea2",
+    "minimax h3": "MiniMax H3",
+    "minimaxh3": "MiniMax H3",
+    "mmh3": "MiniMax H3",
+    "flux 1 d": "Flux",
+    "flux1d": "Flux",
+    "flux": "Flux",
+    "sd 15": "SD1.5",
+    "sd15": "SD1.5",
+    "sdxl 10": "SDXL",
+    "sdxl": "SDXL",
+    "pony": "Pony",
+    "illustrious": "Illustrious",
+    "noobai": "NoobAI",
+    "qwen image": "Qwen-Image",
+    "wan video": "Wan",
+}
+
 BUILTIN_LORA_PRESETS: list[dict[str, Any]] = [
     {
         "id": "builtin_lora_cinematic_texture",
@@ -159,136 +216,311 @@ def clean_category_name(value: Any) -> str:
     return name
 
 
-def scan_available_loras() -> list[str]:
-    """Scan available LoRA files in ComfyUI or local directory."""
+def _lora_roots() -> list[str]:
+    """All candidate LoRA root directories (ComfyUI first, then fallbacks)."""
+    roots: list[str] = []
     try:
         import folder_paths
-        loras = folder_paths.get_filename_list("loras")
-        if loras:
-            return sorted(list(loras))
+
+        for p in folder_paths.get_folder_paths("loras") or []:
+            if p and os.path.isdir(p):
+                roots.append(p)
     except Exception:
         pass
+    roots.extend(
+        [
+            r"E:\AI_vedios\ComfyUI_aki\ComfyUI-aki-v3.2\ComfyUI\models\loras",
+            os.path.join(os.getcwd(), "models", "loras"),
+        ]
+    )
+    seen: set[str] = set()
+    unique: list[str] = []
+    for r in roots:
+        key = os.path.normcase(os.path.abspath(r))
+        if key in seen or not os.path.isdir(r):
+            continue
+        seen.add(key)
+        unique.append(r)
+    return unique
 
-    possible_roots = [
-        r"E:\AI_vedios\ComfyUI_aki\ComfyUI-aki-v3.2\ComfyUI\models\loras",
-        os.path.join(os.getcwd(), "models", "loras"),
-    ]
-    found: set[str] = set()
-    for root_dir in possible_roots:
-        if os.path.isdir(root_dir):
+
+_SCAN_CACHE_TTL = 30.0
+_scan_cache: dict[str, Any] = {"ts": 0.0, "loras": [], "index": {}}
+
+
+def _cache_valid() -> bool:
+    return (time.time() - float(_scan_cache.get("ts") or 0.0)) < _SCAN_CACHE_TTL
+
+
+def invalidate_lora_cache() -> None:
+    """Drop cached LoRA listings (call after installing/removing files)."""
+    _scan_cache["ts"] = 0.0
+    _scan_cache["loras"] = []
+    _scan_cache["index"] = {}
+
+
+def scan_available_loras() -> list[str]:
+    """Scan available LoRA files in ComfyUI or local directory (cached)."""
+    if _cache_valid() and _scan_cache.get("loras"):
+        return list(_scan_cache["loras"])
+
+    loras: list[str] = []
+    try:
+        import folder_paths
+
+        found = folder_paths.get_filename_list("loras")
+        if found:
+            loras = sorted(list(found))
+    except Exception:
+        loras = []
+
+    if not loras:
+        found_set: set[str] = set()
+        for root_dir in _lora_roots():
             for dirpath, _, filenames in os.walk(root_dir):
                 if ".lm-pending-delete" in dirpath:
                     continue
                 for f in filenames:
                     if f.lower().endswith((".safetensors", ".ckpt", ".pt", ".bin")):
                         rel = os.path.relpath(os.path.join(dirpath, f), root_dir).replace("\\", "/")
-                        found.add(rel)
-    return sorted(list(found))
+                        found_set.add(rel)
+        loras = sorted(found_set)
+
+    _scan_cache["ts"] = time.time()
+    _scan_cache["loras"] = loras
+    _scan_cache["index"] = {}
+    return list(loras)
+
+
+def _lora_name_index() -> dict[str, str]:
+    """Map every bare/stem/rel variant (lowercased) -> canonical relative path."""
+    if _cache_valid() and _scan_cache.get("index"):
+        return _scan_cache["index"]
+
+    index: dict[str, str] = {}
+    for rel in scan_available_loras():
+        rel_norm = rel.replace("\\", "/")
+        stem = os.path.splitext(rel_norm)[0]
+        base = os.path.basename(stem)
+        index.setdefault(rel_norm.lower(), rel_norm)
+        index.setdefault(stem.lower(), rel_norm)
+        index.setdefault(base.lower(), rel_norm)
+    _scan_cache["index"] = index
+    return index
+
+
+def resolve_lora_rel_path(lora_name: Any) -> str:
+    """Resolve a stored LoRA reference to a real relative path.
+
+    Presets saved from generated images often store a bare name such as
+    ``YumingLiArt_v1_MOSS`` while the file actually lives at
+    ``Moss/YumingLiArt_v1_MOSS.safetensors``. This bridges the two so preview
+    images and trigger words still resolve.
+    """
+    raw = str(lora_name or "").strip().replace("\\", "/")
+    if not raw:
+        return ""
+    index = _lora_name_index()
+    if raw.lower() in index:
+        return index[raw.lower()]
+
+    stem = os.path.splitext(raw)[0]
+    if stem.lower() in index:
+        return index[stem.lower()]
+
+    base = os.path.basename(stem)
+    if base.lower() in index:
+        return index[base.lower()]
+
+    # Last resort: suffix/contains match on the stem
+    lowered = base.lower()
+    candidates = [v for k, v in index.items() if lowered and lowered in k]
+    if candidates:
+        return sorted(candidates, key=len)[0]
+    return raw
+
+
+def _sidecar_candidates(full_path: str) -> list[str]:
+    base = os.path.splitext(full_path)[0]
+    return [
+        base + ".metadata.json",
+        full_path + ".weilin-info.json",
+        base + ".safetensors.weilin-info.json",
+        base + ".json",
+        base + ".civitai.info",
+        base + ".txt",
+    ]
+
+
+def _locate_lora_file(lora_name: Any) -> str | None:
+    rel = resolve_lora_rel_path(lora_name)
+    if not rel:
+        return None
+    for root_dir in _lora_roots():
+        full_path = os.path.join(root_dir, rel)
+        if os.path.isfile(full_path):
+            return os.path.abspath(full_path)
+    return None
+
+
+def read_lora_sidecar_metadata(lora_name: Any) -> dict[str, Any]:
+    """Load raw sidecar metadata (metadata.json / civitai.info) for a LoRA."""
+    full = _locate_lora_file(lora_name)
+    if not full:
+        return {}
+    for c in _sidecar_candidates(full):
+        if not os.path.isfile(c) or c.endswith(".txt"):
+            continue
+        try:
+            with open(c, encoding="utf-8", errors="ignore") as fp:
+                data = json.load(fp)
+            if isinstance(data, dict):
+                return data
+        except Exception:
+            continue
+    return {}
 
 
 def get_lora_trigger_words(lora_rel_path: str) -> str:
     """Attempt to locate trigger words from sidecar json/txt files."""
-    possible_roots = []
-    try:
-        import folder_paths
-        lora_full = folder_paths.get_full_path("loras", lora_rel_path)
-        if lora_full:
-            possible_roots.append(os.path.dirname(lora_full))
-    except Exception:
-        pass
+    full_path = _locate_lora_file(lora_rel_path)
+    if not full_path:
+        return ""
 
-    possible_roots.extend([
-        r"E:\AI_vedios\ComfyUI_aki\ComfyUI-aki-v3.2\ComfyUI\models\loras",
-        os.path.join(os.getcwd(), "models", "loras"),
-    ])
-
-    for root_dir in possible_roots:
-        if not os.path.isdir(root_dir):
+    for c in _sidecar_candidates(full_path):
+        if not os.path.isfile(c):
             continue
-        full_path = os.path.join(root_dir, lora_rel_path)
-        base = os.path.splitext(full_path)[0]
-        candidates = [
-            base + ".metadata.json",
-            full_path + ".weilin-info.json",
-            base + ".safetensors.weilin-info.json",
-            base + ".json",
-            base + ".txt",
-            base + ".civitai.info",
-        ]
-        for c in candidates:
-            if os.path.isfile(c):
-                try:
-                    if c.endswith(".txt"):
-                        text = open(c, encoding="utf-8", errors="ignore").read().strip()
-                        if text:
-                            return text
-                    with open(c, encoding="utf-8", errors="ignore") as fp:
-                        data = json.load(fp)
-                    tw = (
-                        data.get("civitai", {}).get("trainedWords")
-                        or data.get("trainedWords")
-                        or data.get("trigger_words")
-                        or data.get("tags")
-                    )
-                    if tw:
-                        return tw if isinstance(tw, str) else ", ".join(str(w) for w in tw if w)
-                except Exception:
-                    pass
+        try:
+            if c.endswith(".txt"):
+                text = open(c, encoding="utf-8", errors="ignore").read().strip()
+                if text:
+                    return text
+                continue
+            with open(c, encoding="utf-8", errors="ignore") as fp:
+                data = json.load(fp)
+            if not isinstance(data, dict):
+                continue
+            tw = (
+                data.get("civitai", {}).get("trainedWords")
+                or data.get("trainedWords")
+                or data.get("trigger_words")
+                or data.get("triggerWords")
+                or data.get("tags")
+            )
+            if tw:
+                return tw if isinstance(tw, str) else ", ".join(str(w) for w in tw if w)
+        except Exception:
+            pass
     return ""
 
 
 def find_lora_preview_path(lora_rel_path: str) -> str | None:
     """Find local preview image for a given LoRA (e.g. .preview.png, .jpeg, .png)."""
-    possible_roots = []
-    try:
-        import folder_paths
-        lora_full = folder_paths.get_full_path("loras", lora_rel_path)
-        if lora_full:
-            possible_roots.append(os.path.dirname(lora_full))
-    except Exception:
-        pass
+    full_path = _locate_lora_file(lora_rel_path)
+    if not full_path:
+        return None
 
-    possible_roots.extend([
-        r"E:\AI_vedios\ComfyUI_aki\ComfyUI-aki-v3.2\ComfyUI\models\loras",
-        os.path.join(os.getcwd(), "models", "loras"),
-    ])
+    base = os.path.splitext(full_path)[0]
+    candidates = [
+        base + ".preview.png",
+        base + ".preview.jpeg",
+        base + ".preview.jpg",
+        base + ".preview.webp",
+        base + ".jpeg",
+        base + ".jpg",
+        base + ".png",
+        base + ".webp",
+        full_path + ".preview.png",
+        full_path + ".preview.jpeg",
+        full_path + ".jpeg",
+        full_path + ".png",
+        base + ".thumb.jpg",
+    ]
+    # Civitai-style sidecar preview paths (metadata.json -> preview_url)
+    meta = read_lora_sidecar_metadata(lora_rel_path)
+    for key in ("preview_url", "preview", "thumbnail", "image"):
+        val = meta.get(key)
+        if isinstance(val, str) and val.strip():
+            candidates.insert(0, val.strip())
+    for c in candidates:
+        if os.path.isfile(c) and os.path.getsize(c) > 0:
+            return os.path.abspath(c)
 
-    for root_dir in possible_roots:
-        if not os.path.isdir(root_dir):
-            continue
-        full_path = os.path.join(root_dir, lora_rel_path)
-        base = os.path.splitext(full_path)[0]
-        candidates = [
-            base + ".preview.png",
-            base + ".jpeg",
-            base + ".jpg",
-            base + ".png",
-            base + ".webp",
-            full_path + ".preview.png",
-            full_path + ".preview.jpeg",
-            full_path + ".jpeg",
-            full_path + ".png",
-            base + ".thumb.jpg",
-        ]
-        for c in candidates:
-            if os.path.isfile(c) and os.path.getsize(c) > 0:
-                return os.path.abspath(c)
+    # Fallback: look for an .images folder next to the model (a1111 style)
+    stem_dir = base + ".images"
+    if os.path.isdir(stem_dir):
+        for f in sorted(os.listdir(stem_dir)):
+            if f.lower().endswith((".png", ".jpg", ".jpeg", ".webp")):
+                return os.path.abspath(os.path.join(stem_dir, f))
     return None
 
 
+def detect_lora_model_type(lora_name: Any, metadata: dict[str, Any] | None = None) -> str:
+    """Classify a LoRA by its base model family (MOSS / Anima / Krea2 ...)."""
+    rel = str(lora_name or "").replace("\\", "/")
+    parts = [p for p in rel.split("/") if p]
+    if len(parts) > 1:
+        folder = parts[0].strip().lower()
+        if folder in MODEL_TYPE_FOLDER_MAP:
+            return MODEL_TYPE_FOLDER_MAP[folder]
+
+    meta = metadata if isinstance(metadata, dict) else {}
+    base_model = (
+        str(meta.get("base_model") or "").strip()
+        or str(meta.get("baseModel") or "").strip()
+        or str((meta.get("civitai") or {}).get("baseModel") or "").strip()
+    )
+    if base_model:
+        key = re.sub(r"[_\-\s]+", " ", base_model.strip().lower())
+        if key in _BASE_MODEL_ALIASES:
+            return _BASE_MODEL_ALIASES[key]
+        compact = key.replace(" ", "")
+        if compact in _BASE_MODEL_ALIASES:
+            return _BASE_MODEL_ALIASES[compact]
+
+    haystack = f"{rel} {base_model}".lower()
+    keyword_map = [
+        ("moss", "MOSS"),
+        ("anima", "Anima"),
+        ("krea", "Krea2"),
+        ("minimax", "MiniMax H3"),
+        ("mmh3", "MiniMax H3"),
+        ("flux", "Flux"),
+        ("illustrious", "Illustrious"),
+        ("noobai", "NoobAI"),
+        ("pony", "Pony"),
+        ("sdxl", "SDXL"),
+        ("qwen", "Qwen-Image"),
+    ]
+    for kw, label in keyword_map:
+        if kw in haystack:
+            return label
+    return LORA_MODEL_TYPE_OTHER
+
+
 def scan_available_loras_metadata() -> dict[str, dict[str, Any]]:
-    """Scan available LoRA files along with sidecar trigger words and preview image URLs."""
+    """Scan available LoRA files along with trigger words, covers and model types."""
     loras = scan_available_loras()
-    result = {}
+    result: dict[str, dict[str, Any]] = {}
     for lora_name in loras:
         tw = get_lora_trigger_words(lora_name)
         preview_path = find_lora_preview_path(lora_name)
         has_preview = bool(preview_path)
-        result[lora_name] = {
+        model_type = detect_lora_model_type(lora_name)
+        entry = {
+            "name": lora_name,
+            "rel_path": lora_name,
+            "display_name": os.path.splitext(os.path.basename(lora_name))[0],
+            "model_type": model_type,
             "trigger_words": tw,
             "has_preview": has_preview,
             "preview_url": f"/ai_prompt_studio/lora_presets/preview_image?name={quote(lora_name)}" if has_preview else "",
         }
+        result[lora_name] = entry
+        # Also index the bare stem so presets saved with short names still hit.
+        stem = os.path.splitext(os.path.basename(lora_name))[0]
+        if stem and stem not in result:
+            result[stem] = entry
     return result
 
 
@@ -340,24 +572,23 @@ def extract_loras_from_image_bytes(raw: bytes, filename: str = "") -> dict[str, 
         except (ValueError, TypeError):
             f_sc = f_sm
 
-        # Match local LoRA and get trigger words
+        # Match local LoRA and get trigger words (handles bare names -> rel path)
         tw = get_lora_trigger_words(name_clean)
         if not tw:
             for ext in (".safetensors", ".ckpt", ".pt", ".bin"):
                 if norm_key.endswith(ext):
-                    tw = get_lora_trigger_words(name_clean[:-len(ext)])
-                    break
-                else:
-                    tw = get_lora_trigger_words(f"{name_clean}{ext}")
+                    tw = get_lora_trigger_words(name_clean[: -len(ext)])
                     if tw:
                         break
+        resolved = resolve_lora_rel_path(name_clean)
 
         found_loras.append({
-            "name": name_clean,
+            "name": resolved or name_clean,
             "strength_model": f_sm,
             "strength_clip": f_sc,
             "enabled": bool(enabled),
             "trigger_words": tw,
+            "model_type": detect_lora_model_type(resolved or name_clean),
             "source": source,
         })
 
@@ -574,6 +805,24 @@ def extract_loras_from_image_bytes(raw: bytes, filename: str = "") -> dict[str, 
     }
 
 
+def preset_model_type(loras: Any) -> str:
+    """Infer a preset's model family from its LoRA stack (majority vote)."""
+    if not isinstance(loras, list) or not loras:
+        return LORA_MODEL_TYPE_OTHER
+    votes: dict[str, int] = {}
+    for item in loras:
+        name = item.get("name") if isinstance(item, dict) else item
+        if not name:
+            continue
+        label = detect_lora_model_type(name)
+        if label == LORA_MODEL_TYPE_OTHER:
+            continue
+        votes[label] = votes.get(label, 0) + 1
+    if not votes:
+        return LORA_MODEL_TYPE_OTHER
+    return max(votes.items(), key=lambda kv: kv[1])[0]
+
+
 class LoraPresetStore:
     """SQLite-backed store for LoRA stack presets."""
 
@@ -685,6 +934,7 @@ class LoraPresetStore:
             "tags": tags,
             "is_builtin": bool(row["is_builtin"]),
             "loras": loras,
+            "model_type": preset_model_type(loras),
             "trigger_words": row["trigger_words"] or "",
             "notes": row["notes"] or "",
             "thumbnail": row["thumbnail"] or "",
@@ -699,6 +949,7 @@ class LoraPresetStore:
         *,
         category: str | None = None,
         search: str | None = None,
+        model_type: str | None = None,
     ) -> list[dict[str, Any]]:
         with self._lock:
             query = "SELECT * FROM lora_presets"
@@ -721,7 +972,22 @@ class LoraPresetStore:
 
             query += " ORDER BY updated_at DESC"
             cur = self._conn.execute(query, params)
-            return [self._row_to_dict(r) for r in cur.fetchall()]
+            rows = [self._row_to_dict(r) for r in cur.fetchall()]
+
+        if model_type and model_type not in ("全部", ""):
+            rows = [r for r in rows if r.get("model_type") == model_type]
+        return rows
+
+    def model_type_counts(self) -> dict[str, int]:
+        """Preset counts grouped by detected base-model family."""
+        with self._lock:
+            cur = self._conn.execute("SELECT * FROM lora_presets")
+            rows = [self._row_to_dict(r) for r in cur.fetchall()]
+        counts: dict[str, int] = {"全部": len(rows)}
+        for r in rows:
+            key = r.get("model_type") or LORA_MODEL_TYPE_OTHER
+            counts[key] = counts.get(key, 0) + 1
+        return counts
 
     def get(self, preset_id: str) -> dict[str, Any] | None:
         with self._lock:

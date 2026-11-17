@@ -16,7 +16,7 @@
  *   - Unified Smart Composer (merges "Chat" & "Generate Edit" into one flow)
  */
 
-import { StudioApi } from "./api.js?v=20261116_v40";
+import { StudioApi } from "./api.js?v=20261117_v45";
 import {
   describeOp,
   describeStats,
@@ -25,7 +25,7 @@ import {
   formatFriendlyError,
   formatErrorTechnicalDetail,
   selectOps,
-} from "./diff.js?v=20261116_v40";
+} from "./diff.js?v=20261117_v45";
 import {
   ensureChatThreads,
   createChatThread,
@@ -36,7 +36,7 @@ import {
   updateThreadTurns,
   setThreadSessionId,
   maybeAutoTitleThread,
-} from "./chat_threads.js?v=20261116_v40";
+} from "./chat_threads.js?v=20261117_v45";
 import {
   MAX_PRESET_IMAGE_BYTES,
   blobToDataUrl,
@@ -45,7 +45,7 @@ import {
   makeThumbnailDataUrl,
 } from "./images.js";
 import { UndoStack } from "./undo.js";
-import { removeRegion, shouldDeleteSelection } from "./hotkeys.js?v=20261116_v40";
+import { removeRegion, shouldDeleteSelection } from "./hotkeys.js?v=20261117_v45";
 
 const LABELS = ["object", "character", "text"];
 const LABEL_NAMES = {

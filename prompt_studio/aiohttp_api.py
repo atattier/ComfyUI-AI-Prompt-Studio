@@ -64,6 +64,7 @@ from .sessions import MediaStore, SessionStore
 from .versions import VersionStore
 from .presets import PresetStore
 from .lora_presets import (
+    LORA_MODEL_TYPE_ORDER,
     LoraPresetStore,
     scan_available_loras,
     scan_available_loras_metadata,
@@ -970,8 +971,20 @@ class StudioBackend:
         return self.presets.export_all()
 
     # --------------------------------------------------------- lora presets
-    def list_lora_presets(self, *, category: str | None = None, search: str | None = None) -> list[dict[str, Any]]:
-        return self.lora_presets.list(category=category, search=search)
+    def list_lora_presets(
+        self,
+        *,
+        category: str | None = None,
+        search: str | None = None,
+        model_type: str | None = None,
+    ) -> list[dict[str, Any]]:
+        return self.lora_presets.list(category=category, search=search, model_type=model_type)
+
+    def lora_model_type_info(self) -> dict[str, Any]:
+        return {
+            "model_types": self.lora_presets.model_type_counts(),
+            "order": LORA_MODEL_TYPE_ORDER,
+        }
 
     def get_lora_preset(self, preset_id: str) -> dict[str, Any]:
         p = self.lora_presets.get(preset_id)
@@ -1893,8 +1906,17 @@ def install_routes(
     async def list_lora_presets_route(request: web.Request) -> web.Response:
         category = request.query.get("category")
         search = request.query.get("search")
-        data = await asyncio.to_thread(require().list_lora_presets, category=category, search=search)
+        model_type = request.query.get("model_type")
+        data = await asyncio.to_thread(
+            require().list_lora_presets, category=category, search=search, model_type=model_type
+        )
         return web.json_response({"presets": data})
+
+    @routes.get("/ai_prompt_studio/lora_presets/model_types")
+    @guarded
+    async def lora_model_types_route(_request: web.Request) -> web.Response:
+        info = await asyncio.to_thread(require().lora_model_type_info)
+        return web.json_response(info)
 
     @routes.get("/ai_prompt_studio/lora_presets/available_loras")
     @guarded

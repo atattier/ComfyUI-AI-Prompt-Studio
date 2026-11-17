@@ -10,7 +10,12 @@ import json
 import logging
 from typing import Any
 
-from .lora_presets import BUILTIN_LORA_PRESETS, LoraPresetStore
+from .lora_presets import (
+    BUILTIN_LORA_PRESETS,
+    LoraPresetStore,
+    get_lora_trigger_words,
+    resolve_lora_rel_path,
+)
 
 logger = logging.getLogger("ai_prompt_studio.lora")
 
@@ -167,6 +172,7 @@ class AIPromptStudioLoraNode:
         # 3. Clean and scale LoRAs
         active_loras: list[tuple[str, float, float]] = []
         syntax_tags: list[str] = []
+        collected_tw: list[str] = []
 
         for item in loras_to_apply:
             if not isinstance(item, dict):
@@ -176,11 +182,19 @@ class AIPromptStudioLoraNode:
             name = str(item.get("name") or "").strip()
             if not name:
                 continue
+            resolved_name = resolve_lora_rel_path(name)
             m_str = round(float(item.get("strength_model", 1.0)) * float(model_strength_scale), 3)
             c_str = round(float(item.get("strength_clip", 1.0)) * float(clip_strength_scale), 3)
 
-            active_loras.append((name, m_str, c_str))
-            syntax_tags.append(f"<lora:{name}:{m_str}>")
+            active_loras.append((resolved_name, m_str, c_str))
+            syntax_tags.append(f"<lora:{resolved_name}:{m_str}>")
+
+            # Collect per-LoRA trigger words when the preset itself has none.
+            item_tw = str(item.get("trigger_words") or "").strip()
+            if not item_tw:
+                item_tw = get_lora_trigger_words(resolved_name)
+            if item_tw:
+                collected_tw.append(item_tw)
 
         # 4. Construct lora_stack (combine with upstream)
         out_stack: list[tuple[str, float, float]] = list(lora_stack) if lora_stack else []
@@ -190,6 +204,8 @@ class AIPromptStudioLoraNode:
         tw_parts = []
         if trigger_words_base.strip():
             tw_parts.append(trigger_words_base.strip())
+        if collected_tw:
+            tw_parts.append(", ".join(dict.fromkeys(collected_tw)))
         if extra_trigger_words.strip():
             tw_parts.append(extra_trigger_words.strip())
         final_trigger_words = ", ".join(tw_parts)

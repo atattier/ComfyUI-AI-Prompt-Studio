@@ -12,16 +12,16 @@
  */
 
 import { app } from "../../scripts/app.js";
-import { StudioApi } from "./lib/api.js?v=20261116_v41";
+import { StudioApi } from "./lib/api.js?v=20261117_v45";
 import {
   openSaveLoraPresetModal,
   openLoraPresetLibraryModal,
   openLoraPresetLightbox,
   buildLoraSyntaxString,
-} from "./lib/lora_editor.js?v=20261116_v41";
+} from "./lib/lora_editor.js?v=20261117_v45";
 
 const NODE_TYPE = "AIPromptStudioLora";
-const STYLE_VERSION = "20261116_v41";
+const STYLE_VERSION = "20261117_v45";
 
 function mountStyles() {
   if (typeof document === "undefined") return;
@@ -499,13 +499,51 @@ export function setupLoraNode(node) {
   card.append(footerBar);
 
   // ---------------------------------------------------------------------------
+  // LoRA name resolution helpers
+  // ---------------------------------------------------------------------------
+  /** Stem (filename without folder / extension) — used to bridge short names. */
+  function loraStem(name) {
+    const raw = String(name || "").replace(/\\/g, "/");
+    const file = raw.split("/").pop() || "";
+    return file.replace(/\.(safetensors|ckpt|pt|bin)$/i, "");
+  }
+
+  /** Find LoRA metadata entry for a stored preset item (bare name or rel path). */
+  function resolveLoraDetails(name) {
+    if (!name) return null;
+    if (loraDetails[name]) return loraDetails[name];
+
+    const stem = loraStem(name).toLowerCase();
+    if (!stem) return null;
+    if (loraDetails[stem]) return loraDetails[stem];
+
+    for (const key of Object.keys(loraDetails)) {
+      if (loraStem(key).toLowerCase() === stem) return loraDetails[key];
+    }
+    return null;
+  }
+
+  /** Canonical relative path for a stored LoRA name (so ComfyUI can load it). */
+  function resolveLoraPath(name) {
+    const found = resolveLoraDetails(name);
+    return found?.rel_path || found?.name || name;
+  }
+  // ---------------------------------------------------------------------------
   // Core Synchronization Logic
   // ---------------------------------------------------------------------------
+  function getItemTriggerWords(item) {
+    if (!item) return "";
+    const own = String(item.trigger_words || "").trim();
+    if (own) return own;
+    return String(resolveLoraDetails(item.name)?.trigger_words || "").trim();
+  }
+
   function getActiveTriggerWords() {
     const list = [];
     for (const item of currentStack) {
-      if (item && item.enabled !== false && item.trigger_words) {
-        list.push(item.trigger_words.trim());
+      if (item && item.enabled !== false) {
+        const tw = getItemTriggerWords(item);
+        if (tw) list.push(tw);
       }
     }
     const extra = extraInput.value.trim();
@@ -520,11 +558,12 @@ export function setupLoraNode(node) {
 
     const payload = {
       loras: currentStack.map((item) => ({
-        name: item.name,
+        name: resolveLoraPath(item.name),
+        display_name: item.name,
         strength_model: Number(Number(item.strength_model ?? 1.0).toFixed(3)),
         strength_clip: Number(Number(item.strength_clip ?? 1.0).toFixed(3)),
         enabled: item.enabled !== false,
-        trigger_words: item.trigger_words || "",
+        trigger_words: getItemTriggerWords(item),
       })),
       trigger_words: activeTw,
     };
@@ -576,8 +615,9 @@ export function setupLoraNode(node) {
       });
 
       // Thumbnail Badge
-      const details = loraDetails[item.name] || {};
+      const details = resolveLoraDetails(item.name) || {};
       const previewUrl = details.preview_url || "";
+      const itemTw = getItemTriggerWords(item);
       const thumbBadge = el("div", "aps-lora-item-thumb");
       thumbBadge.title = "点击或悬停预览此 LoRA 封面与触发词";
       if (previewUrl) {
@@ -590,15 +630,17 @@ export function setupLoraNode(node) {
         thumbBadge.textContent = "🥞";
       }
 
-      const nameSpan = el("span", "aps-lora-item-name", item.name || "未命名 LoRA");
-      nameSpan.title = item.name;
+      const nameSpan = el("span", "aps-lora-item-name", item.display_name || item.name || "未命名 LoRA");
+      nameSpan.title = item.display_name && item.display_name !== item.name
+        ? `${item.display_name}\n→ ${item.name}`
+        : item.name;
       nameGroup.append(toggleBtn, thumbBadge, nameSpan);
 
       // Bind Hover preview
       const previewInfo = {
         name: item.name,
         preview_url: previewUrl,
-        trigger_words: item.trigger_words || details.trigger_words || "",
+        trigger_words: itemTw,
         strength_model: item.strength_model,
         strength_clip: item.strength_clip,
       };
@@ -729,17 +771,17 @@ export function setupLoraNode(node) {
       itemRow.append(weightsRow);
 
       // 3. Trigger words chip (if present)
-      if (item.trigger_words && item.trigger_words.trim()) {
+      if (itemTw && itemTw.trim()) {
         const twRow = el("div", "aps-lora-item-tw");
         const twIcon = el("span", "", "🏷️");
-        const twText = el("span", "aps-lora-item-tw-text", item.trigger_words);
-        twText.title = item.trigger_words;
+        const twText = el("span", "aps-lora-item-tw-text", itemTw);
+        twText.title = itemTw;
 
         const copyItemTw = el("button", "aps-lora-icon-btn", "📋");
         copyItemTw.type = "button";
         copyItemTw.title = "复制此 LoRA 的触发词";
         copyItemTw.addEventListener("click", () => {
-          navigator.clipboard.writeText(item.trigger_words);
+          navigator.clipboard.writeText(itemTw);
           copyItemTw.textContent = "✓";
           setTimeout(() => { copyItemTw.textContent = "📋"; }, 1200);
         });
@@ -784,11 +826,36 @@ export function setupLoraNode(node) {
           defaultOpt.value = "";
           addSelect.append(defaultOpt);
 
+          // Group local LoRAs by model family (MOSS / Anima / Krea2 ...)
+          const groups = new Map();
           availableLoras.forEach((name) => {
-            const opt = el("option", "", name);
-            opt.value = name;
-            addSelect.append(opt);
+            const type = loraDetails[name]?.model_type || "其他";
+            if (!groups.has(type)) groups.set(type, []);
+            groups.get(type).push(name);
           });
+          const typeOrder = ["MOSS", "Anima", "Krea2", "MiniMax H3", "Flux", "Huge", "SD1.5", "SDXL", "Pony", "Illustrious", "NoobAI", "Qwen-Image", "Wan"];
+          const sortedTypes = [...groups.keys()].sort((a, b) => {
+            const ia = typeOrder.indexOf(a);
+            const ib = typeOrder.indexOf(b);
+            return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib) || a.localeCompare(b);
+          });
+          sortedTypes.forEach((type) => {
+            const names = groups.get(type).sort((a, b) => a.localeCompare(b));
+            const group = document.createElement("optgroup");
+            group.label = `🧠 ${type} (${names.length})`;
+            names.forEach((name) => {
+              const opt = el("option", "", name);
+              opt.value = name;
+              group.append(opt);
+            });
+            addSelect.append(group);
+          });
+
+          // Local LoRA details arrived after the first render: refresh covers/tw.
+          if (currentStack.length > 0) {
+            renderStackList();
+            updatePresetThumbBadge();
+          }
         } catch (e) {
           console.warn("[AIPromptStudioLora] 获取本地 LoRA 列表失败:", e);
         }
@@ -811,7 +878,8 @@ export function setupLoraNode(node) {
     }
 
     presetsList.forEach((p) => {
-      const opt = el("option", "", `${p.name} (${p.category || "通用"})`);
+      const mt = p.model_type && p.model_type !== "其他" ? ` · ${p.model_type}` : "";
+      const opt = el("option", "", `${p.name} (${p.category || "通用"}${mt})`);
       opt.value = p.name;
       presetSelect.append(opt);
     });
@@ -842,8 +910,9 @@ export function setupLoraNode(node) {
     let coverUrl = found?.thumbnail || (found?.has_image ? api.loraPresetImageUrl(found.id) : "");
     if (!coverUrl && found?.loras && found.loras.length > 0) {
       const firstL = found.loras.find((l) => l.name);
-      if (firstL && loraDetails[firstL.name]?.preview_url) {
-        coverUrl = loraDetails[firstL.name].preview_url;
+      if (firstL) {
+        const d = resolveLoraDetails(firstL.name);
+        if (d?.preview_url) coverUrl = d.preview_url;
       }
     }
 
@@ -874,10 +943,11 @@ export function setupLoraNode(node) {
     if (presetWidget) presetWidget.value = preset.name;
     currentStack = (preset.loras || []).map((item) => ({
       name: item.name,
+      display_name: item.display_name || item.name,
       strength_model: Number(item.strength_model ?? 1.0),
       strength_clip: Number(item.strength_clip ?? item.strength_model ?? 1.0),
       enabled: item.enabled !== false,
-      trigger_words: item.trigger_words || (loraDetails[item.name]?.trigger_words) || "",
+      trigger_words: item.trigger_words || resolveLoraDetails(item.name)?.trigger_words || "",
       linked: item.strength_model === item.strength_clip,
     }));
     updatePresetThumbBadge();
@@ -903,10 +973,11 @@ export function setupLoraNode(node) {
     if (parsedStack.length > 0) {
       currentStack = parsedStack.map((item) => ({
         name: item.name || "未命名",
+        display_name: item.display_name || item.name || "未命名",
         strength_model: Number(item.strength_model ?? 1.0),
         strength_clip: Number(item.strength_clip ?? item.strength_model ?? 1.0),
         enabled: item.enabled !== false,
-        trigger_words: item.trigger_words || (loraDetails[item.name]?.trigger_words) || "",
+        trigger_words: item.trigger_words || resolveLoraDetails(item.name)?.trigger_words || "",
         linked: item.strength_model === item.strength_clip,
       }));
       renderStackList();

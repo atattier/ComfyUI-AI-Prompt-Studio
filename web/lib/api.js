@@ -395,12 +395,17 @@ export class StudioApi {
     }
   }
 
-  listLoraPresets({ category = "", search = "" } = {}) {
+  listLoraPresets({ category = "", search = "", modelType = "" } = {}) {
     const query = new URLSearchParams();
     if (category && category !== "全部") query.set("category", category);
     if (search) query.set("search", search);
+    if (modelType && modelType !== "全部") query.set("model_type", modelType);
     const qs = query.toString();
     return this.request(`/lora_presets${qs ? "?" + qs : ""}`);
+  }
+
+  listLoraModelTypes() {
+    return this.request("/lora_presets/model_types");
   }
 
   getAvailableLoras() {

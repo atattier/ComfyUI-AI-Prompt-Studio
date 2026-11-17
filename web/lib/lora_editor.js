@@ -5,7 +5,7 @@
  * editing, category organization, and 1-click application to canvas nodes.
  */
 
-import { StudioApi } from "./api.js?v=20261116_v40";
+import { StudioApi } from "./api.js?v=20261117_v45";
 
 function detectIsLightTheme() {
   if (typeof document === "undefined" || typeof getComputedStyle !== "function") return false;
@@ -904,6 +904,12 @@ export function openLoraPresetLibraryModal({
   const treeContainer = el("div", "aps-explorer-tree");
   sidebar.append(sidebarHead, treeContainer);
 
+  // 2.1b Model-type tree (MOSS / Anima / Krea2 ...)
+  const modelHead = el("div", "aps-explorer-sidebar-head aps-explorer-model-head");
+  modelHead.append(el("span", "aps-explorer-sidebar-title", "🧠 模型种类"));
+  const modelTreeContainer = el("div", "aps-explorer-tree aps-explorer-model-tree");
+  sidebar.append(modelHead, modelTreeContainer);
+
   const sidebarFoot = el("div", "aps-explorer-sidebar-foot");
   const resetBuiltinsBtn = el("button", "aps-btn aps-btn-xs aps-explorer-reset-btn", "↺ 恢复默认堆叠");
   resetBuiltinsBtn.type = "button";
@@ -995,9 +1001,55 @@ export function openLoraPresetLibraryModal({
   });
 
   let selectedCategory = "全部";
+  let selectedModelType = "全部";
   let searchKeyword = "";
   let allPresets = [];
   let categoryCounts = {};
+  let modelTypeCounts = {};
+  let localLoraDetails = {};
+
+  /** Stem (no folder / extension) for bridging bare names to rel paths. */
+  function loraStemOf(name) {
+    const raw = String(name || "").replace(/\\/g, "/");
+    const file = raw.split("/").pop() || "";
+    return file.replace(/\.(safetensors|ckpt|pt|bin)$/i, "");
+  }
+
+  function findLoraDetail(name) {
+    if (!name) return null;
+    if (localLoraDetails[name]) return localLoraDetails[name];
+    const stem = loraStemOf(name).toLowerCase();
+    if (!stem) return null;
+    if (localLoraDetails[stem]) return localLoraDetails[stem];
+    for (const key of Object.keys(localLoraDetails)) {
+      if (loraStemOf(key).toLowerCase() === stem) return localLoraDetails[key];
+    }
+    return null;
+  }
+
+  /** Preset-level trigger words, falling back to its LoRAs' trained words. */
+  function effectiveTriggerWords(preset) {
+    const own = String(preset?.trigger_words || "").trim();
+    if (own) return own;
+    const parts = [];
+    for (const l of preset?.loras || []) {
+      const d = findLoraDetail(l?.name);
+      const tw = String(l?.trigger_words || d?.trigger_words || "").trim();
+      if (tw) parts.push(tw);
+    }
+    return [...new Set(parts)].join(", ");
+  }
+
+  async function ensureLocalLoraDetails() {
+    if (Object.keys(localLoraDetails).length) return localLoraDetails;
+    try {
+      const res = await api.getAvailableLoras();
+      localLoraDetails = res?.lora_details || {};
+    } catch {
+      localLoraDetails = {};
+    }
+    return localLoraDetails;
+  }
 
   async function updateCategoryCounts() {
     try {
@@ -1012,6 +1064,123 @@ export function openLoraPresetLibraryModal({
     } catch {}
   }
 
+  async function updateModelTypeCounts() {
+    try {
+      const res = await api.listLoraPresets();
+      const list = res.presets || [];
+      const counts = { "全部": list.length };
+      for (const p of list) {
+        const mt = p.model_type || "其他";
+        counts[mt] = (counts[mt] || 0) + 1;
+      }
+      modelTypeCounts = counts;
+    } catch {}
+  }
+
+  /** Shared tree row renderer for both category & model-type panes. */
+  function buildTreeItem({ label, icon, isActive, count, onClick }) {
+    const item = el("div", `aps-tree-item aps-explorer-tree-item${isActive ? " is-active active" : ""}`);
+    item.style.cursor = "pointer";
+    item.style.padding = "7px 10px";
+    item.style.borderRadius = "6px";
+    item.style.display = "flex";
+    item.style.justifyContent = "space-between";
+    item.style.alignItems = "center";
+    item.style.marginBottom = "3px";
+    item.style.transition = "all 0.15s ease";
+
+    if (isActive) {
+      item.style.background = "color-mix(in srgb, var(--aps-accent, #6366f1) 24%, rgba(255, 255, 255, 0.08))";
+      item.style.borderLeft = "3px solid var(--aps-accent, #6366f1)";
+      item.style.color = "#ffffff";
+      item.style.fontWeight = "600";
+    } else {
+      item.style.background = "transparent";
+      item.style.borderLeft = "3px solid transparent";
+      item.style.color = "var(--aps-fg, #e2e8f0)";
+      item.style.fontWeight = "normal";
+    }
+
+    item.addEventListener("mouseenter", () => {
+      if (!isActive) item.style.background = "rgba(255, 255, 255, 0.08)";
+    });
+    item.addEventListener("mouseleave", () => {
+      if (!isActive) item.style.background = "transparent";
+    });
+
+    const leftWrap = el("div");
+    leftWrap.style.display = "flex";
+    leftWrap.style.alignItems = "center";
+    leftWrap.style.gap = "6px";
+    leftWrap.append(el("span", "", icon), el("span", "", label));
+
+    const countBadge = el("span", "aps-tree-count-badge", String(count ?? 0));
+    countBadge.style.fontSize = "11px";
+    countBadge.style.padding = "1px 6px";
+    countBadge.style.borderRadius = "10px";
+    if (isActive) {
+      countBadge.style.background = "var(--aps-accent, #6366f1)";
+      countBadge.style.color = "#ffffff";
+      countBadge.style.fontWeight = "bold";
+    } else {
+      countBadge.style.background = "rgba(0, 0, 0, 0.28)";
+      countBadge.style.color = "var(--aps-muted, #94a3b8)";
+    }
+
+    item.append(leftWrap, countBadge);
+    item.addEventListener("click", onClick);
+    return item;
+  }
+
+  async function loadModelTypes() {
+    try {
+      await updateModelTypeCounts();
+      let order = [];
+      try {
+        const info = await api.listLoraModelTypes();
+        order = Array.isArray(info?.order) ? info.order : [];
+      } catch {}
+      if (!order.length) {
+        order = ["MOSS", "Anima", "Krea2", "MiniMax H3", "Flux", "SDXL", "其他"];
+      }
+
+      modelTreeContainer.innerHTML = "";
+      modelTreeContainer.append(
+        buildTreeItem({
+          label: "全部模型",
+          icon: "🧠",
+          isActive: selectedModelType === "全部",
+          count: modelTypeCounts["全部"] ?? 0,
+          onClick: () => {
+            selectedModelType = "全部";
+            loadModelTypes();
+            loadPresets();
+          },
+        })
+      );
+
+      const present = Object.keys(modelTypeCounts).filter((k) => k !== "全部");
+      const ordered = [...order.filter((m) => present.includes(m)), ...present.filter((m) => !order.includes(m))];
+
+      for (const mt of ordered) {
+        const icon = mt === "其他" ? "📦" : "🧩";
+        modelTreeContainer.append(
+          buildTreeItem({
+            label: mt,
+            icon,
+            isActive: mt === selectedModelType,
+            count: modelTypeCounts[mt] ?? 0,
+            onClick: () => {
+              selectedModelType = mt;
+              loadModelTypes();
+              loadPresets();
+            },
+          })
+        );
+      }
+    } catch {}
+  }
+
   async function loadCategories() {
     try {
       await updateCategoryCounts();
@@ -1020,71 +1189,19 @@ export function openLoraPresetLibraryModal({
       treeContainer.innerHTML = "";
 
       for (const c of cats) {
-        const isActive = c === selectedCategory;
-        const item = el("div", `aps-tree-item aps-explorer-tree-item${isActive ? " is-active active" : ""}`);
-        item.style.cursor = "pointer";
-        item.style.padding = "7px 10px";
-        item.style.borderRadius = "6px";
-        item.style.display = "flex";
-        item.style.justifyContent = "space-between";
-        item.style.alignItems = "center";
-        item.style.marginBottom = "3px";
-        item.style.transition = "all 0.15s ease";
-
-        if (isActive) {
-          item.style.background = "color-mix(in srgb, var(--aps-accent, #6366f1) 24%, rgba(255, 255, 255, 0.08))";
-          item.style.borderLeft = "3px solid var(--aps-accent, #6366f1)";
-          item.style.color = "#ffffff";
-          item.style.fontWeight = "600";
-        } else {
-          item.style.background = "transparent";
-          item.style.borderLeft = "3px solid transparent";
-          item.style.color = "var(--aps-fg, #e2e8f0)";
-          item.style.fontWeight = "normal";
-        }
-
-        item.addEventListener("mouseenter", () => {
-          if (c !== selectedCategory) {
-            item.style.background = "rgba(255, 255, 255, 0.08)";
-          }
-        });
-        item.addEventListener("mouseleave", () => {
-          if (c !== selectedCategory) {
-            item.style.background = "transparent";
-          }
-        });
-
-        const leftWrap = el("div");
-        leftWrap.style.display = "flex";
-        leftWrap.style.alignItems = "center";
-        leftWrap.style.gap = "6px";
-        const iconSpan = el("span", "", c === "全部" ? "🗂" : "📁");
-        const nameSpan = el("span", "", c);
-        leftWrap.append(iconSpan, nameSpan);
-
-        const count = categoryCounts[c] ?? 0;
-        const countBadge = el("span", "aps-tree-count-badge", String(count));
-        countBadge.style.fontSize = "11px";
-        countBadge.style.padding = "1px 6px";
-        countBadge.style.borderRadius = "10px";
-        if (isActive) {
-          countBadge.style.background = "var(--aps-accent, #6366f1)";
-          countBadge.style.color = "#ffffff";
-          countBadge.style.fontWeight = "bold";
-        } else {
-          countBadge.style.background = "rgba(0, 0, 0, 0.28)";
-          countBadge.style.color = "var(--aps-muted, #94a3b8)";
-        }
-
-        item.append(leftWrap, countBadge);
-
-        item.addEventListener("click", () => {
-          selectedCategory = c;
-          loadCategories();
-          loadPresets();
-        });
-
-        treeContainer.append(item);
+        treeContainer.append(
+          buildTreeItem({
+            label: c,
+            icon: c === "全部" ? "🗂" : "📁",
+            isActive: c === selectedCategory,
+            count: categoryCounts[c] ?? 0,
+            onClick: () => {
+              selectedCategory = c;
+              loadCategories();
+              loadPresets();
+            },
+          })
+        );
       }
     } catch {
       // fallback
@@ -1101,10 +1218,22 @@ export function openLoraPresetLibraryModal({
     bcCurrent.style.padding = "2px 8px";
     breadcrumbWrap.append(bcIcon, bcCurrent);
 
+    if (selectedModelType !== "全部") {
+      const mtBadge = el("span", "aps-badge aps-badge-purple", `🧠 ${selectedModelType}`);
+      mtBadge.style.fontSize = "12px";
+      mtBadge.style.padding = "2px 8px";
+      mtBadge.style.marginLeft = "6px";
+      breadcrumbWrap.append(mtBadge);
+    }
+
+    // Covers & trigger words need the local LoRA index; load it once.
+    await ensureLocalLoraDetails();
+
     try {
       const res = await api.listLoraPresets({
         category: selectedCategory === "全部" ? "" : selectedCategory,
         search: searchKeyword,
+        modelType: selectedModelType === "全部" ? "" : selectedModelType,
       });
       allPresets = res.presets || [];
 
@@ -1114,7 +1243,7 @@ export function openLoraPresetLibraryModal({
         empty.style.textAlign = "center";
         empty.style.padding = "48px 0";
         empty.style.opacity = "0.6";
-        empty.textContent = "当前分类下暂无 LoRA 预设，点右上角「＋ 新建预设」添加。";
+        empty.textContent = "当前筛选条件下暂无 LoRA 预设，点右上角「＋ 新建预设」添加。";
         cardsContainer.append(empty);
         return;
       }
@@ -1126,6 +1255,11 @@ export function openLoraPresetLibraryModal({
       const errBox = el("div", "aps-empty-state", `加载预设失败：${err.message || err}`);
       cardsContainer.append(errBox);
     }
+  }
+
+  function detailOrName(name) {
+    const d = findLoraDetail(name);
+    return d?.rel_path || d?.name || name;
   }
 
   function createPresetCard(preset) {
@@ -1144,9 +1278,19 @@ export function openLoraPresetLibraryModal({
     const stageWrap = el("div", "aps-lora-card-stage");
     let coverUrl = preset.thumbnail || (preset.has_image ? api.loraPresetImageUrl(preset.id) : "");
     if (!coverUrl && loras.length > 0) {
-      const firstWithPreview = loras.find((l) => l.name);
-      if (firstWithPreview && typeof api?.loraPreviewImageUrl === "function") {
-        coverUrl = api.loraPreviewImageUrl(firstWithPreview.name);
+      // Resolve the first LoRA that actually has a local cover image
+      for (const l of loras) {
+        const detail = findLoraDetail(l?.name);
+        if (detail?.preview_url) {
+          coverUrl = detail.preview_url;
+          break;
+        }
+      }
+      if (!coverUrl) {
+        const firstWithPreview = loras.find((l) => l.name);
+        if (firstWithPreview && typeof api?.loraPreviewImageUrl === "function") {
+          coverUrl = api.loraPreviewImageUrl(detailOrName(firstWithPreview.name));
+        }
       }
     }
 
@@ -1247,6 +1391,13 @@ export function openLoraPresetLibraryModal({
     catBadge.style.padding = "2px 6px";
     badgeWrap.append(catBadge);
 
+    if (preset.model_type && preset.model_type !== "其他") {
+      const mtBadge = el("span", "aps-badge aps-badge-model", `🧠 ${preset.model_type}`);
+      mtBadge.style.fontSize = "11px";
+      mtBadge.style.padding = "2px 6px";
+      badgeWrap.append(mtBadge);
+    }
+
     if (preset.is_builtin) {
       const builtinBadge = el("span", "aps-badge aps-badge-purple", "内置");
       builtinBadge.style.fontSize = "11px";
@@ -1298,21 +1449,28 @@ export function openLoraPresetLibraryModal({
     stackOverview.append(listUl);
     card.append(stackOverview);
 
-    // Trigger words snippet
-    if (preset.trigger_words) {
+    // Trigger words snippet (preset-level, or aggregated from its LoRAs)
+    const presetTw = effectiveTriggerWords(preset);
+    if (presetTw) {
       const twBox = el("div");
       twBox.style.fontSize = "12px";
       twBox.style.opacity = "0.8";
       twBox.style.display = "flex";
       twBox.style.justifyContent = "space-between";
       twBox.style.alignItems = "center";
+      twBox.style.gap = "6px";
 
-      const twText = el("span", "", `触发词: ${preset.trigger_words.slice(0, 36)}${preset.trigger_words.length > 36 ? "…" : ""}`);
+      const twText = el("span", "", `触发词: ${presetTw.slice(0, 36)}${presetTw.length > 36 ? "…" : ""}`);
+      twText.title = presetTw;
+      twText.style.overflow = "hidden";
+      twText.style.textOverflow = "ellipsis";
+      twText.style.whiteSpace = "nowrap";
+
       const copyBtn = el("button", "aps-btn aps-btn-xs", "📋 复制");
       copyBtn.type = "button";
       copyBtn.title = "复制全部触发词";
       copyBtn.addEventListener("click", () => {
-        navigator.clipboard.writeText(preset.trigger_words);
+        navigator.clipboard.writeText(presetTw);
         copyBtn.textContent = "✓ 已复制";
         setTimeout(() => { copyBtn.textContent = "📋 复制"; }, 1500);
       });
@@ -1537,6 +1695,9 @@ export function openLoraPresetLibraryModal({
   });
 
   // Initial load
-  loadCategories();
-  loadPresets();
+  ensureLocalLoraDetails().finally(() => {
+    loadCategories();
+    loadModelTypes();
+    loadPresets();
+  });
 }
