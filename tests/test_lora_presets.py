@@ -7,8 +7,12 @@ from pathlib import Path
 from prompt_studio.lora_presets import (
     BUILTIN_LORA_PRESETS,
     DEFAULT_LORA_CATEGORY,
+    LORA_MODEL_TYPE_OTHER,
     LoraPresetStore,
     clean_category_name,
+    detect_lora_model_type,
+    preset_model_type,
+    resolve_lora_rel_path,
     scan_available_loras,
 )
 
@@ -154,6 +158,64 @@ class LoraPresetStoreTests(unittest.TestCase):
         raw, mime, fn = img_res
         self.assertEqual(mime, "image/png")
         self.assertGreater(len(raw), 10)
+
+
+class LoraModelTypeTests(unittest.TestCase):
+    def test_detects_model_type_from_folder(self):
+        self.assertEqual(detect_lora_model_type("Moss/foo.safetensors"), "MOSS")
+        self.assertEqual(detect_lora_model_type("anima/bar.safetensors"), "Anima")
+        self.assertEqual(detect_lora_model_type("krea2/baz.safetensors"), "Krea2")
+        self.assertEqual(detect_lora_model_type("Krea 2/qux.safetensors"), "Krea2")
+        self.assertEqual(detect_lora_model_type("MMH3/one.safetensors"), "MiniMax H3")
+
+    def test_detects_model_type_from_metadata_and_name(self):
+        meta = {"base_model": "MOSS Image"}
+        self.assertEqual(detect_lora_model_type("root_style.safetensors", meta), "MOSS")
+        self.assertEqual(detect_lora_model_type("some_moss_lora.safetensors"), "MOSS")
+        self.assertEqual(detect_lora_model_type("krea2_wukong.safetensors"), "Krea2")
+        self.assertEqual(detect_lora_model_type("unknown_thing.safetensors"), LORA_MODEL_TYPE_OTHER)
+
+    def test_preset_model_type_uses_majority_vote(self):
+        loras = [
+            {"name": "Moss/a.safetensors"},
+            {"name": "Moss/b.safetensors"},
+            {"name": "krea2/c.safetensors"},
+        ]
+        self.assertEqual(preset_model_type(loras), "MOSS")
+        self.assertEqual(preset_model_type([]), LORA_MODEL_TYPE_OTHER)
+        self.assertEqual(preset_model_type(None), LORA_MODEL_TYPE_OTHER)
+
+    def test_bare_name_resolves_safely(self):
+        # Unknown names pass through unchanged instead of blowing up.
+        self.assertEqual(resolve_lora_rel_path("definitely_not_installed_lora"), "definitely_not_installed_lora")
+        self.assertEqual(resolve_lora_rel_path(""), "")
+
+    def test_store_filters_and_counts_by_model_type(self):
+        tmpdir = tempfile.TemporaryDirectory()
+        store = LoraPresetStore(Path(tmpdir.name) / "types.sqlite3")
+        try:
+            store.save({
+                "name": "MOSS 堆叠",
+                "loras": [{"name": "Moss/aaa.safetensors", "strength_model": 1.0}],
+            })
+            store.save({
+                "name": "Krea2 堆叠",
+                "loras": [{"name": "krea2/bbb.safetensors", "strength_model": 1.0}],
+            })
+
+            counts = store.model_type_counts()
+            self.assertGreaterEqual(counts.get("MOSS", 0), 1)
+            self.assertGreaterEqual(counts.get("Krea2", 0), 1)
+
+            only_moss = store.list(model_type="MOSS")
+            self.assertTrue(all(p["model_type"] == "MOSS" for p in only_moss))
+            self.assertTrue(any(p["name"] == "MOSS 堆叠" for p in only_moss))
+
+            # Unknown filter returns nothing rather than every preset.
+            self.assertEqual(store.list(model_type="不存在的模型"), [])
+        finally:
+            store.close()
+            tmpdir.cleanup()
 
 
 if __name__ == "__main__":

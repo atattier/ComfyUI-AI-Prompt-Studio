@@ -228,6 +228,22 @@ test("lora presets api calls support list, save, delete, and available loras", a
   assert.equal(api.loraPreviewImageUrl(""), "");
 });
 
+test("listLoraPresets forwards model_type filter", async () => {
+  let calledUrl = null;
+  const api = new StudioApi({
+    fetchImpl: async (url) => {
+      calledUrl = url;
+      return jsonResponse({ presets: [] });
+    },
+  });
+
+  await api.listLoraPresets({ modelType: "MOSS" });
+  assert.equal(calledUrl, "/ai_prompt_studio/lora_presets?model_type=MOSS");
+
+  await api.listLoraPresets({ modelType: "全部", category: "全部" });
+  assert.equal(calledUrl, "/ai_prompt_studio/lora_presets");
+});
+
 test("lora presets api operations dispatch aps:lora-presets-updated events", async () => {
   const events = [];
   const handler = (e) => events.push(e.detail);
