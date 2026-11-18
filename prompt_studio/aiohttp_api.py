@@ -66,6 +66,7 @@ from .presets import PresetStore
 from .lora_presets import (
     LORA_MODEL_TYPE_ORDER,
     LoraPresetStore,
+    lora_manager_status,
     scan_available_loras,
     scan_available_loras_metadata,
     extract_loras_from_image_bytes,
@@ -984,6 +985,7 @@ class StudioBackend:
         return {
             "model_types": self.lora_presets.model_type_counts(),
             "order": LORA_MODEL_TYPE_ORDER,
+            "bridge": lora_manager_status(),
         }
 
     def get_lora_preset(self, preset_id: str) -> dict[str, Any]:

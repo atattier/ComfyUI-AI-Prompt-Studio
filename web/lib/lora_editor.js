@@ -5,7 +5,7 @@
  * editing, category organization, and 1-click application to canvas nodes.
  */
 
-import { StudioApi } from "./api.js?v=20261117_v45";
+import { StudioApi } from "./api.js?v=20261118_v46";
 
 function detectIsLightTheme() {
   if (typeof document === "undefined" || typeof getComputedStyle !== "function") return false;
@@ -911,9 +911,16 @@ export function openLoraPresetLibraryModal({
   sidebar.append(modelHead, modelTreeContainer);
 
   const sidebarFoot = el("div", "aps-explorer-sidebar-foot");
+  const bridgeBadge = el("span", "aps-explorer-bridge-badge");
+  bridgeBadge.style.fontSize = "10px";
+  bridgeBadge.style.opacity = "0.7";
+  bridgeBadge.style.marginRight = "auto";
+  bridgeBadge.style.cursor = "help";
+  bridgeBadge.textContent = "🧠 模型识别: 本地";
+  bridgeBadge.title = "模型种类识别来源";
   const resetBuiltinsBtn = el("button", "aps-btn aps-btn-xs aps-explorer-reset-btn", "↺ 恢复默认堆叠");
   resetBuiltinsBtn.type = "button";
-  sidebarFoot.append(resetBuiltinsBtn);
+  sidebarFoot.append(bridgeBadge, resetBuiltinsBtn);
   sidebar.append(sidebarFoot);
 
   // 2.2 Main Pane (Toolbar + Preset Cards Grid)
@@ -1139,6 +1146,18 @@ export function openLoraPresetLibraryModal({
       try {
         const info = await api.listLoraModelTypes();
         order = Array.isArray(info?.order) ? info.order : [];
+        const bridge = info?.bridge || {};
+        if (bridge.available) {
+          bridgeBadge.textContent = `🧠 模型识别: 本地 + LoRA Manager (${bridge.lora_count})`;
+          bridgeBadge.title = `已只读接入 ComfyUI-Lora-Manager 缓存，补全底模分类\n${bridge.cache_path}`;
+          bridgeBadge.style.opacity = "0.85";
+          bridgeBadge.style.color = "#34d399";
+        } else {
+          bridgeBadge.textContent = "🧠 模型识别: 仅本地";
+          bridgeBadge.title = "未检测到 ComfyUI-Lora-Manager 缓存，仅按目录名/文件名/侧车元数据推断底模";
+          bridgeBadge.style.opacity = "0.6";
+          bridgeBadge.style.color = "";
+        }
       } catch {}
       if (!order.length) {
         order = ["MOSS", "Anima", "Krea2", "MiniMax H3", "Flux", "SDXL", "其他"];

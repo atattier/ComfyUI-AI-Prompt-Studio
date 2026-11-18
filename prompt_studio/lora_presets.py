@@ -87,16 +87,155 @@ _BASE_MODEL_ALIASES: dict[str, str] = {
     "flux 1 d": "Flux",
     "flux1d": "Flux",
     "flux": "Flux",
+    "sd 1 5": "SD1.5",
     "sd 15": "SD1.5",
     "sd15": "SD1.5",
+    "sd 1.5": "SD1.5",
+    "sd1.5": "SD1.5",
     "sdxl 10": "SDXL",
+    "sdxl 1 0": "SDXL",
+    "sdxl 1.0": "SDXL",
     "sdxl": "SDXL",
     "pony": "Pony",
     "illustrious": "Illustrious",
     "noobai": "NoobAI",
     "qwen image": "Qwen-Image",
+    "qwen": "Qwen-Image",
     "wan video": "Wan",
 }
+
+# ---------------------------------------------------------------------------
+# Optional read-only bridge to ComfyUI-Lora-Manager's sqlite cache.
+#
+# Lora Manager resolves each LoRA's true base model via SHA256 -> Civitai API,
+# which we cannot reproduce without hashing ~50 GB of files. When its cache is
+# present we simply read the already-computed values (strictly read-only, opened
+# with mode=ro) and use them as a last-resort fallback. If anything is missing
+# or fails, every helper below degrades to the local sidecar result.
+# ---------------------------------------------------------------------------
+LORA_MANAGER_BRIDGE_DISABLE_ENV = "APS_DISABLE_LORA_MANAGER_BRIDGE"
+_LM_CACHE_TTL = 60.0
+_lm_cache: dict[str, Any] = {"ts": 0.0, "path": "", "rows": {}}
+
+
+def lora_manager_cache_path() -> str:
+    """Locate Lora Manager's model cache sqlite (read-only source)."""
+    override = os.environ.get("APS_LORA_MANAGER_CACHE")
+    if override:
+        return override if os.path.isfile(override) else ""
+
+    candidates: list[str] = []
+    local_appdata = os.environ.get("LOCALAPPDATA")
+    appdata = os.environ.get("APPDATA")
+    for base in (local_appdata, appdata):
+        if not base:
+            continue
+        candidates.append(os.path.join(base, "ComfyUI-LoRA-Manager", "cache", "model"))
+        candidates.append(os.path.join(base, "ComfyUI-Lora-Manager", "cache", "model"))
+    # Portable installs keep the cache next to the custom node.
+    for root in _lora_roots():
+        # models/loras -> ComfyUI -> custom_nodes/ComfyUI-Lora-Manager
+        comfy_root = os.path.dirname(os.path.dirname(root))
+        candidates.append(os.path.join(comfy_root, "custom_nodes", "ComfyUI-Lora-Manager", "cache", "model"))
+
+    for directory in candidates:
+        if not os.path.isdir(directory):
+            continue
+        try:
+            sqlite_files = sorted(
+                (f for f in os.listdir(directory) if f.lower().endswith(".sqlite")),
+                key=lambda f: os.path.getsize(os.path.join(directory, f)),
+                reverse=True,
+            )
+        except OSError:
+            continue
+        for f in sqlite_files:
+            return os.path.join(directory, f)
+    return ""
+
+
+def _normalize_lora_key(name: Any) -> str:
+    """Basename without a *model* extension, lowercased.
+
+    Only known model extensions are stripped: names such as ``qaq-beta_v1.1``
+    or ``style.ZjWx`` legitimately contain dots, and ``os.path.splitext`` would
+    eat the last segment and break the join.
+    """
+    raw = str(name or "").replace("\\", "/").strip()
+    if not raw:
+        return ""
+    lowered = raw.lower()
+    for ext in (".safetensors", ".ckpt", ".pt", ".bin"):
+        if lowered.endswith(ext):
+            raw = raw[: -len(ext)]
+            break
+    return os.path.basename(raw).lower()
+
+
+def lora_manager_index() -> dict[str, dict[str, Any]]:
+    """Read Lora Manager's cached LoRA metadata (base model / words / cover).
+
+    Returns ``{normalized_basename: {...}}``. Always safe: returns ``{}`` when
+    the bridge is disabled, the cache is absent, or the read fails.
+    """
+    if os.environ.get(LORA_MANAGER_BRIDGE_DISABLE_ENV, "").strip() in ("1", "true", "yes"):
+        return {}
+
+    if (time.time() - float(_lm_cache.get("ts") or 0.0)) < _LM_CACHE_TTL:
+        return _lm_cache.get("rows") or {}
+
+    rows: dict[str, dict[str, Any]] = {}
+    path = lora_manager_cache_path()
+    if path:
+        try:
+            # mode=ro guarantees we can never write to another plugin's data.
+            uri = Path(path).as_uri() + "?mode=ro"
+            conn = sqlite3.connect(uri, uri=True, timeout=1.5)
+            try:
+                conn.row_factory = sqlite3.Row
+                for r in conn.execute(
+                    "SELECT file_name, base_model, trained_words, preview_url "
+                    "FROM models WHERE model_type = 'lora'"
+                ):
+                    key = _normalize_lora_key(r["file_name"])
+                    if not key:
+                        continue
+                    base_model = str(r["base_model"] or "").strip()
+                    rows[key] = {
+                        "base_model": "" if base_model.lower() == "unknown" else base_model,
+                        "trained_words": str(r["trained_words"] or "").strip(),
+                        "preview_url": str(r["preview_url"] or "").strip(),
+                    }
+            finally:
+                conn.close()
+        except Exception as err:  # never let an external cache break our node
+            logger.debug("LoRA Manager bridge unavailable: %s", err)
+            rows = {}
+
+    _lm_cache["ts"] = time.time()
+    _lm_cache["path"] = path
+    _lm_cache["rows"] = rows
+    return rows
+
+
+def lora_manager_entry(lora_name: Any) -> dict[str, Any]:
+    """Bridge record for a single LoRA (empty dict when unavailable)."""
+    key = _normalize_lora_key(lora_name)
+    if not key:
+        return {}
+    return lora_manager_index().get(key) or {}
+
+
+def lora_manager_status() -> dict[str, Any]:
+    """Diagnostics for the bridge (used by the settings/status UI)."""
+    path = lora_manager_cache_path()
+    rows = lora_manager_index() if path else {}
+    return {
+        "available": bool(rows),
+        "cache_path": path,
+        "lora_count": len(rows),
+        "disabled": os.environ.get(LORA_MANAGER_BRIDGE_DISABLE_ENV, "").strip() in ("1", "true", "yes"),
+    }
 
 BUILTIN_LORA_PRESETS: list[dict[str, Any]] = [
     {
@@ -411,7 +550,24 @@ def get_lora_trigger_words(lora_rel_path: str) -> str:
                 return tw if isinstance(tw, str) else ", ".join(str(w) for w in tw if w)
         except Exception:
             pass
-    return ""
+
+    # Fallback: Lora Manager already resolved Civitai's trained words for us.
+    return _parse_trained_words(lora_manager_entry(lora_rel_path).get("trained_words"))
+
+
+def _parse_trained_words(raw: Any) -> str:
+    """Normalize Lora Manager's trained_words payload (JSON list or plain text)."""
+    text = str(raw or "").strip()
+    if not text:
+        return ""
+    if text.startswith("["):
+        try:
+            parsed = json.loads(text)
+            if isinstance(parsed, list):
+                return ", ".join(str(w).strip() for w in parsed if str(w).strip())
+        except Exception:
+            pass
+    return text
 
 
 def find_lora_preview_path(lora_rel_path: str) -> str | None:
@@ -442,6 +598,10 @@ def find_lora_preview_path(lora_rel_path: str) -> str | None:
         val = meta.get(key)
         if isinstance(val, str) and val.strip():
             candidates.insert(0, val.strip())
+    # Fallback: Lora Manager may have stored a preview path we did not derive.
+    lm_preview = lora_manager_entry(lora_rel_path).get("preview_url")
+    if isinstance(lm_preview, str) and lm_preview.strip():
+        candidates.append(lm_preview.strip())
     for c in candidates:
         if os.path.isfile(c) and os.path.getsize(c) > 0:
             return os.path.abspath(c)
@@ -495,6 +655,17 @@ def detect_lora_model_type(lora_name: Any, metadata: dict[str, Any] | None = Non
     for kw, label in keyword_map:
         if kw in haystack:
             return label
+
+    # Last resort: Lora Manager's SHA256 -> Civitai resolution (read-only cache).
+    lm_base = lora_manager_entry(lora_name).get("base_model")
+    if lm_base:
+        key = re.sub(r"[_\-\s]+", " ", str(lm_base).strip().lower())
+        if key in _BASE_MODEL_ALIASES:
+            return _BASE_MODEL_ALIASES[key]
+        compact = key.replace(" ", "")
+        if compact in _BASE_MODEL_ALIASES:
+            return _BASE_MODEL_ALIASES[compact]
+
     return LORA_MODEL_TYPE_OTHER
 
 

@@ -9,8 +9,12 @@ from prompt_studio.lora_presets import (
     DEFAULT_LORA_CATEGORY,
     LORA_MODEL_TYPE_OTHER,
     LoraPresetStore,
+    _normalize_lora_key,
+    _parse_trained_words,
     clean_category_name,
     detect_lora_model_type,
+    lora_manager_cache_path,
+    lora_manager_status,
     preset_model_type,
     resolve_lora_rel_path,
     scan_available_loras,
@@ -216,6 +220,90 @@ class LoraModelTypeTests(unittest.TestCase):
         finally:
             store.close()
             tmpdir.cleanup()
+
+
+class LoraManagerBridgeTests(unittest.TestCase):
+    """The bridge must be strictly optional and read-only."""
+
+    def test_normalize_key_keeps_inner_dots(self):
+        self.assertEqual(_normalize_lora_key("Moss/YumingLiArt_v1_MOSS.safetensors"), "yumingliart_v1_moss")
+        # A dotted version is part of the name, not an extension.
+        self.assertEqual(_normalize_lora_key("qaq-beta_v1.1.safetensors"), "qaq-beta_v1.1")
+        self.assertEqual(_normalize_lora_key("E794B5.ZjWx.safetensors"), "e794b5.zjwx")
+        self.assertEqual(_normalize_lora_key(""), "")
+
+    def test_parse_trained_words_handles_json_and_plain(self):
+        self.assertEqual(_parse_trained_words('["@ashima", "style"]'), "@ashima, style")
+        self.assertEqual(_parse_trained_words("plain words"), "plain words")
+        self.assertEqual(_parse_trained_words(""), "")
+        self.assertEqual(_parse_trained_words(None), "")
+
+    def test_bridge_disabled_env_yields_no_rows(self):
+        import os
+
+        from prompt_studio import lora_presets
+
+        old = os.environ.get(lora_presets.LORA_MANAGER_BRIDGE_DISABLE_ENV)
+        os.environ[lora_presets.LORA_MANAGER_BRIDGE_DISABLE_ENV] = "1"
+        try:
+            lora_presets._lm_cache["ts"] = 0.0
+            lora_presets._lm_cache["rows"] = {}
+            self.assertEqual(lora_presets.lora_manager_index(), {})
+            status = lora_manager_status()
+            self.assertFalse(status["available"])
+            self.assertTrue(status["disabled"])
+        finally:
+            if old is None:
+                os.environ.pop(lora_presets.LORA_MANAGER_BRIDGE_DISABLE_ENV, None)
+            else:
+                os.environ[lora_presets.LORA_MANAGER_BRIDGE_DISABLE_ENV] = old
+            lora_presets._lm_cache["ts"] = 0.0
+            lora_presets._lm_cache["rows"] = {}
+
+    def test_missing_cache_path_returns_empty(self):
+        import os
+
+        from prompt_studio import lora_presets
+
+        old = os.environ.get("APS_LORA_MANAGER_CACHE")
+        os.environ["APS_LORA_MANAGER_CACHE"] = "C:/definitely/not/here/comfyui.sqlite"
+        try:
+            self.assertEqual(lora_manager_cache_path(), "")
+        finally:
+            if old is None:
+                os.environ.pop("APS_LORA_MANAGER_CACHE", None)
+            else:
+                os.environ["APS_LORA_MANAGER_CACHE"] = old
+
+    def test_unreadable_cache_degrades_gracefully(self):
+        import os
+        import tempfile
+
+        from prompt_studio import lora_presets
+
+        with tempfile.NamedTemporaryFile(suffix=".sqlite", delete=False) as fh:
+            fh.write(b"this is not a sqlite database")
+            bad_path = fh.name
+
+        old = os.environ.get("APS_LORA_MANAGER_CACHE")
+        os.environ["APS_LORA_MANAGER_CACHE"] = bad_path
+        try:
+            lora_presets._lm_cache["ts"] = 0.0
+            lora_presets._lm_cache["rows"] = {}
+            # Corrupt file must not raise, just yield an empty index.
+            self.assertEqual(lora_presets.lora_manager_index(), {})
+            self.assertEqual(detect_lora_model_type("dotmatrix.safetensors"), LORA_MODEL_TYPE_OTHER)
+        finally:
+            if old is None:
+                os.environ.pop("APS_LORA_MANAGER_CACHE", None)
+            else:
+                os.environ["APS_LORA_MANAGER_CACHE"] = old
+            lora_presets._lm_cache["ts"] = 0.0
+            lora_presets._lm_cache["rows"] = {}
+            try:
+                os.unlink(bad_path)
+            except OSError:
+                pass
 
 
 if __name__ == "__main__":
