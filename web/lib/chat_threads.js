@@ -5,7 +5,7 @@
  * the legacy mirror fields (`state.chat_log`, `state.session_id`) consistent.
  */
 
-import { excerpt } from "./diff.js?v=20261119_v49";
+import { excerpt } from "./diff.js?v=20261119_v50";
 
 export const MAX_CHAT_THREADS = 20;
 export const DEFAULT_MAX_TURNS = 20;

@@ -16,7 +16,7 @@
  *   - Unified Smart Composer (merges "Chat" & "Generate Edit" into one flow)
  */
 
-import { StudioApi } from "./api.js?v=20261119_v49";
+import { StudioApi } from "./api.js?v=20261119_v50";
 import {
   describeOp,
   describeStats,
@@ -25,7 +25,7 @@ import {
   formatFriendlyError,
   formatErrorTechnicalDetail,
   selectOps,
-} from "./diff.js?v=20261119_v49";
+} from "./diff.js?v=20261119_v50";
 import {
   ensureChatThreads,
   createChatThread,
@@ -36,7 +36,7 @@ import {
   updateThreadTurns,
   setThreadSessionId,
   maybeAutoTitleThread,
-} from "./chat_threads.js?v=20261119_v49";
+} from "./chat_threads.js?v=20261119_v50";
 import {
   MAX_PRESET_IMAGE_BYTES,
   blobToDataUrl,
@@ -45,7 +45,7 @@ import {
   makeThumbnailDataUrl,
 } from "./images.js";
 import { UndoStack } from "./undo.js";
-import { removeRegion, shouldDeleteSelection } from "./hotkeys.js?v=20261119_v49";
+import { removeRegion, shouldDeleteSelection } from "./hotkeys.js?v=20261119_v50";
 
 const LABELS = ["object", "character", "text"];
 const LABEL_NAMES = {
@@ -2156,7 +2156,7 @@ export function openLayoutEditor({
     }
   });
 
-  const stopStreamBtn = el("button", "aps-btn", "⏹ 停止");
+  const stopStreamBtn = el("button", "aps-btn aps-btn-stop", "⏹ 终止");
   stopStreamBtn.type = "button";
   stopStreamBtn.hidden = true;
   stopStreamBtn.addEventListener("click", () => {
@@ -2442,7 +2442,7 @@ export function openLayoutEditor({
     sendBtn.disabled = nextBusy;
     wbNewThreadBtn.disabled = nextBusy;
     clearChatBtn.disabled = nextBusy;
-    stopStreamBtn.hidden = !streamController;
+    stopStreamBtn.hidden = !activeController();
     stageScanOverlay.hidden = !(nextBusy && isCaptionScan);
     renderWbThreadTabs();
     if (busyTimer) {
@@ -3535,6 +3535,9 @@ export function openLayoutEditor({
       false,
       fullBusyLabel,
     );
+    const controller = typeof AbortController === "function" ? new AbortController() : null;
+    editController = controller;
+    stopStreamBtn.hidden = !activeController();
     try {
       const targetTitle = regionItem
         ? `区域画框 #${regionIdx + 1} (${regionDisplayName}, bbox=${JSON.stringify(regionItem.bbox)})`
@@ -3542,20 +3545,23 @@ export function openLayoutEditor({
       const effectiveMessage = regionItem && captionText
         ? `[当前针对局部画框 #${regionIdx + 1}「${regionDisplayName}」修改，整体画面背景供参考：${captionText.slice(0, 220)}]\n用户修改要求：${instruction}`
         : instruction;
-      const res = await api.edit({
-        message: effectiveMessage,
-        mode: editMode,
-        target: {
-          title: targetTitle,
-          widget: activeEditTarget,
-          text: currentText,
+      const res = await api.edit(
+        {
+          message: effectiveMessage,
+          mode: editMode,
+          target: {
+            title: targetTitle,
+            widget: activeEditTarget,
+            text: currentText,
+          },
+          images: currentImageUrl ? [{ data_url: currentImageUrl }] : undefined,
+          session_id: reqSessionId,
+          create_session: true,
+          allow_empty: true,
+          canvas: { width: Number(draft.width) || 1024, height: Number(draft.height) || 1024 },
         },
-        images: currentImageUrl ? [{ data_url: currentImageUrl }] : undefined,
-        session_id: reqSessionId,
-        create_session: true,
-        allow_empty: true,
-        canvas: { width: Number(draft.width) || 1024, height: Number(draft.height) || 1024 },
-      });
+        { signal: controller?.signal },
+      );
       if (res.session_id) {
         setThreadSessionId(state, reqThreadId, res.session_id, { maxTurns: 25 });
         if (reqThreadId === activeThreadId) {
@@ -3642,33 +3648,49 @@ export function openLayoutEditor({
         setStatus("模型认为无需修改。");
       }
     } catch (err) {
-      const { friendly, tech } = reportEditorError(err, "生成修改");
-      appendChatMessage(
-        "assistant",
-        friendly,
-        {
+      if (err?.name === "AbortError") {
+        appendChatMessage(
+          "assistant",
+          "⏹ 已终止本次请求，提示词保持原样未改动。",
+          {
+            regionBadge,
+            regionColor,
+            crest: "⏹ STOPPED",
+            crestKind: "is-ok",
+          },
+          reqThreadId,
+        );
+        setStatus("已终止本次请求。");
+      } else {
+        const { friendly, tech } = reportEditorError(err, "生成修改");
+        appendChatMessage(
+          "assistant",
+          friendly,
+          {
+            error: true,
+            errorDetail: tech || "",
+            regionBadge,
+            regionColor,
+            crest: "⚠️ ALERT",
+            crestKind: "is-err",
+          },
+          reqThreadId,
+        );
+        recordWorkbenchTurn({
+          threadId: reqThreadId,
+          userText: instruction,
+          label: displayLabel || instruction,
+          reply: friendly,
           error: true,
           errorDetail: tech || "",
+          changed: false,
+          regionIdx: regionItem ? regionIdx : -1,
           regionBadge,
           regionColor,
-          crest: "⚠️ ALERT",
-          crestKind: "is-err",
-        },
-        reqThreadId,
-      );
-      recordWorkbenchTurn({
-        threadId: reqThreadId,
-        userText: instruction,
-        label: displayLabel || instruction,
-        reply: friendly,
-        error: true,
-        errorDetail: tech || "",
-        changed: false,
-        regionIdx: regionItem ? regionIdx : -1,
-        regionBadge,
-        regionColor,
-      });
+        });
+      }
     } finally {
+      editController = null;
       setBusyState(false);
     }
   }
@@ -3801,6 +3823,7 @@ export function openLayoutEditor({
       busyTimer = null;
     }
     streamController?.abort();
+    editController?.abort();
     overlay.remove();
     document.removeEventListener("keydown", onKey);
     document.removeEventListener("keydown", onDeleteKey, true);

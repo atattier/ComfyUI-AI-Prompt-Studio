@@ -1589,6 +1589,23 @@
   padding: 0 14px;
 }
 
+.aps-btn-stop {
+  flex-shrink: 0;
+  border: 1px solid color-mix(in srgb, #ef4444 55%, var(--aps-border)) !important;
+  background: color-mix(in srgb, #ef4444 14%, var(--aps-surface)) !important;
+  color: #fca5a5 !important;
+  font-weight: 700;
+}
+
+.aps-btn-stop:hover:not(:disabled) {
+  background: color-mix(in srgb, #ef4444 26%, var(--aps-surface)) !important;
+  color: #fff !important;
+}
+
+.aps-btn-stop[hidden] {
+  display: none !important;
+}
+
 .aps-modal-foot {
   display: flex;
   align-items: center;
@@ -2161,6 +2178,28 @@
 .aps-node-chat-input:focus {
   outline: none;
   border-color: var(--aps-accent);
+}
+
+.aps-node-chat-stop {
+  flex-shrink: 0;
+  height: 26px;
+  padding: 0 10px;
+  border-radius: 6px;
+  border: 1px solid color-mix(in srgb, #ef4444 55%, var(--aps-border));
+  background: color-mix(in srgb, #ef4444 14%, var(--aps-surface));
+  color: #fca5a5;
+  font-size: var(--aps-text-sm);
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.aps-node-chat-stop:hover:not(:disabled) {
+  background: color-mix(in srgb, #ef4444 26%, var(--aps-surface));
+  color: #fff;
+}
+
+.aps-node-chat-stop[hidden] {
+  display: none !important;
 }
 
 .aps-node-status {
