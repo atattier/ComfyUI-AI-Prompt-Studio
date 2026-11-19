@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -16,6 +17,7 @@ from prompt_studio.lora_presets import (
     lora_manager_cache_path,
     lora_manager_status,
     preset_model_type,
+    repair_lora_name,
     resolve_lora_rel_path,
     scan_available_loras,
 )
@@ -304,6 +306,68 @@ class LoraManagerBridgeTests(unittest.TestCase):
                 os.unlink(bad_path)
             except OSError:
                 pass
+
+
+class EscapedLoraNameRepairTests(unittest.TestCase):
+    """Escaped-CJK names must be decoded, or presets silently drop LoRAs."""
+
+    def test_decodes_single_and_multiple_escapes(self):
+        self.assertEqual(repair_lora_name("Moss-nai5-/u5176/u4e09"), "Moss-nai5-其三")
+        self.assertEqual(repair_lora_name("KOOK-MOSS-SFT-/u89c2/u6f9c"), "KOOK-MOSS-SFT-观澜")
+        self.assertEqual(repair_lora_name("KOOK-MOSS-SFT-/u89c2/u6f9c(1)"), "KOOK-MOSS-SFT-观澜(1)")
+
+    def test_decodes_full_chinese_path_with_wide_parens(self):
+        raw = "Moss-/u753b/u98ce-/u9ad8/u5149/u6e7f/u6da6/u6e32/u67d3/uff08nai5/u5176/u4e5d/uff09V2"
+        self.assertEqual(repair_lora_name(raw), "Moss-画风-高光湿润渲染（nai5其九）V2")
+
+    def test_leaves_clean_names_untouched(self):
+        for name in ("YumingLiArt_v1_MOSS", "plain_ascii", ""):
+            self.assertEqual(repair_lora_name(name), name)
+        self.assertEqual(repair_lora_name(None), "")
+        # A bare escape IS a valid escape and must decode (that is the bug).
+        self.assertEqual(repair_lora_name("/u5176"), "其")
+
+    def test_normalizes_windows_backslashes(self):
+        self.assertEqual(repair_lora_name("Moss\\foo.safetensors"), "Moss/foo.safetensors")
+
+    def test_invalid_escape_sequence_is_not_destroyed(self):
+        # Not four hex digits after /u -> untouched.
+        self.assertEqual(repair_lora_name("/uZZ/style"), "/uZZ/style")
+
+    def test_save_repairs_names_on_write(self):
+        tmpdir = tempfile.TemporaryDirectory()
+        store = LoraPresetStore(Path(tmpdir.name) / "repair.sqlite3")
+        try:
+            saved = store.save({
+                "name": "带乱码名的预设",
+                "loras": [{"name": "Moss-nai5-/u5176/u4e09", "strength_model": 0.6}],
+            })
+            self.assertEqual(saved["loras"][0]["name"], "Moss-nai5-其三")
+        finally:
+            store.close()
+            tmpdir.cleanup()
+
+    def test_migration_repairs_preexisting_rows(self):
+        tmpdir = tempfile.TemporaryDirectory()
+        db = Path(tmpdir.name) / "legacy.sqlite3"
+        store = LoraPresetStore(db)
+        try:
+            # Simulate a row written by the buggy build (already escaped).
+            store._conn.execute(
+                "UPDATE lora_presets SET loras = ? WHERE id = ?",
+                (
+                    json.dumps([{"name": "KOOK-MOSS-SFT-/u89c2/u6f9c", "strength_model": 1.0,
+                                 "strength_clip": 1.0, "enabled": True}]),
+                    BUILTIN_LORA_PRESETS[0]["id"],
+                ),
+            )
+            store._conn.commit()
+            self.assertEqual(store._repair_mangled_lora_names(), 1)
+            reloaded = store.get(BUILTIN_LORA_PRESETS[0]["id"])
+            self.assertEqual(reloaded["loras"][0]["name"], "KOOK-MOSS-SFT-观澜")
+        finally:
+            store.close()
+            tmpdir.cleanup()
 
 
 if __name__ == "__main__":

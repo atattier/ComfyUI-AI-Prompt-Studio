@@ -239,6 +239,13 @@
   white-space: nowrap;
 }
 
+/* LoRA rows whose file no longer exists on disk */
+.aps-lora-item-name.is-missing {
+  color: #fbbf24 !important;
+  text-decoration: line-through;
+  text-decoration-color: rgba(251, 191, 36, 0.5);
+}
+
 .aps-icon {
   margin-left: auto;
   width: 24px;

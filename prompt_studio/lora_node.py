@@ -14,6 +14,7 @@ from .lora_presets import (
     BUILTIN_LORA_PRESETS,
     LoraPresetStore,
     get_lora_trigger_words,
+    repair_lora_name,
     resolve_lora_rel_path,
 )
 
@@ -29,6 +30,16 @@ def get_lora_preset_names() -> list[str]:
         return names if names else ["电影级胶片光影与质感 (示例堆叠)"]
     except Exception:
         return ["电影级胶片光影与质感 (示例堆叠)"]
+
+
+def _lora_file_exists(lora_name: str) -> bool:
+    """True when ComfyUI can actually resolve this LoRA path."""
+    try:
+        import folder_paths
+
+        return bool(folder_paths.get_full_path("loras", lora_name))
+    except Exception:
+        return True  # Outside ComfyUI (tests) we cannot check; do not warn.
 
 
 def safe_load_single_lora(
@@ -179,7 +190,7 @@ class AIPromptStudioLoraNode:
                 continue
             if not item.get("enabled", True):
                 continue
-            name = str(item.get("name") or "").strip()
+            name = repair_lora_name(item.get("name"))
             if not name:
                 continue
             resolved_name = resolve_lora_rel_path(name)
@@ -195,6 +206,15 @@ class AIPromptStudioLoraNode:
                 item_tw = get_lora_trigger_words(resolved_name)
             if item_tw:
                 collected_tw.append(item_tw)
+
+        # 3b. Report unresolved LoRAs loudly instead of silently skipping them.
+        missing = [n for n, _, _ in active_loras if not _lora_file_exists(n)]
+        if missing:
+            logger.warning(
+                "[AIPromptStudioLoraNode] 以下 %d 个 LoRA 在 models/loras 中找不到，已自动跳过：%s",
+                len(missing),
+                ", ".join(missing),
+            )
 
         # 4. Construct lora_stack (combine with upstream)
         out_stack: list[tuple[str, float, float]] = list(lora_stack) if lora_stack else []

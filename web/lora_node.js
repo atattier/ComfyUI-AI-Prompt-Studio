@@ -12,16 +12,16 @@
  */
 
 import { app } from "../../scripts/app.js";
-import { StudioApi } from "./lib/api.js?v=20261118_v46";
+import { StudioApi } from "./lib/api.js?v=20261119_v47";
 import {
   openSaveLoraPresetModal,
   openLoraPresetLibraryModal,
   openLoraPresetLightbox,
   buildLoraSyntaxString,
-} from "./lib/lora_editor.js?v=20261118_v46";
+} from "./lib/lora_editor.js?v=20261119_v47";
 
 const NODE_TYPE = "AIPromptStudioLora";
-const STYLE_VERSION = "20261118_v46";
+const STYLE_VERSION = "20261119_v47";
 
 function mountStyles() {
   if (typeof document === "undefined") return;
@@ -501,6 +501,22 @@ export function setupLoraNode(node) {
   // ---------------------------------------------------------------------------
   // LoRA name resolution helpers
   // ---------------------------------------------------------------------------
+  /** Undo escaped-CJK names like "Moss-nai5-/u5176/u4e09" -> "Moss-nai5-其三". */
+  function repairLoraName(name) {
+    const raw = String(name || "").trim();
+    if (!raw) return "";
+    if (!/[/\\]u[0-9a-fA-F]{4}/.test(raw)) return raw.replace(/\\/g, "/");
+    const repaired = raw.replace(/(?:[/\\]u[0-9a-fA-F]{4})+/g, (run) => {
+      const hexes = run.match(/[0-9a-fA-F]{4}/g) || [];
+      try {
+        return hexes.map((h) => String.fromCharCode(parseInt(h, 16))).join("");
+      } catch {
+        return run;
+      }
+    });
+    return repaired.replace(/\\/g, "/");
+  }
+
   /** Stem (filename without folder / extension) — used to bridge short names. */
   function loraStem(name) {
     const raw = String(name || "").replace(/\\/g, "/");
@@ -510,10 +526,11 @@ export function setupLoraNode(node) {
 
   /** Find LoRA metadata entry for a stored preset item (bare name or rel path). */
   function resolveLoraDetails(name) {
-    if (!name) return null;
-    if (loraDetails[name]) return loraDetails[name];
+    const repaired = repairLoraName(name);
+    if (!repaired) return null;
+    if (loraDetails[repaired]) return loraDetails[repaired];
 
-    const stem = loraStem(name).toLowerCase();
+    const stem = loraStem(repaired).toLowerCase();
     if (!stem) return null;
     if (loraDetails[stem]) return loraDetails[stem];
 
@@ -525,8 +542,9 @@ export function setupLoraNode(node) {
 
   /** Canonical relative path for a stored LoRA name (so ComfyUI can load it). */
   function resolveLoraPath(name) {
-    const found = resolveLoraDetails(name);
-    return found?.rel_path || found?.name || name;
+    const repaired = repairLoraName(name);
+    const found = resolveLoraDetails(repaired);
+    return found?.rel_path || found?.name || repaired;
   }
   // ---------------------------------------------------------------------------
   // Core Synchronization Logic
@@ -631,9 +649,17 @@ export function setupLoraNode(node) {
       }
 
       const nameSpan = el("span", "aps-lora-item-name", item.display_name || item.name || "未命名 LoRA");
-      nameSpan.title = item.display_name && item.display_name !== item.name
-        ? `${item.display_name}\n→ ${item.name}`
-        : item.name;
+      // Files that left the disk must be obvious, not silently skipped on run.
+      const isMissing = !resolveLoraDetails(item.name);
+      if (isMissing) {
+        nameSpan.classList.add("is-missing");
+        nameSpan.textContent = `⚠ ${item.display_name || item.name}`;
+      }
+      nameSpan.title = isMissing
+        ? `本地找不到此 LoRA 文件，执行时会被跳过：\n${item.name}`
+        : (item.display_name && item.display_name !== item.name
+            ? `${item.display_name}\n→ ${item.name}`
+            : item.name);
       nameGroup.append(toggleBtn, thumbBadge, nameSpan);
 
       // Bind Hover preview
@@ -942,8 +968,8 @@ export function setupLoraNode(node) {
 
     if (presetWidget) presetWidget.value = preset.name;
     currentStack = (preset.loras || []).map((item) => ({
-      name: item.name,
-      display_name: item.display_name || item.name,
+      name: repairLoraName(item.name),
+      display_name: repairLoraName(item.display_name || item.name),
       strength_model: Number(item.strength_model ?? 1.0),
       strength_clip: Number(item.strength_clip ?? item.strength_model ?? 1.0),
       enabled: item.enabled !== false,
@@ -972,8 +998,8 @@ export function setupLoraNode(node) {
     // If custom stack has items, use them
     if (parsedStack.length > 0) {
       currentStack = parsedStack.map((item) => ({
-        name: item.name || "未命名",
-        display_name: item.display_name || item.name || "未命名",
+        name: repairLoraName(item.name || "未命名"),
+        display_name: repairLoraName(item.display_name || item.name || "未命名"),
         strength_model: Number(item.strength_model ?? 1.0),
         strength_clip: Number(item.strength_clip ?? item.strength_model ?? 1.0),
         enabled: item.enabled !== false,

@@ -448,15 +448,43 @@ def _lora_name_index() -> dict[str, str]:
     return index
 
 
+def repair_lora_name(name: Any) -> str:
+    """Undo escaped-CJK name mangling such as ``Moss-nai5-/u5176/u4e09``.
+
+    Some upstream tooling serialized non-ASCII filenames with ``backslash-u``
+    sequences but then stripped the backslashes, leaving literal ``/u5176/u4e09``
+    path segments that can never match a real file. Decoding them back to the
+    original characters is what makes ``Moss-nai5-其三.safetensors`` loadable.
+    """
+    raw = str(name or "").strip()
+    if not raw:
+        return ""
+
+    lowered = raw.lower()
+    if "/u" not in lowered and "\\u" not in lowered:
+        return raw.replace("\\", "/")
+
+    def _decode_run(match: re.Match) -> str:
+        hexes = re.findall(r"[0-9a-fA-F]{4}", match.group(0))
+        try:
+            return "".join(chr(int(h, 16)) for h in hexes)
+        except (ValueError, OverflowError):
+            return match.group(0)
+
+    # One or more consecutive /uXXXX or \uXXXX escapes -> the real characters.
+    repaired = re.sub(r"(?:[/\\]u[0-9a-fA-F]{4})+", _decode_run, raw)
+    return repaired.replace("\\", "/")
+
+
 def resolve_lora_rel_path(lora_name: Any) -> str:
     """Resolve a stored LoRA reference to a real relative path.
 
     Presets saved from generated images often store a bare name such as
     ``YumingLiArt_v1_MOSS`` while the file actually lives at
     ``Moss/YumingLiArt_v1_MOSS.safetensors``. This bridges the two so preview
-    images and trigger words still resolve.
+    images and trigger words still resolve. Escaped-CJK names are repaired first.
     """
-    raw = str(lora_name or "").strip().replace("\\", "/")
+    raw = repair_lora_name(lora_name)
     if not raw:
         return ""
     index = _lora_name_index()
@@ -726,7 +754,8 @@ def extract_loras_from_image_bytes(raw: bytes, filename: str = "") -> dict[str, 
     def add_lora(name: Any, sm: Any = 1.0, sc: Any = None, enabled: bool = True, source: str = ""):
         if not name:
             return
-        name_clean = str(name).strip().replace("\\", "/")
+        # Repair escaped-CJK first: some sources serialize 「其三」as /u5176/u4e09.
+        name_clean = repair_lora_name(name)
         if not name_clean or name_clean.lower() in ("none", "null", "undefined"):
             return
         norm_key = name_clean.lower()
@@ -1043,6 +1072,49 @@ class LoraPresetStore:
             )
             self._conn.commit()
             self._ensure_builtins()
+            self._repair_mangled_lora_names()
+
+    def _repair_mangled_lora_names(self) -> int:
+        """Rewrite presets whose LoRA names were stored as escaped ``/uXXXX``.
+
+        Older builds persisted names like ``Moss-nai5-/u5176/u4e09`` which can
+        never match a file on disk, so the node silently dropped those LoRAs and
+        the rendered image changed. This runs once per process and rewrites them
+        in place, leaving untouched presets untouched.
+        """
+        repaired_count = 0
+        cur = self._conn.execute("SELECT id, loras FROM lora_presets")
+        for row in cur.fetchall():
+            raw = row["loras"]
+            if not raw or "/u" not in raw.lower():
+                continue
+            try:
+                loras = json.loads(raw)
+            except Exception:
+                continue
+            if not isinstance(loras, list):
+                continue
+
+            changed = False
+            for item in loras:
+                if not isinstance(item, dict):
+                    continue
+                original = str(item.get("name") or "")
+                fixed = repair_lora_name(original)
+                if fixed != original:
+                    item["name"] = fixed
+                    changed = True
+            if changed:
+                self._conn.execute(
+                    "UPDATE lora_presets SET loras = ? WHERE id = ?",
+                    (json.dumps(loras, ensure_ascii=False), row["id"]),
+                )
+                repaired_count += 1
+
+        if repaired_count:
+            self._conn.commit()
+            logger.info("Repaired escaped LoRA names in %d preset(s).", repaired_count)
+        return repaired_count
 
     def _ensure_builtins(self) -> None:
         now = time.time()
@@ -1079,7 +1151,49 @@ class LoraPresetStore:
             self._conn.execute("DELETE FROM deleted_builtin_loras")
             self._conn.commit()
             self._ensure_builtins()
+            self._repair_mangled_lora_names()
             return len(BUILTIN_LORA_PRESETS)
+
+    def _repair_mangled_lora_names(self) -> int:
+        """Rewrite presets whose LoRA names were stored as escaped ``/uXXXX``.
+
+        Older builds persisted names like ``Moss-nai5-/u5176/u4e09`` which can
+        never match a file on disk, so the node silently dropped those LoRAs and
+        the rendered image changed. This rewrites them in place.
+        """
+        repaired_count = 0
+        cur = self._conn.execute("SELECT id, loras FROM lora_presets")
+        for row in cur.fetchall():
+            raw = row["loras"]
+            if not raw or "/u" not in raw.lower():
+                continue
+            try:
+                loras = json.loads(raw)
+            except Exception:
+                continue
+            if not isinstance(loras, list):
+                continue
+
+            changed = False
+            for item in loras:
+                if not isinstance(item, dict):
+                    continue
+                original = str(item.get("name") or "")
+                fixed = repair_lora_name(original)
+                if fixed != original:
+                    item["name"] = fixed
+                    changed = True
+            if changed:
+                self._conn.execute(
+                    "UPDATE lora_presets SET loras = ? WHERE id = ?",
+                    (json.dumps(loras, ensure_ascii=False), row["id"]),
+                )
+                repaired_count += 1
+
+        if repaired_count:
+            self._conn.commit()
+            logger.info("Repaired escaped LoRA names in %d preset(s).", repaired_count)
+        return repaired_count
 
     def close(self) -> None:
         with self._lock:
@@ -1188,8 +1302,9 @@ class LoraPresetStore:
             clean_loras = []
             for item in loras:
                 if isinstance(item, dict):
+                    clean_name = repair_lora_name(item.get("name"))
                     clean_loras.append({
-                        "name": str(item.get("name") or "").strip(),
+                        "name": clean_name,
                         "strength_model": float(item.get("strength_model", 1.0)),
                         "strength_clip": float(item.get("strength_clip", 1.0)),
                         "enabled": bool(item.get("enabled", True)),
@@ -1198,7 +1313,7 @@ class LoraPresetStore:
                     m_str = float(item[1]) if len(item) > 1 else 1.0
                     c_str = float(item[2]) if len(item) > 2 else m_str
                     clean_loras.append({
-                        "name": str(item[0]).strip(),
+                        "name": repair_lora_name(item[0]),
                         "strength_model": m_str,
                         "strength_clip": c_str,
                         "enabled": True,
