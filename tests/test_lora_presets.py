@@ -16,6 +16,7 @@ from prompt_studio.lora_presets import (
     detect_lora_model_type,
     lora_manager_cache_path,
     lora_manager_status,
+    _same_lora_identity,
     preset_model_type,
     repair_lora_name,
     resolve_lora_rel_path,
@@ -368,6 +369,91 @@ class EscapedLoraNameRepairTests(unittest.TestCase):
         finally:
             store.close()
             tmpdir.cleanup()
+
+
+class LoraIdentityTests(unittest.TestCase):
+    """Distinct files must never be collapsed into one another."""
+
+    def test_copy_suffix_is_a_different_lora(self):
+        # These are two separate files on disk; treating them as equal made the
+        # node load one file twice and silently double its weight.
+        self.assertFalse(_same_lora_identity("KOOK-MOSS-SFT-观澜", "KOOK-MOSS-SFT-观澜(1)"))
+        self.assertFalse(_same_lora_identity("style", "style(2)"))
+        self.assertFalse(_same_lora_identity("style [v2]", "style"))
+
+    def test_pure_decoration_differences_still_match(self):
+        self.assertTrue(_same_lora_identity("my_style", "my style"))
+        self.assertTrue(_same_lora_identity("my-style", "my.style"))
+
+    def test_empty_names_never_match(self):
+        self.assertFalse(_same_lora_identity("", ""))
+        self.assertFalse(_same_lora_identity("a", ""))
+
+    def test_resolve_does_not_merge_sibling_loras(self):
+        # resolve_lora_rel_path must not map a bare name onto a "(1)" copy.
+        from prompt_studio import lora_presets as lp
+
+        lp.invalidate_lora_cache()
+        a = resolve_lora_rel_path("definitely_absent_观澜")
+        b = resolve_lora_rel_path("definitely_absent_观澜(1)")
+        self.assertNotEqual(a.lower(), b.lower())
+
+
+class TriggerWordSourceTests(unittest.TestCase):
+    """Civitai ``tags`` are category labels, not prompt words."""
+
+    def test_tags_are_not_used_as_trigger_words(self):
+        import json
+        import os
+
+        from prompt_studio import lora_presets as lp
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "loras"
+            root.mkdir()
+            model = root / "no_words.safetensors"
+            model.write_bytes(b"x")
+            meta = root / "no_words.metadata.json"
+            meta.write_text(
+                json.dumps({
+                    "trainedWords": [],
+                    "civitai": {"trainedWords": []},
+                    "tags": ["anime", "style", "moss"],
+                }),
+                encoding="utf-8",
+            )
+
+            old_roots = lp._lora_roots
+            lp._lora_roots = lambda: [str(root)]
+            lp.invalidate_lora_cache()
+            try:
+                self.assertEqual(lp.get_lora_trigger_words("no_words.safetensors"), "")
+            finally:
+                lp._lora_roots = old_roots
+                lp.invalidate_lora_cache()
+
+    def test_real_trained_words_still_returned(self):
+        import json
+
+        from prompt_studio import lora_presets as lp
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "loras"
+            root.mkdir()
+            (root / "has_words.safetensors").write_bytes(b"x")
+            (root / "has_words.metadata.json").write_text(
+                json.dumps({"civitai": {"trainedWords": ["@ashima", "v1"]}}),
+                encoding="utf-8",
+            )
+
+            old_roots = lp._lora_roots
+            lp._lora_roots = lambda: [str(root)]
+            lp.invalidate_lora_cache()
+            try:
+                self.assertEqual(lp.get_lora_trigger_words("has_words.safetensors"), "@ashima, v1")
+            finally:
+                lp._lora_roots = old_roots
+                lp.invalidate_lora_cache()
 
 
 if __name__ == "__main__":

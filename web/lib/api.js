@@ -152,10 +152,11 @@ export class StudioApi {
     return this.request("/capabilities");
   }
 
-  edit({ message, target, mode, model, images, session_id, create_session, allow_empty, canvas } = {}) {
+  edit({ message, target, mode, model, images, session_id, create_session, allow_empty, canvas } = {}, { signal } = {}) {
     return this.request("/edit", {
       method: "POST",
       body: { message, target, mode, model, images, session_id, create_session, allow_empty, canvas },
+      signal,
     });
   }
 

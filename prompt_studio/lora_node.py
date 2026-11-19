@@ -184,6 +184,10 @@ class AIPromptStudioLoraNode:
         active_loras: list[tuple[str, float, float]] = []
         syntax_tags: list[str] = []
         collected_tw: list[str] = []
+        # Two preset entries that resolve to the SAME file would silently
+        # double that LoRA's effective weight. Track the resolved target so a
+        # repeated file is applied once (the requested maxima win).
+        applied_index: dict[str, int] = {}
 
         for item in loras_to_apply:
             if not isinstance(item, dict):
@@ -197,6 +201,20 @@ class AIPromptStudioLoraNode:
             m_str = round(float(item.get("strength_model", 1.0)) * float(model_strength_scale), 3)
             c_str = round(float(item.get("strength_clip", 1.0)) * float(clip_strength_scale), 3)
 
+            dedupe_key = resolved_name.replace("\\", "/").lower()
+            if dedupe_key in applied_index:
+                idx = applied_index[dedupe_key]
+                prev_name, prev_m, prev_c = active_loras[idx]
+                # Keep the stronger request rather than stacking it twice.
+                active_loras[idx] = (prev_name, max(prev_m, m_str), max(prev_c, c_str))
+                logger.debug(
+                    "[AIPromptStudioLoraNode] '%s' 与 '%s' 指向同一文件，已合并为一次加载。",
+                    name,
+                    prev_name,
+                )
+                continue
+
+            applied_index[dedupe_key] = len(active_loras)
             active_loras.append((resolved_name, m_str, c_str))
             syntax_tags.append(f"<lora:{resolved_name}:{m_str}>")
 

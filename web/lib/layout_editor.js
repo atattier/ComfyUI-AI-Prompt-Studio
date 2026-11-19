@@ -1478,6 +1478,8 @@ export function openLayoutEditor({
   let busyActionTooltip = "";
   let busyTimer = null;
   let streamController = null;
+  let editController = null;
+  const activeController = () => streamController || editController;
 
   const overlay = el("div", "aps-modal-overlay");
   overlay.setAttribute("role", "dialog");
@@ -2157,7 +2159,9 @@ export function openLayoutEditor({
   const stopStreamBtn = el("button", "aps-btn", "⏹ 停止");
   stopStreamBtn.type = "button";
   stopStreamBtn.hidden = true;
-  stopStreamBtn.addEventListener("click", () => streamController?.abort());
+  stopStreamBtn.addEventListener("click", () => {
+    activeController()?.abort();
+  });
 
   const sendBtn = el("button", "aps-btn aps-primary aps-wb-send-btn", "发送改词 ✦");
   sendBtn.type = "button";

@@ -499,12 +499,44 @@ def resolve_lora_rel_path(lora_name: Any) -> str:
     if base.lower() in index:
         return index[base.lower()]
 
-    # Last resort: suffix/contains match on the stem
+    # Fuzzy fallback. This MUST NOT collapse two distinct files into one:
+    # "KOOK-MOSS-SFT-观澜" and "KOOK-MOSS-SFT-观澜(1)" are different LoRAs, and
+    # a plain substring test would map the first onto the second, making the
+    # node load the same file twice. So only whole-token variants are accepted.
     lowered = base.lower()
-    candidates = [v for k, v in index.items() if lowered and lowered in k]
-    if candidates:
-        return sorted(candidates, key=len)[0]
+    candidates = []
+    for key, rel in index.items():
+        if not lowered or key.startswith("~"):
+            continue
+        stem_key = os.path.basename(os.path.splitext(key)[0])
+        # Accept only when the difference is pure decoration: punctuation,
+        # brackets, spaces, or a duplicate-copy marker like " (1)".
+        if _same_lora_identity(stem_key, lowered):
+            candidates.append(rel)
+    unique = sorted(set(candidates), key=len)
+    if len(unique) == 1:
+        return unique[0]
     return raw
+
+
+_DECORATION_RE = re.compile(r"[\s_\-.]+")
+
+
+def _same_lora_identity(a: str, b: str) -> bool:
+    """True only when two names differ by whitespace/underscore/hyphen alone.
+
+    Deliberately strict: ``观澜`` vs ``观澜(1)`` must NOT match, because a
+    ``(1)`` copy suffix means a *separate* file on disk. Treating them as the
+    same made the node load one file twice and double its strength.
+    """
+    if not a or not b:
+        return False
+    if a == b:
+        return True
+    # A differing copy marker / bracket means a genuinely different file.
+    if re.search(r"[()\[\]{}（）【】]", a) or re.search(r"[()\[\]{}（）【】]", b):
+        return False
+    return _DECORATION_RE.sub("", a) == _DECORATION_RE.sub("", b)
 
 
 def _sidecar_candidates(full_path: str) -> list[str]:
@@ -567,15 +599,23 @@ def get_lora_trigger_words(lora_rel_path: str) -> str:
                 data = json.load(fp)
             if not isinstance(data, dict):
                 continue
+            civitai = data.get("civitai") if isinstance(data.get("civitai"), dict) else {}
+            # Only real trained words. Never fall back to ``tags``: those are
+            # Civitai category labels ("anime", "style", "moss"), not prompts.
+            # Injecting them silently changes the image.
             tw = (
-                data.get("civitai", {}).get("trainedWords")
+                civitai.get("trainedWords")
                 or data.get("trainedWords")
                 or data.get("trigger_words")
                 or data.get("triggerWords")
-                or data.get("tags")
             )
-            if tw:
-                return tw if isinstance(tw, str) else ", ".join(str(w) for w in tw if w)
+            if isinstance(tw, list):
+                tw = [str(w).strip() for w in tw if str(w).strip()]
+                if not tw:
+                    continue
+                return ", ".join(tw)
+            if isinstance(tw, str) and tw.strip():
+                return tw.strip()
         except Exception:
             pass
 

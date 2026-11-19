@@ -3337,11 +3337,20 @@ function mountRichCard(node, statusEl) {
   const chatTargetBar = el("div", "aps-target-lock-bar is-global");
 
   const chatRow = el("div", "aps-node-chat-row");
+  let inlineEditController = null;
   const chatInput = el("input", "aps-input aps-node-chat-input");
   chatInput.type = "text";
   chatInput.placeholder = "输入改词要求、回答 AI 反问或提问（点选画框可 @引用 局部修改，回车发送）…";
   const chatSend = el("button", "aps-btn aps-accent aps-btn-sm", "发送 ✦");
   chatSend.type = "button";
+  const chatStop = el("button", "aps-btn aps-btn-sm aps-node-chat-stop", "⏹ 终止");
+  chatStop.type = "button";
+  chatStop.hidden = true;
+  chatStop.title = "立即中止本次 AI 请求（已生成的部分会保留）";
+  chatStop.addEventListener("click", () => {
+    inlineEditController?.abort();
+    statusEl.textContent = "正在终止本次请求…";
+  });
   chatInput.addEventListener("keydown", (ev) => {
     if (ev.key === "Enter") {
       ev.preventDefault();
@@ -3359,7 +3368,7 @@ function mountRichCard(node, statusEl) {
       void runInlineEdit(val, val);
     }
   });
-  chatRow.append(chatInput, chatSend);
+  chatRow.append(chatInput, chatStop, chatSend);
 
   // ---- Built-in Three-Mode Prompt Rules Panel (.aps-node-rules-panel) ----
   const rulesPanel = el("div", "aps-node-rules-panel");
@@ -4278,6 +4287,8 @@ function mountRichCard(node, statusEl) {
     });
     statusEl.textContent = busyText;
     statusLine.title = fullBusyText;
+    const controller = typeof AbortController === "function" ? new AbortController() : null;
+    inlineEditController = controller;
     node._apsSetBusy?.(true, busyText, false, fullBusyText);
     try {
       let imgUrl = node._apsImageDataUrl || null;
@@ -4288,23 +4299,26 @@ function mountRichCard(node, statusEl) {
           imgUrl = null;
         }
       }
-      const res = await api.edit({
-        message: effectiveMessage,
-        mode: effectiveEditMode,
-        target: {
-          node_id: node.id,
-          widget: targetRegionItem ? `region_${targetRegionIdx}` : "caption",
-          title: targetRegionItem
-            ? `区域画框 #${targetRegionIdx + 1} (${regDisplayName})`
-            : node.title || "AI 图像反推提示词",
-          text: currentText,
+      const res = await api.edit(
+        {
+          message: effectiveMessage,
+          mode: effectiveEditMode,
+          target: {
+            node_id: node.id,
+            widget: targetRegionItem ? `region_${targetRegionIdx}` : "caption",
+            title: targetRegionItem
+              ? `区域画框 #${targetRegionIdx + 1} (${regDisplayName})`
+              : node.title || "AI 图像反推提示词",
+            text: currentText,
+          },
+          images: imgUrl ? [{ data_url: imgUrl }] : undefined,
+          session_id: reqSessionId,
+          create_session: true,
+          allow_empty: true,
+          canvas: { width: Number(stateBefore.width) || 1024, height: Number(stateBefore.height) || 1024 },
         },
-        images: imgUrl ? [{ data_url: imgUrl }] : undefined,
-        session_id: reqSessionId,
-        create_session: true,
-        allow_empty: true,
-        canvas: { width: Number(stateBefore.width) || 1024, height: Number(stateBefore.height) || 1024 },
-      });
+        { signal: controller?.signal },
+      );
       if (res.session_id) {
         const stSid = readPayload(node);
         setThreadSessionId(stSid, reqThreadId, res.session_id, { maxTurns: 20 });
@@ -4541,28 +4555,46 @@ function mountRichCard(node, statusEl) {
         node.setDirtyCanvas?.(true, true);
       }
     } catch (err) {
-      const { friendly: errMsg, tech: errTech } = reportNodeError(statusEl, err, "AI 改词");
-      const curSt = readPayload(node);
-      ensureChatThreads(curSt, { maxTurns: 20 });
-      const curT = curSt.chat_threads?.find((t) => t.id === reqThreadId);
-      const curLog = Array.isArray(curT?.chat_log) ? curT.chat_log : existingTurns;
-      saveChatLog(
-        curLog.map((t) =>
-          t.id === turnId
-            ? {
-                ...draftTurn,
-                pending: false,
-                changed: false,
-                error: true,
-                reply: errMsg,
-                errorDetail: errTech || "",
-              }
-            : t,
-        ),
-        reqThreadId,
-      );
-      renderChatLog();
+      if (err?.name === "AbortError") {
+        const curSt = readPayload(node);
+        ensureChatThreads(curSt, { maxTurns: 20 });
+        const curT = curSt.chat_threads?.find((t) => t.id === reqThreadId);
+        const curLog = Array.isArray(curT?.chat_log) ? curT.chat_log : existingTurns;
+        const abortedTurn = {
+          ...draftTurn,
+          pending: false,
+          changed: false,
+          error: false,
+          reply: "⏹ 已终止本次请求，提示词保持原样未改动。",
+        };
+        saveChatLog(curLog.map((t) => (t.id === turnId ? abortedTurn : t)), reqThreadId);
+        statusEl.textContent = "⏹ 已终止本次请求。";
+        renderChatLog();
+      } else {
+        const { friendly: errMsg, tech: errTech } = reportNodeError(statusEl, err, "AI 改词");
+        const curSt = readPayload(node);
+        ensureChatThreads(curSt, { maxTurns: 20 });
+        const curT = curSt.chat_threads?.find((t) => t.id === reqThreadId);
+        const curLog = Array.isArray(curT?.chat_log) ? curT.chat_log : existingTurns;
+        saveChatLog(
+          curLog.map((t) =>
+            t.id === turnId
+              ? {
+                  ...draftTurn,
+                  pending: false,
+                  changed: false,
+                  error: true,
+                  reply: errMsg,
+                  errorDetail: errTech || "",
+                }
+              : t,
+          ),
+          reqThreadId,
+        );
+        renderChatLog();
+      }
     } finally {
+      inlineEditController = null;
       node._apsSetBusy?.(false);
     }
   }
@@ -4954,6 +4986,8 @@ function mountRichCard(node, statusEl) {
     btnReverse.disabled = nodeBusy;
     if (typeof btnImportComplete !== "undefined") btnImportComplete.disabled = nodeBusy;
     chatSend.disabled = nodeBusy;
+    chatStop.hidden = !inlineEditController;
+    chatStop.disabled = !inlineEditController;
     chatNewBtn.disabled = nodeBusy;
     chatClearBtn.disabled = nodeBusy;
     imagineGo.disabled = nodeBusy;
