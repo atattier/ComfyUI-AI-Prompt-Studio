@@ -5752,7 +5752,9 @@ details.aps-adv[open] > summary { margin-bottom: 8px; }
   flex-direction: column;
   gap: 7px;
   width: 100%;
+  /* Height is driven by JS (applyCardGeometry) so it tracks node resizes. */
   height: 100%;
+  min-height: 0;
   padding: 8px 10px;
   border-radius: var(--aps-radius);
   border: 1px solid var(--aps-border);
@@ -5869,13 +5871,16 @@ details.aps-adv[open] > summary { margin-bottom: 8px; }
   display: flex;
   flex-direction: column;
   gap: 6px;
-  flex: 1;
-  min-height: 110px;
+  flex: 1 1 0;
+  min-height: 90px;
+  /* Without this a flex child refuses to shrink and the card overflows. */
   overflow-y: auto;
+  overflow-x: hidden;
   padding: 5px 6px;
   background: var(--aps-surface-0);
   border-radius: var(--aps-radius-sm);
   border: 1px solid var(--aps-border);
+  scrollbar-width: thin;
 }
 
 .aps-lora-item {

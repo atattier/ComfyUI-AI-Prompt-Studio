@@ -12,16 +12,16 @@
  */
 
 import { app } from "../../scripts/app.js";
-import { StudioApi } from "./lib/api.js?v=20261119_v47";
+import { StudioApi } from "./lib/api.js?v=20261119_v48";
 import {
   openSaveLoraPresetModal,
   openLoraPresetLibraryModal,
   openLoraPresetLightbox,
   buildLoraSyntaxString,
-} from "./lib/lora_editor.js?v=20261119_v47";
+} from "./lib/lora_editor.js?v=20261119_v48";
 
 const NODE_TYPE = "AIPromptStudioLora";
-const STYLE_VERSION = "20261119_v47";
+const STYLE_VERSION = "20261119_v48";
 
 function mountStyles() {
   if (typeof document === "undefined") return;
@@ -103,10 +103,56 @@ function hideRawWidgets(node) {
   }
 }
 
-function computeTargetCardHeight(node, domWidget) {
+const MIN_CARD_HEIGHT = 340;
+
+/**
+ * Height the card should occupy.
+ *
+ * The old implementation derived this from `domWidget.y`, which in the current
+ * ComfyUI frontend is a canvas-space coordinate (it includes the title bar and
+ * every hidden widget's offset). As the node grew, `nodeH - widgetY` went
+ * negative and the value was clamped to the 340px floor forever, so the card
+ * could never grow when the node was dragged taller.
+ *
+ * We now measure the real laid-out wrapper instead: whatever space ComfyUI
+ * actually gave the DOM widget is what the card fills.
+ */
+function measureAvailableHeight(node, card, domWidget) {
+  const wrapper = card?.parentElement;
+  if (wrapper && typeof wrapper.getBoundingClientRect === "function") {
+    const box = wrapper.getBoundingClientRect();
+    const scale = Number(node?.graph?.canvas?.ds?.scale) || 1;
+    // clientHeight is scale-independent; prefer it when non-zero.
+    const rawH = wrapper.clientHeight || (box.height ? box.height / scale : 0);
+    if (Number.isFinite(rawH) && rawH >= MIN_CARD_HEIGHT) {
+      return Math.round(rawH);
+    }
+  }
+
   const [, nodeH] = getNodeSize(node);
-  const widgetY = (domWidget && Number(domWidget.y || domWidget.last_y)) || 36;
-  return Math.max(340, Math.round(nodeH - widgetY - 12));
+  const offset = Number(domWidget?.y ?? domWidget?.last_y ?? 0);
+  // Only trust the offset when it looks like a within-node top margin.
+  const safeOffset = Number.isFinite(offset) && offset >= 0 && offset < nodeH ? offset : 0;
+  return Math.max(MIN_CARD_HEIGHT, Math.round(nodeH - safeOffset - 12));
+}
+
+function applyCardGeometry(node, card, domWidget) {
+  const targetH = measureAvailableHeight(node, card, domWidget);
+  // Guard: rewriting the same height would retrigger the ResizeObserver forever.
+  if (node._apsAppliedH !== targetH) {
+    node._apsAppliedH = targetH;
+    card.style.setProperty("height", `${targetH}px`, "important");
+    card.style.setProperty("min-height", `${MIN_CARD_HEIGHT}px`, "important");
+    if (domWidget && domWidget.computedHeight !== targetH + 12) {
+      domWidget.computedHeight = targetH + 12;
+    }
+  }
+  // Keep the widget's reported layout range in sync so the node reserves the space.
+  domWidget.computeLayoutSize = () => ({
+    minHeight: MIN_CARD_HEIGHT,
+    maxHeight: undefined,
+    minWidth: 0,
+  });
 }
 
 function ensureParentOverflowVisible(card) {
@@ -120,19 +166,13 @@ function ensureParentOverflowVisible(card) {
       if (depth === 0) {
         p.style.display = "flex";
         p.style.flexDirection = "column";
+        // Filling the wrapper is what lets the card track node resizes.
+        p.style.height = "100%";
+        p.style.minHeight = "0";
       }
     }
     p = p.parentElement;
     depth++;
-  }
-}
-
-function applyCardGeometry(node, card, domWidget) {
-  const targetH = computeTargetCardHeight(node, domWidget);
-  card.style.setProperty("height", `${targetH}px`, "important");
-  card.style.setProperty("min-height", `${targetH}px`, "important");
-  if (domWidget) {
-    domWidget.computedHeight = targetH + 12;
   }
 }
 
@@ -1180,6 +1220,33 @@ export function setupLoraNode(node) {
     applyCardGeometry(node, card, domWidget);
   };
 
+  // Observe the real laid-out wrapper: this fires for every drag step of the
+  // node's resize handle, not just on the next canvas repaint.
+  let resizeObserver = null;
+  let rafPending = false;
+  const scheduleGeometry = () => {
+    if (rafPending) return;
+    rafPending = true;
+    requestAnimationFrame(() => {
+      rafPending = false;
+      node._apsOnResize?.();
+    });
+  };
+
+  const wrapper = card.parentElement;
+  if (wrapper && typeof ResizeObserver === "function") {
+    resizeObserver = new ResizeObserver(scheduleGeometry);
+    resizeObserver.observe(wrapper);
+  }
+
+  const origRemoved = node.onRemoved;
+  node.onRemoved = function (...args) {
+    try {
+      resizeObserver?.disconnect();
+    } catch {}
+    return origRemoved?.apply(this, args);
+  };
+
   const origDraw = node.onDrawForeground;
   node.onDrawForeground = function (...args) {
     hideRawWidgets(node);
@@ -1192,15 +1259,18 @@ export function setupLoraNode(node) {
     return origDraw?.apply(this, args);
   };
 
-  // Immediate layout sync
+  // Immediate layout sync + a few delayed passes: ComfyUI lays out the DOM
+  // widget asynchronously after mount, so the first measurement can be zero.
   hideRawWidgets(node);
   ensureParentOverflowVisible(card);
   applyCardGeometry(node, card, domWidget);
-  setTimeout(() => {
-    hideRawWidgets(node);
-    ensureParentOverflowVisible(card);
-    applyCardGeometry(node, card, domWidget);
-  }, 80);
+  [80, 240, 600].forEach((delay) =>
+    setTimeout(() => {
+      hideRawWidgets(node);
+      ensureParentOverflowVisible(card);
+      applyCardGeometry(node, card, domWidget);
+    }, delay)
+  );
 
   // Load data
   initData();
