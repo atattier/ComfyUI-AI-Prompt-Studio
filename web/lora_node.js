@@ -611,6 +611,9 @@ export function setupLoraNode(node) {
     twPreview.title = activeTw;
 
     const payload = {
+      // Tag the stack with its owning preset so a stale widget can be detected
+      // on the next graph load instead of silently overriding the dropdown.
+      preset_name: presetSelect.value || presetWidget?.value || "",
       loras: currentStack.map((item) => ({
         name: resolveLoraPath(item.name),
         display_name: item.name,
@@ -1019,19 +1022,27 @@ export function setupLoraNode(node) {
   function loadStackFromWidgets() {
     let parsedStack = [];
 
-    // Try custom_stack_json
+    // Only trust a JSON stack that actually belongs to the currently selected
+    // preset. The widget survives graph reloads, so it routinely holds a stale
+    // stack from a *different* preset — trusting it blindly made the node run
+    // one preset while the dropdown said another.
     if (customJsonWidget?.value) {
       try {
         const raw = JSON.parse(customJsonWidget.value);
-        if (Array.isArray(raw)) {
-          parsedStack = raw;
-        } else if (raw && Array.isArray(raw.loras)) {
-          parsedStack = raw.loras;
+        const payload = Array.isArray(raw) ? { loras: raw } : raw;
+        if (payload && Array.isArray(payload.loras)) {
+          const payloadPreset = String(payload.preset_name || "").trim();
+          const selectedPreset = String(presetWidget?.value || "").trim();
+          const belongs = payloadPreset && selectedPreset
+            ? payloadPreset === selectedPreset
+            : true; // legacy payloads carry no preset tag
+          if (belongs) parsedStack = payload.loras;
         }
       } catch {}
     }
 
-    // If custom stack has items, use them
+    // If the JSON stack matches the selected preset, use it (preserves manual
+    // per-row weight edits the user made in the card).
     if (parsedStack.length > 0) {
       currentStack = parsedStack.map((item) => ({
         name: repairLoraName(item.name || "未命名"),

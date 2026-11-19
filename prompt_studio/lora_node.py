@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from typing import Any
 
 from .lora_presets import (
@@ -130,10 +131,15 @@ class AIPromptStudioLoraNode:
         }
 
     RETURN_TYPES = ("MODEL", "CLIP", "LORA_STACK", "STRING", "STRING")
-    RETURN_NAMES = ("MODEL", "CLIP", "lora_stack", "trigger_words", "lora_syntax")
+    RETURN_NAMES = ("模型", "CLIP", "lora_stack", "trigger_words", "lora_syntax")
     FUNCTION = "execute"
     CATEGORY = "AI Prompt Studio"
-    DESCRIPTION = "独立 LoRA 预设与多重堆叠器：一键加载/保存多重 LoRA 组合配置，支持按序加载至模型或输出标准 LoRA 堆叠数据与触发词。"
+    DESCRIPTION = (
+        "独立 LoRA 预设与多重堆叠器。"
+        "两种用法二选一：① 接 model/clip，本节点直接应用 LoRA 并输出处理后的模型；"
+        "② 不接 model/clip，只把 lora_stack 交给下游 LoRA 加载器应用。"
+        "若同时接了 model/clip 又把 lora_stack 接给下游加载器，LoRA 会被重复应用两次。"
+    )
 
     def execute(
         self,
@@ -148,6 +154,7 @@ class AIPromptStudioLoraNode:
     ):
         loras_to_apply: list[dict[str, Any]] = []
         trigger_words_base: str = ""
+        json_preset_name = ""
 
         # 1. Try reading custom_stack_json if provided
         custom_json_str = str(custom_stack_json or "").strip()
@@ -159,8 +166,28 @@ class AIPromptStudioLoraNode:
                 elif isinstance(parsed, dict):
                     loras_to_apply = parsed.get("loras") or []
                     trigger_words_base = str(parsed.get("trigger_words") or "")
+                    json_preset_name = str(parsed.get("preset_name") or "").strip()
             except Exception:
                 pass
+
+        # 1b. A JSON stack that names a *different* preset is stale: the widget
+        # survives graph reloads, so it often still holds the previous preset's
+        # rows. Honouring it made the node render one preset while the dropdown
+        # showed another. Discard it and fall through to the chosen preset.
+        stale_json = bool(
+            loras_to_apply
+            and json_preset_name
+            and preset_name
+            and json_preset_name != preset_name
+        )
+        if stale_json:
+            logger.info(
+                "[AIPromptStudioLoraNode] 忽略与当前选择不符的旧堆叠 JSON（JSON=%r，节点=%r），改用预设内容。",
+                json_preset_name,
+                preset_name,
+            )
+            loras_to_apply = []
+            trigger_words_base = ""
 
         # 2. Fallback to reading from preset store
         if not loras_to_apply:
@@ -232,6 +259,24 @@ class AIPromptStudioLoraNode:
                 "[AIPromptStudioLoraNode] 以下 %d 个 LoRA 在 models/loras 中找不到，已自动跳过：%s",
                 len(missing),
                 ", ".join(missing),
+            )
+
+        # 3c. Always log the exact stack that will be applied. Without this the
+        # user has no way to tell which of the two LoRA nodes in the graph is
+        # actually shaping the image.
+        logger.info(
+            "[AIPromptStudioLoraNode] 预设=%r 生效堆叠 (%d 个): %s",
+            preset_name,
+            len(active_loras),
+            " | ".join(
+                f"{os.path.basename(n)}@{m}" for n, m, _ in active_loras
+            ) or "(空)",
+        )
+        if missing:
+            logger.info(
+                "[AIPromptStudioLoraNode] 跳过 %d 个缺失文件：%s",
+                len(missing),
+                ", ".join(os.path.basename(n) for n in missing),
             )
 
         # 4. Construct lora_stack (combine with upstream)
