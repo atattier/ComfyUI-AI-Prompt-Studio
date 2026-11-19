@@ -5752,7 +5752,7 @@ details.aps-adv[open] > summary { margin-bottom: 8px; }
   flex-direction: column;
   gap: 7px;
   width: 100%;
-  /* Height is driven by JS (applyCardGeometry) so it tracks node resizes. */
+  /* JS sets height:100% so the card tracks the node box; never a fixed px. */
   height: 100%;
   min-height: 0;
   padding: 8px 10px;
@@ -5766,6 +5766,11 @@ details.aps-adv[open] > summary { margin-bottom: 8px; }
   font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   font-size: var(--aps-text-md);
   transition: border-color var(--aps-dur-base) ease, box-shadow var(--aps-dur-base) ease;
+}
+
+/* Chrome rows must never eat the scrollable list's space. */
+.aps-lora-node-card > * {
+  min-height: 0;
 }
 .aps-lora-node-card:hover {
   border-color: var(--aps-border-strong);

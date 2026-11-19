@@ -12,16 +12,16 @@
  */
 
 import { app } from "../../scripts/app.js";
-import { StudioApi } from "./lib/api.js?v=20261119_v48";
+import { StudioApi } from "./lib/api.js?v=20261119_v49";
 import {
   openSaveLoraPresetModal,
   openLoraPresetLibraryModal,
   openLoraPresetLightbox,
   buildLoraSyntaxString,
-} from "./lib/lora_editor.js?v=20261119_v48";
+} from "./lib/lora_editor.js?v=20261119_v49";
 
 const NODE_TYPE = "AIPromptStudioLora";
-const STYLE_VERSION = "20261119_v48";
+const STYLE_VERSION = "20261119_v49";
 
 function mountStyles() {
   if (typeof document === "undefined") return;
@@ -106,48 +106,44 @@ function hideRawWidgets(node) {
 const MIN_CARD_HEIGHT = 340;
 
 /**
- * Height the card should occupy.
+ * The card fills whatever box ComfyUI lays out for the DOM widget.
  *
- * The old implementation derived this from `domWidget.y`, which in the current
- * ComfyUI frontend is a canvas-space coordinate (it includes the title bar and
- * every hidden widget's offset). As the node grew, `nodeH - widgetY` went
- * negative and the value was clamped to the 340px floor forever, so the card
- * could never grow when the node was dragged taller.
+ * Previously the height came from `domWidget.y`, which in the current frontend
+ * is a canvas-space offset (title bar + hidden widgets included). As the node
+ * grew, `nodeH - widgetY` went negative and was clamped to the 340px floor, so
+ * the card could never follow the node. Measuring the wrapper and feeding that
+ * back into `computedHeight` is worse still: each pass re-adds the offset and
+ * the box creeps.
  *
- * We now measure the real laid-out wrapper instead: whatever space ComfyUI
- * actually gave the DOM widget is what the card fills.
+ * So: the wrapper is stretched to 100%, the card is 100% of the wrapper, and the
+ * stack list owns the remaining space with its own scrollbar. Node resizes then
+ * propagate purely through CSS with no JS measurement in the loop.
  */
-function measureAvailableHeight(node, card, domWidget) {
-  const wrapper = card?.parentElement;
-  if (wrapper && typeof wrapper.getBoundingClientRect === "function") {
-    const box = wrapper.getBoundingClientRect();
-    const scale = Number(node?.graph?.canvas?.ds?.scale) || 1;
-    // clientHeight is scale-independent; prefer it when non-zero.
-    const rawH = wrapper.clientHeight || (box.height ? box.height / scale : 0);
-    if (Number.isFinite(rawH) && rawH >= MIN_CARD_HEIGHT) {
-      return Math.round(rawH);
-    }
-  }
-
+function nodeDerivedHeight(node, domWidget) {
   const [, nodeH] = getNodeSize(node);
   const offset = Number(domWidget?.y ?? domWidget?.last_y ?? 0);
-  // Only trust the offset when it looks like a within-node top margin.
   const safeOffset = Number.isFinite(offset) && offset >= 0 && offset < nodeH ? offset : 0;
   return Math.max(MIN_CARD_HEIGHT, Math.round(nodeH - safeOffset - 12));
 }
 
 function applyCardGeometry(node, card, domWidget) {
-  const targetH = measureAvailableHeight(node, card, domWidget);
-  // Guard: rewriting the same height would retrigger the ResizeObserver forever.
-  if (node._apsAppliedH !== targetH) {
-    node._apsAppliedH = targetH;
-    card.style.setProperty("height", `${targetH}px`, "important");
-    card.style.setProperty("min-height", `${MIN_CARD_HEIGHT}px`, "important");
-    if (domWidget && domWidget.computedHeight !== targetH + 12) {
-      domWidget.computedHeight = targetH + 12;
+  // Let the card fill the widget box via CSS height:100%.
+  card.style.removeProperty("height");
+  card.style.setProperty("min-height", `${MIN_CARD_HEIGHT}px`, "important");
+  card.style.setProperty("height", "100%", "important");
+
+  const wrapper = card.parentElement;
+  const measured = wrapper?.clientHeight || 0;
+  if (measured < MIN_CARD_HEIGHT) {
+    // Layout not settled yet (or ComfyUI gave us a collapsed box): give the
+    // widget an explicit floor derived from node size instead of the wrapper.
+    const fallback = nodeDerivedHeight(node, domWidget);
+    if (domWidget && domWidget.computedHeight !== fallback) {
+      domWidget.computedHeight = fallback;
     }
   }
-  // Keep the widget's reported layout range in sync so the node reserves the space.
+
+  // Grow to fill whatever vertical space the node offers.
   domWidget.computeLayoutSize = () => ({
     minHeight: MIN_CARD_HEIGHT,
     maxHeight: undefined,
