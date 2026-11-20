@@ -114,6 +114,8 @@ _BASE_MODEL_ALIASES: dict[str, str] = {
 # or fails, every helper below degrades to the local sidecar result.
 # ---------------------------------------------------------------------------
 LORA_MANAGER_BRIDGE_DISABLE_ENV = "APS_DISABLE_LORA_MANAGER_BRIDGE"
+# Extra LoRA search roots when `folder_paths` is unavailable (headless / tests).
+LORA_ROOT_ENV = "APS_LORA_ROOTS"
 _LM_CACHE_TTL = 60.0
 _lm_cache: dict[str, Any] = {"ts": 0.0, "path": "", "rows": {}}
 
@@ -356,7 +358,7 @@ def clean_category_name(value: Any) -> str:
 
 
 def _lora_roots() -> list[str]:
-    """All candidate LoRA root directories (ComfyUI first, then fallbacks)."""
+    """All candidate LoRA root directories (ComfyUI first, then env fallback)."""
     roots: list[str] = []
     try:
         import folder_paths
@@ -366,12 +368,13 @@ def _lora_roots() -> list[str]:
                 roots.append(p)
     except Exception:
         pass
-    roots.extend(
-        [
-            r"E:\AI_vedios\ComfyUI_aki\ComfyUI-aki-v3.2\ComfyUI\models\loras",
-            os.path.join(os.getcwd(), "models", "loras"),
-        ]
-    )
+    # ComfyUI's folder_paths normally answers; the env var is only a fallback for
+    # headless/test runs. Never hard-code a personal install path in a public repo.
+    extra = os.environ.get(LORA_ROOT_ENV, "")
+    for p in extra.split(os.pathsep) if extra else []:
+        if p.strip():
+            roots.append(p.strip())
+    roots.append(os.path.join(os.getcwd(), "models", "loras"))
     seen: set[str] = set()
     unique: list[str] = []
     for r in roots:
