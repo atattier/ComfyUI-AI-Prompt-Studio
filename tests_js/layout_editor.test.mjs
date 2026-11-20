@@ -29,7 +29,28 @@ import {
 } from "../web/lib/layout_editor.js";
 import { parseComfyImageRef, buildComfyViewUrl, fetchComfyImageRef } from "../web/lib/images.js";
 
-const { cloneDraft, clamp } = editorInternals;
+const { cloneDraft, clamp, detachImageInPayload } = editorInternals;
+
+test("detachImageInPayload drops the reference image and blocks reuse", () => {
+  const state = {
+    caption: "keep me",
+    last_image_file: "ref_1.png",
+    last_image_data: "data:image/png;base64,AAA",
+    source: "imagine",
+    draft: { items: [{ label: "object", caption: "x", bbox: [0, 0, 10, 10] }] },
+  };
+  const next = detachImageInPayload(state);
+  assert.equal(next.image_detached, true);
+  assert.equal(next.detached_from_file, "ref_1.png");
+  assert.equal(next.last_image_file, undefined);
+  assert.equal(next.last_image_data, undefined);
+  assert.equal(next.source, undefined);
+  // 提示词与画框必须原样保留：解除底图只断图片，不动内容。
+  assert.equal(next.caption, "keep me");
+  assert.equal(next.draft.items.length, 1);
+  // 原对象不能被就地改写。
+  assert.equal(state.last_image_file, "ref_1.png");
+});
 
 function sampleState() {
   return {

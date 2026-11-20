@@ -1606,6 +1606,21 @@
   display: none !important;
 }
 
+.aps-wb-detach-btn {
+  border: 1px solid color-mix(in srgb, #f59e0b 50%, var(--aps-border)) !important;
+  background: color-mix(in srgb, #f59e0b 12%, var(--aps-surface)) !important;
+  color: #fbbf24 !important;
+}
+
+.aps-wb-detach-btn:hover:not(:disabled) {
+  background: color-mix(in srgb, #f59e0b 24%, var(--aps-surface)) !important;
+  color: #fff !important;
+}
+
+.aps-wb-detach-btn[hidden] {
+  display: none !important;
+}
+
 .aps-modal-foot {
   display: flex;
   align-items: center;
@@ -4302,10 +4317,42 @@
 .aps-explorer-main {
   flex: 1;
   min-width: 0;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   gap: 10px;
   position: relative;
+  overflow: hidden;
+}
+
+/* Preset cards grid: MUST be the scroll container, otherwise cards get clipped
+   by .aps-explorer-layout's overflow:hidden and the pane cannot scroll at all. */
+.aps-explorer-grid {
+  flex: 1 1 0;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+  align-content: start;
+  scrollbar-width: thin;
+  scrollbar-color: var(--aps-border-strong, rgba(255, 255, 255, 0.22)) transparent;
+}
+
+.aps-explorer-grid::-webkit-scrollbar {
+  width: 8px;
+}
+
+.aps-explorer-grid::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.aps-explorer-grid::-webkit-scrollbar-thumb {
+  background: var(--aps-border-strong, rgba(255, 255, 255, 0.22));
+  border-radius: 999px;
+}
+
+.aps-explorer-grid::-webkit-scrollbar-thumb:hover {
+  background: var(--aps-muted, rgba(255, 255, 255, 0.35));
 }
 
 .aps-explorer-topbar {
@@ -4316,6 +4363,7 @@
   padding-bottom: 8px;
   border-bottom: 1px solid var(--aps-border);
   flex-wrap: wrap;
+  flex-shrink: 0;
 }
 
 .aps-explorer-breadcrumbs {

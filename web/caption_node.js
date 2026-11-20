@@ -17,7 +17,7 @@
 
 import { app } from "../../scripts/app.js";
 
-import { StudioApi } from "./lib/api.js?v=20261119_v50";
+import { StudioApi } from "./lib/api.js?v=20261120_v51";
 import {
   blobToDataUrl,
   fileToDataUrl,
@@ -47,13 +47,13 @@ import {
   compileLayoutDraftForMoss,
   decompileMossLayoutToDraft,
   cleanCaptionPreserveQuotesJs,
-} from "./lib/layout_editor.js?v=20261119_v50";
+} from "./lib/layout_editor.js?v=20261120_v51";
 import {
   anyStudioModalOpen,
   isEscapeKey,
   removeRegion,
   shouldDeleteSelection,
-} from "./lib/hotkeys.js?v=20261119_v50";
+} from "./lib/hotkeys.js?v=20261120_v51";
 import { UndoStack } from "./lib/undo.js";
 import {
   excerpt,
@@ -61,12 +61,12 @@ import {
   formatFriendlyError,
   formatErrorTechnicalDetail,
   wordDiffRanges,
-} from "./lib/diff.js?v=20261119_v50";
+} from "./lib/diff.js?v=20261120_v51";
 import {
   imageMetadataSummary,
   mergeImageMetadataIntoState,
   openImageMetadataDialog,
-} from "./lib/image_metadata.js?v=20261119_v50";
+} from "./lib/image_metadata.js?v=20261120_v51";
 import {
   ensureChatThreads,
   createChatThread,
@@ -78,7 +78,7 @@ import {
   setThreadSessionId,
   preserveChatThreads,
   stripChatStateForRollback,
-} from "./lib/chat_threads.js?v=20261119_v50";
+} from "./lib/chat_threads.js?v=20261120_v51";
 
 const NODE_TYPES = ["AIPromptStudioCaption", "AIPromptStudioImagine"];
 const ALL_MODES = ["caption", "layout", "danbooru"];
@@ -227,7 +227,7 @@ function el(tag, className, text) {
   return node;
 }
 
-const STYLE_VERSION = "20261119_v50";
+const STYLE_VERSION = "20261120_v51";
 
 function hasNodeSize(node) {
   return Boolean(node?.size && typeof node.size.length === "number" && node.size.length >= 2);
@@ -779,6 +779,7 @@ function payloadToJson(state) {
 
 /** Keep a legacy embedded data URL available at runtime without persisting it. */
 function adoptRuntimePayloadImage(node, state) {
+  if (state?.image_detached === true) return;
   const dataUrl = state?.last_image_data;
   if (typeof dataUrl !== "string" || !dataUrl.startsWith("data:image/")) return;
   // Never replace an image the node is already showing (e.g. a freshly uploaded one).
@@ -934,6 +935,16 @@ function saveSessionImage(nodeId, dataUrl) {
       }
     } catch {}
   }
+}
+
+/** 解除底图时把缓存一并清掉，否则刷新页面又会把旧图捞回来。 */
+function clearSessionImage(nodeId) {
+  if (!nodeId) return;
+  try {
+    if (typeof sessionStorage !== "undefined") {
+      sessionStorage.removeItem(getSessionImageKey(nodeId));
+    }
+  } catch {}
 }
 
 /**
@@ -1253,6 +1264,29 @@ async function maybeOfferImageMetadata(node, meta, filename, statusEl, imageSeq 
   }
 }
 
+/**
+ * 彻底解除参考图：内存缓存、sessionStorage、last_image_file 一起清掉。
+ * 之后 AI 对话与改词都不再上传这张图，画框与提示词保持不动。
+ */
+function detachReferenceImage(node, statusEl = null) {
+  const state = readPayload(node);
+  // 记下"被断掉的那张图"：之后上游如果换成别的文件，仍然应该认作新底图。
+  const dropped = state.last_image_file || node._apsLastUpstreamFile || "";
+  if (dropped) state.detached_from_file = dropped;
+  node._apsImageDataUrl = null;
+  node._apsLastUpstreamFile = null;
+  if (node.id) clearSessionImage(node.id);
+  state.image_detached = true;
+  delete state.last_image_file;
+  delete state.source;
+  setPayload(node, state);
+  node._apsSyncCard?.();
+  node.setDirtyCanvas?.(true, true);
+  if (statusEl) {
+    statusEl.textContent = "已解除底图：AI 对话与改词不再携带这张图。";
+  }
+}
+
 async function handleNewReferenceImage(node, fileOrDataUrl, statusEl = null, options = {}) {
   if (!fileOrDataUrl) return;
 
@@ -1309,7 +1343,6 @@ async function handleNewReferenceImage(node, fileOrDataUrl, statusEl = null, opt
   node._apsImageDataUrl = dataUrl;
   if (node.id) saveSessionImage(node.id, dataUrl);
   node._apsSyncCard?.();
-
   // 2. Persistently upload image to ComfyUI /upload/image
   let serverFilename = fileObj?.name || `ref_${Date.now()}.png`;
   if (fileObj) {
@@ -1339,6 +1372,8 @@ async function handleNewReferenceImage(node, fileOrDataUrl, statusEl = null, opt
   const state = readPayload(node);
   state.last_image_file = serverFilename;
   delete state.source;
+  delete state.image_detached;
+  delete state.detached_from_file;
   node._apsLastUpstreamFile = serverFilename;
   setPayload(node, state);
 
@@ -1391,6 +1426,8 @@ function hookUpstreamImageNode(node) {
 }
 
 async function fetchImageDataUrl(node) {
+  // 用户导入纯文本提示词后主动解除了底图：不再回读上游图，也不把旧图塞回画布。
+  if (readPayload(node).image_detached === true) return null;
   const sourceNode = findUpstreamImageSourceNode(node);
   const directUrl = getSourceNodeImageUrl(sourceNode);
   const upFile = upstreamImageFile(node);
@@ -1454,7 +1491,11 @@ async function runCaption(node, statusEl) {
   try {
     const imageData = await fetchImageDataUrl(node);
     if (!imageData && !imagePath) {
-      throw new Error("请连接 LoadImage 节点、在节点内上传图片，或填写本地 image_path。");
+      throw new Error(
+        existing.image_detached === true
+          ? "已解除底图引用，当前是纯文本编辑状态。要反推请先「上传/换图」或连接 LoadImage 节点。"
+          : "请连接 LoadImage 节点、在节点内上传图片，或填写本地 image_path。",
+      );
     }
     const body = {
       mode,
@@ -1482,6 +1523,9 @@ async function runCaption(node, statusEl) {
     if (activeFile) {
       state.last_image_file = activeFile;
     }
+    // 反推用的是真实底图，这次反推本身就说明底图重新生效了。
+    delete state.image_detached;
+    delete state.detached_from_file;
     setPayload(node, state);
     if (prevText !== String(state.caption || "")) {
       node._apsUndo?.record({
@@ -1515,7 +1559,9 @@ async function openEditor(node, statusEl) {
   }
   state.modes = currentModes(node);
   let imageUrl = node._apsImageDataUrl || null;
-  if (!imageUrl) {
+  // 用户已解除底图：不要再回读上游图，打开工作台就是干净的纯文本画布。
+  if (state.image_detached === true) imageUrl = null;
+  if (!imageUrl && state.image_detached !== true) {
     try {
       imageUrl = await fetchImageDataUrl(node);
     } catch {
@@ -1571,6 +1617,12 @@ async function openEditor(node, statusEl) {
       node._apsSyncChatLog?.();
     },
     onImageChange: (dataUrl) => {
+      if (!dataUrl) {
+        // 工作台里解除了底图：节点缓存、sessionStorage 与上游文件名都要一起断掉，
+        // 否则下一次对话/改词又会把旧图读回来当参考。
+        detachReferenceImage(node, statusEl);
+        return;
+      }
       // The workbench keeps its own draft copy; applying metadata to the node
       // behind it would be overwritten by its later 「应用」.
       void handleNewReferenceImage(node, dataUrl, statusEl, { skipMetadata: true });
@@ -1582,7 +1634,11 @@ async function openEditor(node, statusEl) {
       syncModeWidgets(node, resolvedModes, resolvedMode);
       const { activeThread: appliedThread } = ensureChatThreads(next, { maxTurns: 25 });
       node._apsSessionId = appliedThread?.session_id || null;
-      if (state.last_image_file && !next.last_image_file) {
+      // 解除底图后不能再把旧文件名塞回去，否则下一句对话又会带着这张图。
+      if (next.image_detached === true) {
+        delete next.last_image_file;
+        delete next.source;
+      } else if (state.last_image_file && !next.last_image_file) {
         next.last_image_file = state.last_image_file;
       }
       if (next.draft?.items) {
@@ -2942,9 +2998,16 @@ function mountRichCard(node, statusEl) {
           source: "import",
         });
         const nextPayload = { ...(result?.payload || {}) };
-        if (existing.last_image_file && !nextPayload.last_image_file) {
-          nextPayload.last_image_file = existing.last_image_file;
-        }
+        // 导入的是成品提示词（纯文本），旧底图必须一并解除：否则下一句对话/改词
+        // 仍会把上一张图当参考图上传，AI 会拿无关的画面去理解这段新提示词。
+        const hadImage = Boolean(existing.last_image_file || node._apsImageDataUrl);
+        detachReferenceImage(node, null);
+        delete nextPayload.last_image_file;
+        delete nextPayload.source;
+        nextPayload.image_detached = true;
+        // 保留"断掉的是哪张图"，这样上游之后换成新图时仍能自动认作新底图。
+        const detachedFrom = readPayload(node).detached_from_file;
+        if (detachedFrom) nextPayload.detached_from_file = detachedFrom;
         preserveChatThreads(nextPayload, existing, { maxTurns: 20 });
         const lastT = Array.isArray(nextPayload.chat_log) ? nextPayload.chat_log.at(-1) : null;
         if (lastT?.id) node._apsMarksDismissed = lastT.id;
@@ -2966,7 +3029,7 @@ function mountRichCard(node, statusEl) {
         syncCard();
         updatePromptStats();
         const boxCount = nextPayload.draft?.items?.length || 0;
-        statusEl.textContent = `✅ 已导入并完成 ${resultModes.length} 个格式（${nextPayload.width || 1024}×${nextPayload.height || 1024}${boxCount ? ` · ${boxCount} 个画框` : ""}）`;
+        statusEl.textContent = `✅ 已导入并完成 ${resultModes.length} 个格式（${nextPayload.width || 1024}×${nextPayload.height || 1024}${boxCount ? ` · ${boxCount} 个画框` : ""}）${hadImage ? " · 旧底图已解除" : ""}`;
         node.setDirtyCanvas?.(true, true);
       },
     });
@@ -4894,9 +4957,14 @@ function mountRichCard(node, statusEl) {
     const directUrl = getSourceNodeImageUrl(upNode);
     const savedFile = state.last_image_file || null;
     const isImagined = state.source === "imagine";
+    // 解除底图后即使上游还挂着同一张旧图，也不再自动回填：用户要的就是纯文本编辑。
+    // 但上游换成了一张新图时，那确实是新底图，解除标记自动作废。
+    const detachedFrom = String(state.detached_from_file || "");
+    const upstreamIsNewImage = Boolean(upFile && (!detachedFrom || upFile !== detachedFrom));
+    const isDetached = state.image_detached === true && !upstreamIsNewImage;
 
     let targetFile = null;
-    if (!isImagined) {
+    if (!isImagined && !isDetached) {
       const isUpDefault = !upFile || upFile === "example.png" || upFile.includes("example");
       if (upFile && !isUpDefault) {
         targetFile = upFile;
@@ -4907,7 +4975,7 @@ function mountRichCard(node, statusEl) {
       }
     }
 
-    if (!node._apsImageDataUrl && !isImagined) {
+    if (!node._apsImageDataUrl && !isImagined && !isDetached) {
       if (node.id) {
         const cached = getSessionImage(node.id);
         if (cached) node._apsImageDataUrl = cached;
@@ -4916,6 +4984,7 @@ function mountRichCard(node, statusEl) {
 
     const needFetch = Boolean(
       !isImagined &&
+      !isDetached &&
       (targetFile || directUrl) &&
       (!node._apsImageDataUrl || (targetFile && targetFile !== node._apsLastUpstreamFile)) &&
       node._apsFetchingFile !== (targetFile || directUrl)
@@ -4948,6 +5017,8 @@ function mountRichCard(node, statusEl) {
               if (curState && targetFile && curState.last_image_file !== targetFile) {
                 curState.last_image_file = targetFile;
                 delete curState.source;
+                delete curState.image_detached;
+                delete curState.detached_from_file;
                 setPayload(node, curState);
               } else {
                 node._apsSyncCard?.();
@@ -4969,7 +5040,7 @@ function mountRichCard(node, statusEl) {
       width: w,
       height: h,
       draft: state.draft,
-      imageUrl: isImagined ? null : (node._apsImageDataUrl || null),
+      imageUrl: isImagined || isDetached ? null : (node._apsImageDataUrl || null),
       selected: selectedRegion,
       showBoxes,
       dimImage: dimStageImage,

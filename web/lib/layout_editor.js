@@ -16,7 +16,7 @@
  *   - Unified Smart Composer (merges "Chat" & "Generate Edit" into one flow)
  */
 
-import { StudioApi } from "./api.js?v=20261119_v50";
+import { StudioApi } from "./api.js?v=20261120_v51";
 import {
   describeOp,
   describeStats,
@@ -25,7 +25,7 @@ import {
   formatFriendlyError,
   formatErrorTechnicalDetail,
   selectOps,
-} from "./diff.js?v=20261119_v50";
+} from "./diff.js?v=20261120_v51";
 import {
   ensureChatThreads,
   createChatThread,
@@ -36,7 +36,7 @@ import {
   updateThreadTurns,
   setThreadSessionId,
   maybeAutoTitleThread,
-} from "./chat_threads.js?v=20261119_v50";
+} from "./chat_threads.js?v=20261120_v51";
 import {
   MAX_PRESET_IMAGE_BYTES,
   blobToDataUrl,
@@ -45,7 +45,7 @@ import {
   makeThumbnailDataUrl,
 } from "./images.js";
 import { UndoStack } from "./undo.js";
-import { removeRegion, shouldDeleteSelection } from "./hotkeys.js?v=20261119_v50";
+import { removeRegion, shouldDeleteSelection } from "./hotkeys.js?v=20261120_v51";
 
 const LABELS = ["object", "character", "text"];
 const LABEL_NAMES = {
@@ -253,6 +253,25 @@ function svgRect(NS, x, y, w, h, attrs = {}) {
   rect.setAttribute("height", h);
   for (const [k, v] of Object.entries(attrs)) rect.setAttribute(k, v);
   return rect;
+}
+
+/**
+ * 把 payload 标记为「无底图」：清掉 last_image_file / source，并立起 image_detached。
+ *
+ * 为什么需要这个标记：节点一旦还有 last_image_file 或 sessionStorage 里的 base64，
+ * 下一句 AI 对话/改词就会把那张旧图当参考图一起上传，AI 会拿无关画面去理解新提示词。
+ * 导入纯文本提示词、或点「解除底图」时都必须走这里。
+ */
+export function detachImageInPayload(state) {
+  const next = { ...(state && typeof state === "object" ? state : {}) };
+  // 记住被断掉的是哪张图：上游之后如果换成别的文件，那是新底图，应当重新生效。
+  const dropped = String(next.last_image_file || "");
+  if (dropped) next.detached_from_file = dropped;
+  next.image_detached = true;
+  delete next.last_image_file;
+  delete next.last_image_data;
+  delete next.source;
+  return next;
 }
 
 /**
@@ -1325,7 +1344,7 @@ export function inspectFinishedPrompt(raw, explicitType = "auto", fallbackW = 10
  *   api?: StudioApi,
  *   sessionId?: string,
  *   onSessionChange?: (id: string) => void,
- *   onImageChange?: (dataUrl: string) => void,
+ *   onImageChange?: (dataUrl: string | null) => void,  // null = 底图已解除
  *   onApply: (newState) => void,
  *   onCancel?: () => void
  * @returns {{close: () => void}} handle
@@ -1361,7 +1380,9 @@ export function openLayoutEditor({
       (m) => selectedModes.includes(m) || m === currentMode,
     );
   }
-  let currentImageUrl = imageUrl || state.imageDataUrl || null;
+  let currentImageUrl = state.image_detached === true ? null : (imageUrl || state.imageDataUrl || null);
+  // 用户主动解除过底图（或导入了纯文本提示词）后，这张图不再参与任何 AI 对话与改词。
+  let imageDetached = Boolean(state.image_detached) && !currentImageUrl;
   let dimImage = false;
   let drawMode = false;
   let showBoxesOverlay = showBoxes !== false;
@@ -1707,6 +1728,7 @@ export function openLayoutEditor({
     try {
       const dataUrl = await fileToDataUrl(file);
       currentImageUrl = dataUrl;
+      imageDetached = false;
       imgBadge.textContent = `${file.name}`;
       onImageChange?.(dataUrl);
       probeImageDimensions(dataUrl);
@@ -1748,6 +1770,12 @@ export function openLayoutEditor({
     renderBoxes();
   });
 
+  const detachBtn = el("button", "aps-btn aps-btn-sm aps-wb-detach-btn", "解除底图");
+  detachBtn.type = "button";
+  detachBtn.title =
+    "把参考图从本次工作台会话中移除：AI 对话与改词将不再携带这张图，画布与画框保持不变";
+  detachBtn.addEventListener("click", () => detachReferenceImage("已解除底图引用"));
+
   const layoutArrangeBtn = el("button", "aps-btn aps-btn-sm", "📐 布局: 自动");
   layoutArrangeBtn.type = "button";
   layoutArrangeBtn.title = "根据图片长宽比自动切换「画布左右并排（竖图）」或「画布上下分栏（横图）」，点击可手动切换，拖拽分割条可微调尺寸";
@@ -1760,7 +1788,7 @@ export function openLayoutEditor({
     applyAdaptiveLayout();
   });
 
-  stageToolbar.append(imgBadge, uploadBtn, toggleBoxesBtn, drawBtn, dimBtn, layoutArrangeBtn, uploadInput);
+  stageToolbar.append(imgBadge, uploadBtn, toggleBoxesBtn, drawBtn, dimBtn, detachBtn, layoutArrangeBtn, uploadInput);
 
   const canvasWrap = el("div", "aps-layout-canvas-wrap");
   canvasWrap.addEventListener("dragenter", (ev) => {
@@ -1787,6 +1815,7 @@ export function openLayoutEditor({
     try {
       const dataUrl = await fileToDataUrl(file);
       currentImageUrl = dataUrl;
+      imageDetached = false;
       imgBadge.textContent = `${file.name}`;
       onImageChange?.(dataUrl);
       probeImageDimensions(dataUrl);
@@ -1870,6 +1899,22 @@ export function openLayoutEditor({
     drawBtn.hidden = !hasLayout;
     toggleBoxesBtn.hidden = !hasLayout && !hasBoxes;
     dimBtn.hidden = !currentImageUrl;
+    detachBtn.hidden = !currentImageUrl;
+  }
+
+  /** 把参考图从会话里摘掉：画布留白，但画框与提示词原样保留。 */
+  function detachReferenceImage(reason = "已解除底图引用") {
+    const hadImage = Boolean(currentImageUrl);
+    currentImageUrl = null;
+    // 即使此刻没有图也记下标记：阻止同步逻辑再从上游 LoadImage 把旧图捞回来。
+    imageDetached = true;
+    Object.assign(state, detachImageInPayload(state));
+    imgBadge.textContent = "无底图（纯文本编辑）";
+    updateStageVisibility();
+    renderBoxes();
+    if (hadImage) {
+      setStatus(`${reason}：AI 对话与改词将不再携带这张图。`);
+    }
   }
   updateCanvasAspect();
   updateStageVisibility();
@@ -2773,6 +2818,9 @@ export function openLayoutEditor({
     }
 
     selected = -1;
+    // 导入的成品提示词是纯文本：旧底图必须一并解除，否则 AI 对话/改词会继续把它当参考图上传。
+    const droppedImage = Boolean(currentImageUrl);
+    detachReferenceImage("已导入纯文本提示词，旧底图已解除");
     // Sync textarea value BEFORE calling switchMode so switchMode doesn't capture stale capArea text
     capArea.value = currentMode === "danbooru" ? danbooruText : captionText;
     syncModeButtonsUI();
@@ -2789,7 +2837,7 @@ export function openLayoutEditor({
     setStatus(
       `✓ 已导入「${srcLabel}」并补全 ${selectedModes.length} 个格式（${nw}×${nh}${
         draft.items.length ? ` · ${draft.items.length} 个画框` : ""
-      }）`,
+      }）${droppedImage ? " · 旧底图已解除" : ""}`,
     );
   }
 
@@ -3361,7 +3409,12 @@ export function openLayoutEditor({
   async function handleRunCaption() {
     if (busy) return;
     if (!currentImageUrl && !state.image_path) {
-      setStatus("请先连接 LoadImage 节点或点击左上角「📂 上传/换图」选择一张参考图。", true);
+      setStatus(
+        imageDetached
+          ? "当前已解除底图（纯文本编辑）。要反推请先点「上传/换图」重新载入一张参考图。"
+          : "请先连接 LoadImage 节点或点击左上角「📂 上传/换图」选择一张参考图。",
+        true,
+      );
       return;
     }
     const reqThreadId = activeThreadId;
@@ -3876,7 +3929,12 @@ export function openLayoutEditor({
       next.mode = currentMode;
     }
     if (currentImageUrl) {
+      delete next.image_detached;
+      delete next.detached_from_file;
       onImageChange?.(currentImageUrl);
+    } else if (imageDetached) {
+      next.image_detached = true;
+      onImageChange?.(null);
     }
     if (next.session_id) {
       onSessionChange?.(next.session_id);
@@ -7709,6 +7767,7 @@ export const openStudioWorkbench = openLayoutEditor;
 export const _test = {
   cloneDraft,
   clamp,
+  detachImageInPayload,
   computeAdaptiveLayoutMode,
   detectBoxDeletion,
   turnToMessages,

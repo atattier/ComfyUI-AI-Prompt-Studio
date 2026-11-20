@@ -9,7 +9,7 @@
 
 import { app } from "../../scripts/app.js";
 
-import { StudioApi, ApiError } from "./lib/api.js?v=20261119_v50";
+import { StudioApi, ApiError } from "./lib/api.js?v=20261120_v51";
 import {
   collectTargets,
   currentTarget,
@@ -27,8 +27,8 @@ import {
   formatFriendlyError,
   formatErrorTechnicalDetail,
   selectOps,
-} from "./lib/diff.js?v=20261119_v50";
-import { openLayoutEditor } from "./lib/layout_editor.js?v=20261119_v50";
+} from "./lib/diff.js?v=20261120_v51";
+import { openLayoutEditor } from "./lib/layout_editor.js?v=20261120_v51";
 import { UndoStack } from "./lib/undo.js";
 import { fileToDataUrl, sourceToDataUrl } from "./lib/images.js";
 
@@ -109,12 +109,12 @@ function iconButton(label, title, onClick, className = "") {
 }
 
 function mountStyles() {
-  if (document.querySelector('link[data-aps-style="20261119_v50"]')) return;
+  if (document.querySelector('link[data-aps-style="20261120_v51"]')) return;
   document.querySelectorAll("link[data-aps-style]").forEach((n) => n.remove());
   const link = el("link", {
     rel: "stylesheet",
-    href: new URL("./style.css?v=20261119_v50", import.meta.url).href,
-    "data-aps-style": "20261119_v50",
+    href: new URL("./style.css?v=20261120_v51", import.meta.url).href,
+    "data-aps-style": "20261120_v51",
   });
   document.head.append(link);
 }
@@ -699,7 +699,8 @@ async function openDualColumnWorkbench() {
       void restoreSession(conversation);
     },
     onImageChange: (dataUrl) => {
-      state.caption.image = dataUrl;
+      state.caption.image = dataUrl || null;
+      if (!dataUrl) state.caption.sourceLabel = "";
       renderCaptionPreview();
     },
     onApply: async (next) => {

@@ -5,7 +5,7 @@
  * editing, category organization, and 1-click application to canvas nodes.
  */
 
-import { StudioApi } from "./api.js?v=20261119_v50";
+import { StudioApi } from "./api.js?v=20261120_v51";
 
 function detectIsLightTheme() {
   if (typeof document === "undefined" || typeof getComputedStyle !== "function") return false;
@@ -873,8 +873,12 @@ export function openLoraPresetLibraryModal({
   overlay.dataset.theme = detectIsLightTheme() ? "light" : "dark";
   overlay.setAttribute("role", "dialog");
   overlay.setAttribute("aria-modal", "true");
+  // Keep wheel scrolling inside the modal: stop the event before ComfyUI's
+  // canvas-level wheel handler (zoom/pan) sees it.
+  overlay.addEventListener("wheel", (e) => e.stopPropagation(), { passive: true });
 
   const modal = el("div", "aps-modal aps-preset-gallery-modal notranslate");
+  modal.addEventListener("wheel", (e) => e.stopPropagation(), { passive: true });
 
   // 1. Header
   const head = el("div", "aps-modal-head aps-wb-head");
@@ -961,6 +965,14 @@ export function openLoraPresetLibraryModal({
   cardsContainer.style.display = "grid";
   cardsContainer.style.gridTemplateColumns = "repeat(auto-fill, minmax(290px, 1fr))";
   cardsContainer.style.gap = "14px";
+  // The grid must be the scroll container: without min-height:0 + overflow-y:auto,
+  // .aps-explorer-layout (overflow:hidden) clips the extra rows and the pane cannot scroll.
+  cardsContainer.style.flex = "1 1 0";
+  cardsContainer.style.minHeight = "0";
+  cardsContainer.style.overflowY = "auto";
+  cardsContainer.style.overflowX = "hidden";
+  cardsContainer.style.overscrollBehavior = "contain";
+  cardsContainer.style.alignContent = "start";
   mainPane.append(cardsContainer);
 
   // Full-pane Drag & Drop Overlay (matches prompt library)

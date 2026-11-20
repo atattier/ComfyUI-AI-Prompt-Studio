@@ -40,3 +40,30 @@ test("buildLoraSyntaxString generates correct <lora:...> tags with scaling", () 
   const syntaxScaled = buildLoraSyntaxString(loras, 1.5, 1.5);
   assert.equal(syntaxScaled, "<lora:style_anime:1.2> <lora:character:1.5>");
 });
+
+test("preset hub grid is a real scroll container (CSS regression guard)", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const url = new URL("../web/style.css", import.meta.url);
+  const css = await readFile(url, "utf8");
+
+  const block = (selector) => {
+    const i = css.indexOf(`${selector} {`);
+    assert.ok(i >= 0, `missing CSS rule ${selector}`);
+    return css.slice(i, css.indexOf("}", i));
+  };
+
+  const grid = block(".aps-explorer-grid");
+  assert.match(grid, /overflow-y:\s*auto/, ".aps-explorer-grid must scroll vertically");
+  assert.match(grid, /min-height:\s*0/, ".aps-explorer-grid needs min-height:0 to shrink inside flex");
+  assert.match(grid, /flex:\s*1 1 0/, ".aps-explorer-grid must flex-grow to fill the pane");
+
+  const main = block(".aps-explorer-main");
+  assert.match(main, /min-height:\s*0/, ".aps-explorer-main needs min-height:0 so children can scroll");
+
+  const body = block(".aps-preset-gallery-body");
+  assert.match(body, /min-height:\s*0/);
+  assert.match(body, /overflow:\s*hidden/);
+
+  const layout = block(".aps-explorer-layout");
+  assert.match(layout, /min-height:\s*0/);
+});
