@@ -162,9 +162,9 @@
       "id": "key_leak",
       "name": "API Key 不泄露",
       "status": "pass",
-      "detail": "audit=E:\\AI\\99_运行数据\\ComfyUI-AI-Prompt-Studio_home\\audit.jsonl key_found=False",
+      "detail": "audit=<LOCAL_DATA_DIR>/ComfyUI-AI-Prompt-Studio_home/audit.jsonl key_found=False",
       "data": {
-        "audit_path": "E:\\AI\\99_运行数据\\ComfyUI-AI-Prompt-Studio_home\\audit.jsonl",
+        "audit_path": "<LOCAL_DATA_DIR>/ComfyUI-AI-Prompt-Studio_home/audit.jsonl",
         "key_found": false
       }
     }

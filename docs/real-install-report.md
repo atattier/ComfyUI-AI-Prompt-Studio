@@ -9,9 +9,9 @@
 
 | 项 | 值 |
 |---|---|
-| ComfyUI | `E:\AI_vedios\ComfyUI_aki\ComfyUI-aki-v3.2\ComfyUI`（用户既有安装，共享 `custom_nodes`） |
-| Python | 3.13（`...\ComfyUI-aki-v3.2\python\python.exe`） |
-| 启动参数 | `--port 8189 --listen 127.0.0.1 --cpu --disable-auto-launch`，`--user-directory` / `--temp-directory` 指向 `E:\AI\99_运行数据\ComfyUI-AI-Prompt-Studio_regression` |
+| ComfyUI | `<COMFYUI_ROOT>`（用户既有便携版安装，共享 `custom_nodes`） |
+| Python | 3.13（便携版自带 `python\python.exe`） |
+| 启动参数 | `--port 8189 --listen 127.0.0.1 --cpu --disable-auto-launch`，`--user-directory` / `--temp-directory` 指向 `<LOCAL_DATA_DIR>\ComfyUI-AI-Prompt-Studio_regression` |
 | 已装第三方扩展 | 940 个前端扩展（含 comfyui_studio_suite、rgthree、Lora Manager 等），4096 种节点类型 |
 | 模型网关 | 本机 Magpie `http://127.0.0.1:3425/v1`，模型 `gemini-3.8-flash`（凭据库中的真实 Key） |
 | 用户自己的实例 | 8188 端口同时运行，本次回归不触碰 |
@@ -80,7 +80,7 @@
 ## 7. 卸载与残留
 
 - 删除 `custom_nodes\ComfyUI-AI-Prompt-Studio` 后重启：`/ai_prompt_studio/*` 全部 404，扩展与节点类型集合回到安装前，侧边栏回到 8 个标签。
-- 运行数据（版本库 SQLite、审计日志、隔离 user/temp）在 `E:\AI\99_运行数据\ComfyUI-AI-Prompt-Studio_regression`，不写用户 ComfyUI 目录。
+- 运行数据（版本库 SQLite、审计日志、隔离 user/temp）在 `<LOCAL_DATA_DIR>\ComfyUI-AI-Prompt-Studio_regression`，不写用户 ComfyUI 目录。
 - 回归用临时 `.claude/launch.json`（`comfy-regression`）已删除，预览服务已停止。
 
 
@@ -136,4 +136,4 @@ Node 2.0 会重复调用侧边栏的 `render(element)`；旧实现每次都 `bui
 
 截图：[`evidence/multicaption-three-boxes.jpg`](../evidence/multicaption-three-boxes.jpg)（三结果框）、[`evidence/multicaption-tags-write.jpg`](../evidence/multicaption-tags-write.jpg)（tags 写入后）。
 
-验证后已卸载插件、删除回归用临时 `.claude/launch.json`（含 glm 临时环境变量）、停止预览与静态服务；回归数据仍在 `99_运行数据` 隔离目录。
+验证后已卸载插件、删除回归用临时 `.claude/launch.json`（含 glm 临时环境变量）、停止预览与静态服务；回归数据仍在 `<LOCAL_DATA_DIR>` 隔离目录。

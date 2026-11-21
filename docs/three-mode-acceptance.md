@@ -1,9 +1,9 @@
 # 验收报告 — 反推节点三模式升级（caption / layout / hybrid）
 
 - 日期：2026-11-06
-- 仓库：`E:\AI\02_AI视频与视觉创作\ComfyUI插件\ComfyUI-AI-Prompt-Studio`
+- 仓库：`ComfyUI-AI-Prompt-Studio`（本地路径见 `README.md` 的安装说明）
 - 基础节点提交：`42f5c86`（阶段一 Git 安全快照，只含基础节点 5 文件）
-- 回归实例：ComfyUI 便携版 `8189 --cpu`，隔离 user/temp 于 `99_运行数据/ComfyUI-AI-Prompt-Studio_regression`；模型 `auto/glm-5.3-flash`（gemini-3.8-flash 通道被上游停用）
+- 回归实例：ComfyUI 便携版 `8189 --cpu`，隔离 user/temp 于 `<LOCAL_DATA_DIR>/ComfyUI-AI-Prompt-Studio_regression`；模型 `auto/glm-5.3-flash`（gemini-3.8-flash 通道被上游停用）
 - 用户主实例 `8188` 未重启、未中断
 
 ## 1. 阶段执行情况
